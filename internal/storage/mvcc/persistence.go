@@ -1,0 +1,1298 @@
+package mvcc
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/semihalev/stoolap/internal/storage/binser"
+)
+
+// Default persistence configuration values
+const (
+	// Snapshot related defaults
+	DefaultSnapshotInterval = 5 * time.Minute // 5 minutes between snapshots
+
+	// Schema header size for reading
+	DefaultSchemaHeaderSize = 8192 // 8KB buffer for schema reading
+)
+
+// PersistenceManager coordinates all disk operations
+type PersistenceManager struct {
+	path       string
+	wal        *WALManager
+	engine     *MVCCEngine
+	meta       *PersistenceMeta
+	diskStores map[string]*DiskVersionStore // Map of table names to disk version stores
+
+	snapshotInterval    time.Duration
+	keepCount           int
+	enabled             bool
+	cleanWalAfterReplay bool // Flag to clean up WAL after replay completes
+}
+
+// PersistenceMeta tracks metadata about persistence state
+type PersistenceMeta struct {
+	lastSnapshotTimeNano atomic.Int64  // Last snapshot time in Unix nanoseconds
+	lastSnapshotLSN      atomic.Uint64 // LSN covered by the last snapshot
+	lastWALLSN           atomic.Uint64 // Used during recovery
+}
+
+// IndexMetadata stores essential information about a columnar index
+type IndexMetadata struct {
+	Name                string                // Index name
+	TableName           string                // Table the index belongs to
+	ColumnName          string                // Column the index is for
+	ColumnID            int                   // ID of the column in the table schema
+	DataType            storage.DataType      // Type of data in the index
+	IsUnique            bool                  // Whether the index enforces uniqueness
+	IsPrimaryKey        bool                  // Whether the index is for a primary key
+	TimeGranularity     TimeBucketGranularity // Granularity for time bucketing
+	EnableTimeBucketing bool                  // Whether time bucketing is enabled
+}
+
+// SerializeIndexMetadata converts index metadata to binary format
+func SerializeIndexMetadata(index *ColumnarIndex) ([]byte, error) {
+	if index == nil {
+		return nil, fmt.Errorf("index cannot be nil")
+	}
+
+	// Use binser for consistent binary encoding
+	writer := binser.NewWriter()
+	defer writer.Release()
+
+	// Write basic index information
+	writer.WriteString(index.name)
+	writer.WriteString(index.tableName)
+	writer.WriteString(index.columnName)
+	writer.WriteInt32(int32(index.columnID))
+	writer.WriteUint8(uint8(index.dataType))
+	writer.WriteBool(index.isUnique)
+	writer.WriteBool(index.isPrimaryKey)
+	writer.WriteUint8(uint8(index.timeBucketGranularity))
+	writer.WriteBool(index.enableTimeBucketing)
+
+	return writer.Bytes(), nil
+}
+
+// DeserializeIndexMetadata recreates index metadata from binary data
+func DeserializeIndexMetadata(data []byte) (*IndexMetadata, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty metadata")
+	}
+
+	reader := binser.NewReader(data)
+	meta := &IndexMetadata{}
+
+	var err error
+	meta.Name, err = reader.ReadString()
+	if err != nil {
+		return nil, fmt.Errorf("error reading index name: %w", err)
+	}
+
+	meta.TableName, err = reader.ReadString()
+	if err != nil {
+		return nil, fmt.Errorf("error reading table name: %w", err)
+	}
+
+	meta.ColumnName, err = reader.ReadString()
+	if err != nil {
+		return nil, fmt.Errorf("error reading column name: %w", err)
+	}
+
+	columnID, err := reader.ReadInt32()
+	if err != nil {
+		return nil, fmt.Errorf("error reading column ID: %w", err)
+	}
+	meta.ColumnID = int(columnID)
+
+	dataType, err := reader.ReadUint8()
+	if err != nil {
+		return nil, fmt.Errorf("error reading data type: %w", err)
+	}
+	meta.DataType = storage.DataType(dataType)
+
+	meta.IsUnique, err = reader.ReadBool()
+	if err != nil {
+		return nil, fmt.Errorf("error reading unique flag: %w", err)
+	}
+
+	meta.IsPrimaryKey, err = reader.ReadBool()
+	if err != nil {
+		return nil, fmt.Errorf("error reading primary key flag: %w", err)
+	}
+
+	timeGranularity, err := reader.ReadUint8()
+	if err != nil {
+		return nil, fmt.Errorf("error reading time granularity: %w", err)
+	}
+	meta.TimeGranularity = TimeBucketGranularity(timeGranularity)
+
+	meta.EnableTimeBucketing, err = reader.ReadBool()
+	if err != nil {
+		return nil, fmt.Errorf("error reading time bucketing flag: %w", err)
+	}
+
+	return meta, nil
+}
+
+// NewPersistenceManager creates a new persistence manager
+func NewPersistenceManager(engine *MVCCEngine, path string, config storage.PersistenceConfig) (*PersistenceManager, error) {
+	if path == "" || !config.Enabled {
+		// Memory-only mode
+		return &PersistenceManager{
+			enabled: false,
+			engine:  engine,
+		}, nil
+	}
+
+	// Create base directory
+	err := os.MkdirAll(path, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create persistence directory: %w", err)
+	}
+
+	// Initialize WAL
+	walPath := filepath.Join(path, "wal")
+	// Create a copy of the config to pass to WALManager
+	configCopy := config
+	wal, err := NewWALManager(walPath, SyncMode(config.SyncMode), &configCopy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize WAL: %w", err)
+	}
+
+	// Read checkpoint file to get initial LSN value
+	checkpointFile := filepath.Join(walPath, "checkpoint.meta")
+	checkpointMeta, checkpointErr := ReadCheckpointMeta(checkpointFile)
+
+	// Use checkpoint LSN as initial lastWALLSN if available
+	var initialLSN uint64 = 0
+	if checkpointErr == nil && checkpointMeta.LSN > 0 {
+		initialLSN = checkpointMeta.LSN
+	}
+
+	// Configure WAL settings
+	if config.WALFlushTrigger > 0 {
+		wal.flushTrigger = uint64(config.WALFlushTrigger)
+	}
+
+	// Set maximum WAL size
+	if config.WALMaxSize > 0 {
+		wal.maxWALSize = uint64(config.WALMaxSize)
+	} else {
+		wal.maxWALSize = DefaultWALMaxSize // Default max WAL size
+	}
+
+	// Configure snapshot interval
+	var snapshotInterval time.Duration
+	if config.SnapshotInterval > 0 {
+		snapshotInterval = time.Duration(config.SnapshotInterval) * time.Second
+	} else {
+		snapshotInterval = DefaultSnapshotInterval // Default snapshot interval
+	}
+
+	// Handle default keepCount for snapshots
+	keepCount := config.KeepSnapshots
+	if keepCount <= 0 {
+		keepCount = DefaultKeepSnapshots
+	}
+
+	pm := &PersistenceManager{
+		path:                path,
+		wal:                 wal,
+		meta:                &PersistenceMeta{},
+		engine:              engine,
+		enabled:             true,
+		snapshotInterval:    snapshotInterval,
+		keepCount:           keepCount,
+		diskStores:          make(map[string]*DiskVersionStore),
+		cleanWalAfterReplay: false,
+	}
+
+	pm.meta.lastWALLSN.Store(initialLSN) // Set initial LSN from checkpoint if available
+
+	return pm, nil
+}
+
+// IsEnabled returns whether persistence is enabled
+func (pm *PersistenceManager) IsEnabled() bool {
+	return pm.enabled
+}
+
+// Start begins persistence operations
+func (pm *PersistenceManager) Start() error {
+	if !pm.enabled {
+		return nil
+	}
+
+	// Initialize disk stores for all tables
+	for tableName, vs := range pm.engine.versionStores {
+		diskStore, err := NewDiskVersionStore(pm.path, tableName, vs)
+		if err != nil {
+			return fmt.Errorf("failed to create disk store for table %s: %w", tableName, err)
+		}
+
+		// Load existing snapshots
+		if err := diskStore.LoadSnapshots(); err != nil {
+			return fmt.Errorf("failed to load snapshots for table %s: %w", tableName, err)
+		}
+
+		pm.diskStores[tableName] = diskStore
+	}
+
+	// Start periodic snapshot task
+	go pm.runSnapshotTask()
+
+	return nil
+}
+
+// runSnapshotTask performs periodic snapshots of all tables
+func (pm *PersistenceManager) runSnapshotTask() {
+	ticker := time.NewTicker(pm.snapshotInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if !pm.enabled {
+			return
+		}
+
+		// Take snapshots of all tables
+		for tableName, diskStore := range pm.diskStores {
+			// Check if the table still exists in the engine
+			pm.engine.mu.RLock()
+			_, tableExists := pm.engine.schemas[tableName]
+			pm.engine.mu.RUnlock()
+
+			if !tableExists {
+				// Table was dropped but diskStore wasn't properly cleaned up
+				// Close and remove it from diskStores map
+				if err := diskStore.Close(); err != nil {
+					fmt.Printf("Warning: Failed to close stale disk store for table %s: %v\n", tableName, err)
+				}
+				delete(pm.diskStores, tableName)
+
+				// Remove the table's directory with all snapshots
+				tableDir := filepath.Join(pm.path, tableName)
+				if err := os.RemoveAll(tableDir); err != nil {
+					fmt.Printf("Warning: Failed to remove snapshot directory for stale table %s: %v\n", tableName, err)
+				}
+
+				fmt.Printf("Warning: Found stale disk store for dropped table %s, removing it\n", tableName)
+				continue
+			}
+
+			if err := diskStore.CreateSnapshot(); err != nil {
+				fmt.Printf("Error: creating snapshot for table %s: %v\n", tableName, err)
+				continue
+			}
+
+			// Update last snapshot time
+			pm.meta.lastSnapshotTimeNano.Store(time.Now().UnixNano())
+
+			// Clean up old snapshots if we have more than keepCount
+			if pm.keepCount > 0 {
+				tableDir := filepath.Join(pm.path, tableName)
+				if err := pm.cleanupOldSnapshots(tableDir, pm.keepCount); err != nil {
+					fmt.Printf("Warning: Failed to clean up old snapshots for table %s: %v\n", tableName, err)
+				}
+			}
+		}
+	}
+}
+
+// Stop halts persistence operations using a clean, fault-tolerant approach
+// with multiple layers of timeout protection to prevent indefinite hanging
+func (pm *PersistenceManager) Stop() error {
+	if !pm.enabled {
+		return nil
+	}
+
+	// Create overall completion channel with timeout
+	done := make(chan struct{})
+	var shutdownErr error
+
+	// First mark WAL as not accepting new operations immediately
+	// This ensures no new operations are started while shutting down
+	// Do this outside the goroutine to make sure it happens even if the shutdown times out
+	if pm.wal != nil {
+		pm.wal.running.Store(false)
+	}
+
+	// Create a context with timeout for the entire shutdown operation
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Run shutdown sequence in a separate goroutine
+	go func() {
+		defer close(done)
+
+		// Close all disk stores first
+		for tableName, store := range pm.diskStores {
+			// Create a separate timeout for each disk store
+			storeTimeout := time.After(1 * time.Second)
+			storeDone := make(chan struct{})
+
+			go func(name string, s *DiskVersionStore) {
+				defer close(storeDone)
+				if err := s.Close(); err != nil {
+					fmt.Printf("Warning: Error closing disk store for %s: %v\n", name, err)
+				}
+			}(tableName, store)
+
+			// Wait for disk store closing or timeout
+			select {
+			case <-storeDone:
+				// Store closed normally
+			case <-storeTimeout:
+				fmt.Printf("Warning: Disk store close for %s timed out\n", tableName)
+			case <-ctx.Done():
+				fmt.Println("Warning: Overall shutdown timeout reached during disk store closing")
+				return
+			}
+		}
+
+		// Flush WAL without holding locks for longer than necessary
+		if pm.wal != nil {
+			// Try to flush safely with timeout
+			flushComplete := make(chan struct{})
+			var flushErr error
+
+			go func() {
+				defer close(flushComplete)
+
+				// Try to acquire lock with timeout
+				lockAcquired := make(chan struct{})
+				go func() {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						pm.wal.mu.Lock()
+						close(lockAcquired)
+					}
+				}()
+
+				// Wait for lock with timeout
+				select {
+				case <-lockAcquired:
+					// Acquired lock normally
+					var bufferData []byte
+					if pm.wal.walBuffer != nil && pm.wal.walBuffer.Len() > 0 {
+						bufferData = pm.wal.walBuffer.Bytes()
+						pm.wal.walBuffer.Reset()
+					}
+					pm.wal.mu.Unlock()
+
+					// Write buffer to file without holding lock
+					if len(bufferData) > 0 && pm.wal.walFile != nil {
+						_, flushErr = pm.wal.walFile.Write(bufferData)
+						if flushErr != nil {
+							fmt.Printf("Error: flushing WAL buffer: %v\n", flushErr)
+						} else {
+							// Force sync with timeout
+							syncComplete := make(chan struct{})
+							go func() {
+								OptimizedSync(pm.wal.walFile)
+								close(syncComplete)
+							}()
+
+							select {
+							case <-syncComplete:
+								// Sync completed normally
+							case <-time.After(500 * time.Millisecond):
+								fmt.Println("Warning: WAL sync during flush timed out")
+							case <-ctx.Done():
+								fmt.Println("warning: Overall shutdown timeout reached during WAL sync")
+								return
+							}
+						}
+					}
+				case <-time.After(500 * time.Millisecond):
+					fmt.Println("Warning: WAL lock acquisition during flush timed out")
+				case <-ctx.Done():
+					fmt.Println("Warning: Overall shutdown timeout reached during WAL lock acquisition")
+					return
+				}
+			}()
+
+			// Wait for flush with timeout
+			select {
+			case <-flushComplete:
+			case <-time.After(1 * time.Second):
+				fmt.Println("Warning: WAL flush operation timed out")
+			case <-ctx.Done():
+				fmt.Println("Warning: Overall shutdown timeout reached during WAL flush")
+				return
+			}
+
+			// Now close WAL
+			walCloseDone := make(chan error)
+
+			go func() {
+				walCloseDone <- pm.wal.Close()
+			}()
+
+			// Wait for WAL close with timeout
+			select {
+			case err := <-walCloseDone:
+				if err != nil {
+					shutdownErr = fmt.Errorf("error closing WAL: %w", err)
+					fmt.Printf("Error: closing WAL: %v\n", err)
+				}
+			case <-time.After(1 * time.Second):
+				shutdownErr = fmt.Errorf("WAL manager close operation timed out")
+				fmt.Println("Warning: WAL manager close operation timed out")
+			case <-ctx.Done():
+				shutdownErr = fmt.Errorf("overall shutdown timeout reached during WAL close")
+				fmt.Println("Warning: Overall shutdown timeout reached during WAL close")
+				return
+			}
+		}
+	}()
+
+	// Wait for completion with timeout
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		shutdownErr = fmt.Errorf("persistence manager shutdown timed out")
+		fmt.Println("Warning: Persistence manager shutdown timed out, forcing exit")
+	}
+
+	// Clean up any other resources regardless of timeout
+	// Clear the disk stores map to release resources
+	pm.diskStores = make(map[string]*DiskVersionStore)
+
+	return shutdownErr
+}
+
+// findSnapshotFiles finds all snapshot files in a directory
+func findSnapshotFiles(dirPath string) ([]string, error) {
+	// Check if directory exists
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		return nil, err
+	}
+
+	// Read directory entries
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter snapshot files
+	var snapshotFiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "snapshot-") && strings.HasSuffix(entry.Name(), ".bin") {
+			snapshotFiles = append(snapshotFiles, entry.Name())
+		}
+	}
+
+	return snapshotFiles, nil
+}
+
+// LoadData loads data from disk and replays WAL
+func (pm *PersistenceManager) LoadDiskStores() error {
+	if !pm.enabled {
+		return nil
+	}
+
+	// Make sure the loading flag is set (should already be set from LoadSchemas)
+	pm.engine.loadingFromDisk.Store(true)
+
+	// Ensure we reset the flag when we're done, regardless of errors
+	defer pm.engine.loadingFromDisk.Store(false)
+
+	// 1. Try to load latest snapshots for all tables
+	tables, err := pm.loadSnapshots()
+	if err != nil {
+		fmt.Printf("Warning: Error loading snapshots: %v. Falling back to WAL-only recovery.\n", err)
+		// Create an empty tables map since we're doing WAL-only recovery
+		tables = make(map[string]*storage.Schema)
+
+		// Load schemas directly from engine
+		e := pm.engine
+		e.mu.RLock()
+		for name, schema := range e.schemas {
+			schemaCopy := schema // Make a copy to avoid reference issues
+			tables[name] = &schemaCopy
+		}
+		e.mu.RUnlock()
+	}
+
+	// 2. Replay WAL entries
+	// Get the latest snapshot timestamp
+	latestSnapshotTime := pm.getLatestSnapshotTime()
+
+	// Use the lastWALLSN from the metadata as the starting point for replay
+	replayFromLSN := pm.meta.lastWALLSN.Load()
+
+	// If we loaded a snapshot, we should only replay entries newer than the snapshot
+	snapshotTimestampNano := int64(0)
+	lastLSNFromSnapshot := uint64(0)
+
+	if !latestSnapshotTime.IsZero() {
+		snapshotTimestampNano = latestSnapshotTime.UnixNano()
+
+		// Try to get the LSN corresponding to the snapshot timestamp
+		// This is a heuristic to help with debugging
+		lastLSNFromSnapshot = pm.meta.lastWALLSN.Load()
+
+		// If we have a valid LSN from snapshot metadata and it's greater than our current replay point,
+		// update the replay start position
+		if lastLSNFromSnapshot > 0 && lastLSNFromSnapshot > replayFromLSN {
+			replayFromLSN = lastLSNFromSnapshot
+		}
+	}
+
+	// Start replay from the correct LSN
+	lastLSN, err := pm.wal.Replay(replayFromLSN, func(entry WALEntry) error {
+		// Skip entries with empty table names except for COMMIT operations
+		// This handles system-level operations correctly
+		if entry.TableName == "" && entry.Operation != WALCommit {
+			return nil
+		}
+
+		// Apply entries only if they're newer than our snapshot
+		// This ensures we don't double-apply data already in snapshots
+		// Treat all operations consistently - both data and transaction ops
+		if snapshotTimestampNano == 0 || entry.Timestamp > snapshotTimestampNano {
+			// Apply the entry to the appropriate table
+			return pm.applyWALEntry(entry, tables)
+		}
+
+		// Skip entry - it's already captured in the snapshot
+		return nil
+	})
+	if err != nil {
+		fmt.Printf("Warning: Error during WAL replay: %v\n", err)
+		return fmt.Errorf("failed to replay WAL: %w", err)
+	}
+
+	// Update the last LSN
+	pm.meta.lastWALLSN.Store(lastLSN)
+
+	// Clean up WAL after replay if all tables were dropped
+	if pm.cleanWalAfterReplay {
+		// Check if there are no tables left
+		pm.engine.mu.RLock()
+		noTablesLeft := len(pm.engine.schemas) == 0
+		pm.engine.mu.RUnlock()
+
+		if noTablesLeft && pm.wal != nil {
+			// Close the current WAL
+			pm.wal.Close()
+
+			// Delete the WAL directory
+			walDir := filepath.Join(pm.path, "wal")
+			if err := os.RemoveAll(walDir); err != nil {
+				fmt.Printf("Warning: Failed to remove WAL directory after dropping all tables: %v\n", err)
+			}
+
+			// Create a fresh WAL manager
+			walPath := filepath.Join(pm.path, "wal")
+			newWal, err := NewWALManager(walPath, SyncMode(pm.engine.config.Persistence.SyncMode), &pm.engine.config.Persistence)
+			if err != nil {
+				fmt.Printf("Warning: Failed to create new WAL manager after dropping all tables: %v\n", err)
+			} else {
+				pm.wal = newWal
+			}
+
+			// Reset the flag
+			pm.cleanWalAfterReplay = false
+		}
+	}
+
+	return nil
+}
+
+// getLatestSnapshotTime returns the timestamp of the most recent snapshot
+func (pm *PersistenceManager) getLatestSnapshotTime() time.Time {
+	var latestTime time.Time
+
+	// If the path doesn't exist, return zero time
+	if _, err := os.Stat(pm.path); os.IsNotExist(err) {
+		return latestTime
+	}
+
+	// Iterate through all tables to find the latest snapshot timestamp
+	for tableName, diskStore := range pm.diskStores {
+		// Skip tables without a disk store
+		if diskStore == nil {
+			continue
+		}
+
+		// Find snapshot files for this table
+		tableDir := filepath.Join(pm.path, tableName)
+		snapshotFiles, err := findSnapshotFiles(tableDir)
+		if err != nil || len(snapshotFiles) == 0 {
+			continue
+		}
+
+		// Sort snapshots by name (which includes timestamp), newest first
+		sort.Sort(sort.Reverse(sort.StringSlice(snapshotFiles)))
+		latestSnapshot := snapshotFiles[0]
+
+		// Extract timestamp from filename
+		// Format: snapshot-YYYYMMDD-HHMMSS.SSS.bin
+		if strings.HasPrefix(latestSnapshot, "snapshot-") {
+			// Extract timestamp part
+			timestampPart := strings.TrimPrefix(latestSnapshot, "snapshot-")
+			timestampPart = strings.TrimSuffix(timestampPart, ".bin")
+
+			// Parse the timestamp using local timezone
+			snapshotTime, err := time.ParseInLocation("20060102-150405.000", timestampPart, time.Local)
+			if err == nil && snapshotTime.After(latestTime) {
+				latestTime = snapshotTime
+			}
+		}
+	}
+
+	// If no timestamp found from disk stores, use the lastSnapshotTimeNano from metadata
+	if latestTime.IsZero() {
+		lastSnapshotNano := pm.meta.lastSnapshotTimeNano.Load()
+		if lastSnapshotNano > 0 {
+			latestTime = time.Unix(0, lastSnapshotNano)
+		}
+	}
+
+	return latestTime
+}
+
+// loadSnapshots loads tables from disk using the DiskVersionStore instances
+func (pm *PersistenceManager) loadSnapshots() (map[string]*storage.Schema, error) {
+	tables := make(map[string]*storage.Schema)
+
+	// If the base directory doesn't exist yet, return empty result
+	if _, err := os.Stat(pm.path); os.IsNotExist(err) {
+		return tables, nil
+	}
+
+	// First, scan disk for table directories with snapshots
+	entries, err := os.ReadDir(pm.path)
+	if err != nil {
+		return tables, fmt.Errorf("failed to read tables directory: %w", err)
+	}
+
+	// Find tables on disk that have snapshots
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		tableName := entry.Name()
+
+		// Skip if already processed
+		if _, tableExists := tables[tableName]; tableExists {
+			continue
+		}
+
+		// Check if this directory contains snapshots
+		tableDir := filepath.Join(pm.path, tableName)
+		snapshotFiles, err := findSnapshotFiles(tableDir)
+		if err != nil || len(snapshotFiles) == 0 {
+			continue
+		}
+
+		// Sort snapshots by name (which includes timestamp), newest first
+		sort.Sort(sort.Reverse(sort.StringSlice(snapshotFiles)))
+		latestSnapshot := snapshotFiles[0]
+
+		// Read the schema from the snapshot file
+		binPath := filepath.Join(pm.path, tableName, latestSnapshot)
+		reader, err := NewDiskReader(binPath)
+		if err != nil {
+			fmt.Printf("Warning: Failed to create disk reader for snapshot %s: %v\n", binPath, err)
+			continue
+		}
+
+		// Get schema from the snapshot
+		schema := reader.GetSchema()
+		reader.Close()
+
+		if schema == nil {
+			fmt.Printf("Warning: Failed to get schema from snapshot for table %s\n", tableName)
+			continue
+		}
+
+		// Ensure schema has the correct table name
+		schema.TableName = tableName
+
+		// Create the table in the engine if it doesn't exist
+		pm.engine.mu.Lock()
+		vs, tableExists := pm.engine.versionStores[tableName]
+
+		if !tableExists {
+			// Table doesn't exist in engine, create it
+			pm.engine.schemas[tableName] = *schema
+			vs = NewVersionStore(tableName, pm.engine)
+			pm.engine.versionStores[tableName] = vs
+		}
+		pm.engine.mu.Unlock()
+
+		// Create disk version store
+		diskStore, err := NewDiskVersionStore(pm.path, tableName, vs, *schema)
+		if err != nil {
+			fmt.Printf("Warning: Failed to create disk store for table %s: %v\n", tableName, err)
+			continue
+		}
+
+		// Load snapshots
+		if err := diskStore.LoadSnapshots(); err != nil {
+			fmt.Printf("Warning: Failed to load snapshots for table %s: %v\n", tableName, err)
+			continue
+		}
+
+		// Add to disk stores map
+		pm.diskStores[tableName] = diskStore
+		tables[tableName] = schema
+	}
+
+	// Now handle tables that exist in memory but might not have been processed yet
+	for tableName, vs := range pm.engine.versionStores {
+		// Skip any tables that already have a DiskVersionStore or are already in tables map
+		if _, hasStore := pm.diskStores[tableName]; hasStore {
+			continue
+		}
+		if _, hasTable := tables[tableName]; hasTable {
+			continue
+		}
+
+		// Create a new disk version store
+		diskStore, err := NewDiskVersionStore(pm.path, tableName, vs)
+		if err != nil {
+			fmt.Printf("Warning: Failed to create disk store for table %s: %v\n", tableName, err)
+			continue
+		}
+
+		// Load snapshots for this table (may be empty)
+		if err := diskStore.LoadSnapshots(); err != nil {
+			fmt.Printf("Warning: Failed to load snapshots for table %s: %v\n", tableName, err)
+			continue
+		}
+
+		// Add to disk stores map
+		pm.diskStores[tableName] = diskStore
+
+		// Get and store the schema
+		schema, err := vs.GetTableSchema()
+		if err != nil {
+			fmt.Printf("Warning: Failed to get schema for table %s: %v\n", tableName, err)
+			continue
+		}
+
+		tables[tableName] = &schema
+	}
+
+	return tables, nil
+}
+
+// applyWALEntry applies a WAL entry to the in-memory structures
+func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*storage.Schema) error {
+	// Optimize for commit entries
+	if entry.Operation == WALCommit {
+		pm.engine.registry.RecoverCommittedTransaction(entry.TxnID, entry.Timestamp)
+		return nil
+	}
+
+	if entry.Operation == WALRollback {
+		pm.engine.registry.RecoverAbortedTransaction(entry.TxnID)
+		return nil
+	}
+
+	// Handle DDL operations
+	if entry.Operation == WALCreateTable {
+		if len(entry.Data) > 0 {
+			// Deserialize schema data from the WAL entry
+			schema, err := deserializeSchema(entry.Data)
+			if err != nil {
+				return fmt.Errorf("failed to deserialize schema for table %s: %w", entry.TableName, err)
+			}
+
+			// Ensure the table name matches
+			if schema.TableName != entry.TableName {
+				schema.TableName = entry.TableName
+			}
+
+			// Add the schema to our tables map
+			tables[entry.TableName] = schema
+
+			// Create table in engine
+			pm.engine.mu.Lock()
+			// Create version store for this table
+			vs, exists := pm.engine.versionStores[entry.TableName]
+			if !exists {
+				vs = NewVersionStore(entry.TableName, pm.engine)
+				pm.engine.versionStores[entry.TableName] = vs
+			}
+			// Store schema
+			pm.engine.schemas[entry.TableName] = *schema
+			pm.engine.mu.Unlock()
+
+			// Create disk store for the table if it doesn't exist
+			if _, exists := pm.diskStores[entry.TableName]; !exists && pm.enabled {
+				diskStore, err := NewDiskVersionStore(pm.path, entry.TableName, vs)
+				if err != nil {
+					fmt.Printf("Warning: Failed to create disk store for table %s: %v\n", entry.TableName, err)
+				} else {
+					// Load any existing snapshots (will be empty if none exist)
+					if err := diskStore.LoadSnapshots(); err != nil {
+						fmt.Printf("Warning: Failed to load snapshots for table %s: %v\n", entry.TableName, err)
+					}
+					// Add the disk store to the persistence manager's map
+					pm.diskStores[entry.TableName] = diskStore
+				}
+			}
+
+			return nil
+		}
+	}
+
+	// Handle index operations
+	if entry.Operation == WALCreateIndex {
+		if len(entry.Data) > 0 {
+			// Deserialize index metadata from the WAL entry
+			indexMeta, err := DeserializeIndexMetadata(entry.Data)
+			if err != nil {
+				return fmt.Errorf("failed to deserialize index metadata: %w", err)
+			}
+
+			// Ensure the table exists
+			pm.engine.mu.RLock()
+			vs, exists := pm.engine.versionStores[entry.TableName]
+			tableSchema, schemaExists := pm.engine.schemas[entry.TableName]
+			pm.engine.mu.RUnlock()
+
+			if !exists || !schemaExists {
+				return fmt.Errorf("table %s not found for index creation", entry.TableName)
+			}
+
+			// Find the column ID by name if it doesn't match
+			columnID := indexMeta.ColumnID
+			if columnID < 0 || columnID >= len(tableSchema.Columns) {
+				// Need to find the column by name
+				for i, col := range tableSchema.Columns {
+					if col.Name == indexMeta.ColumnName {
+						columnID = i
+						break
+					}
+				}
+			}
+
+			// Create the index
+			idx := NewColumnarIndex(
+				indexMeta.Name,
+				entry.TableName,
+				indexMeta.ColumnName,
+				columnID,
+				indexMeta.DataType,
+				vs,
+				indexMeta.IsUnique,
+			)
+
+			// Set additional properties
+			idx.isPrimaryKey = indexMeta.IsPrimaryKey
+
+			// Configure time bucketing if enabled
+			if indexMeta.EnableTimeBucketing {
+				idx.EnableTimeBucketing(indexMeta.TimeGranularity)
+			}
+
+			// Add the index to the version store
+			vs.AddIndex(idx)
+
+			// Build the index (populates it with data)
+			err = idx.Build()
+			if err != nil {
+				fmt.Printf("Warning: Error building index %s: %v\n", indexMeta.Name, err)
+				// Continue anyway - partial index is better than no index
+			}
+
+			return nil
+		}
+	}
+
+	if entry.Operation == WALDropIndex {
+		if len(entry.Data) > 0 {
+			// The index name is stored as a simple string
+			indexName := string(entry.Data)
+
+			// Get the version store for this table
+			pm.engine.mu.RLock()
+			vs, exists := pm.engine.versionStores[entry.TableName]
+			pm.engine.mu.RUnlock()
+
+			if !exists {
+				return fmt.Errorf("table %s not found for index drop", entry.TableName)
+			}
+
+			// Remove the index
+			vs.RemoveIndex(indexName)
+
+			return nil
+		}
+	}
+
+	// Handle table drop operation
+	if entry.Operation == WALDropTable {
+		// Remove from tables map
+		delete(tables, entry.TableName)
+
+		// Remove disk store if it exists
+		if diskStore, exists := pm.diskStores[entry.TableName]; exists && diskStore != nil {
+			// Close the disk store before removing it from the map
+			if err := diskStore.Close(); err != nil {
+				fmt.Printf("Warning: Failed to close disk store for table %s: %v\n", entry.TableName, err)
+			}
+			delete(pm.diskStores, entry.TableName)
+
+			// Remove the table's directory with all snapshots
+			tableDir := filepath.Join(pm.path, entry.TableName)
+			if err := os.RemoveAll(tableDir); err != nil {
+				fmt.Printf("Warning: Failed to remove snapshot directory for table %s: %v\n", entry.TableName, err)
+			}
+		}
+
+		// Drop from engine
+		pm.engine.mu.Lock()
+		delete(pm.engine.schemas, entry.TableName)
+		if vs, exists := pm.engine.versionStores[entry.TableName]; exists && vs != nil {
+			vs.Close()
+			delete(pm.engine.versionStores, entry.TableName)
+		}
+
+		// Check if this was the last table
+		if len(pm.engine.schemas) == 0 {
+			// Set a flag to clean up the WAL after replay is complete
+			// We can't do it right now because we're in the middle of replaying the WAL
+			pm.cleanWalAfterReplay = true
+		}
+		pm.engine.mu.Unlock()
+
+		return nil
+	}
+
+	// Handle table alter operation
+	if entry.Operation == WALAlterTable {
+		if len(entry.Data) > 0 {
+			// Deserialize schema data from the WAL entry
+			schema, err := deserializeSchema(entry.Data)
+			if err != nil {
+				return fmt.Errorf("failed to deserialize schema for altered table %s: %w", entry.TableName, err)
+			}
+
+			// Update the schema in our tables map
+			tables[entry.TableName] = schema
+
+			// Update schema in engine
+			pm.engine.mu.Lock()
+			pm.engine.schemas[entry.TableName] = *schema
+			pm.engine.mu.Unlock()
+
+			return nil
+		}
+	}
+
+	// For data operations, we need to make sure the table exists
+	// This is for atomicity since snapshot might have failed
+	if _, exists := tables[entry.TableName]; !exists {
+		// Try to get the schema from the engine directly
+		pm.engine.mu.RLock()
+		schema, exists := pm.engine.schemas[entry.TableName]
+		pm.engine.mu.RUnlock()
+
+		if !exists {
+			return fmt.Errorf("table %s not found", entry.TableName)
+		}
+
+		// Create a copy and add to tables map
+		schemaCopy := schema
+		tables[entry.TableName] = &schemaCopy
+	}
+
+	// Get the version store for this table
+	vs, err := pm.engine.GetVersionStore(entry.TableName)
+	if err != nil {
+		return err
+	}
+
+	// Apply the operation
+	switch entry.Operation {
+	case WALInsert, WALUpdate:
+		// Create a new row version
+		row, err := deserializeRow(entry.Data)
+		if err != nil {
+			return err
+		}
+
+		vs.AddVersion(entry.RowID, RowVersion{
+			TxnID:      entry.TxnID,
+			IsDeleted:  false,
+			Data:       row,
+			RowID:      entry.RowID,
+			CreateTime: entry.Timestamp,
+		})
+
+	case WALDelete:
+		vs.AddVersion(entry.RowID, RowVersion{
+			TxnID:      entry.TxnID,
+			IsDeleted:  true,
+			Data:       nil,
+			RowID:      entry.RowID,
+			CreateTime: entry.Timestamp,
+		})
+	}
+
+	return nil
+}
+
+// RecordDDLOperation records a DDL operation in the WAL
+func (pm *PersistenceManager) RecordDDLOperation(tableName string, op WALOperationType, schemaData []byte) error {
+	if !pm.enabled || pm.wal == nil {
+		return nil
+	}
+
+	// Check if WAL manager is running
+	if !pm.wal.running.Load() {
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	// Create WAL entry - use a system transaction ID (-999) for DDL operations
+	entry := WALEntry{
+		TxnID:     -999, // System transaction for DDL
+		TableName: tableName,
+		RowID:     0, // Not applicable for DDL
+		Operation: op,
+		Data:      schemaData,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	// Write the entry directly to the WAL - the AppendEntry method handles its own locking
+	// AppendEntry and AppendEntryLocked will now handle all buffer management based on operation type and sync mode
+	lsn, err := pm.wal.AppendEntry(entry)
+	if err != nil {
+		return fmt.Errorf("failed to append DDL entry to WAL: %w", err)
+	}
+
+	// Update the current LSN
+	pm.wal.currentLSN.Store(lsn)
+
+	return nil
+}
+
+// RecordIndexOperation records an index creation or deletion in the WAL
+func (pm *PersistenceManager) RecordIndexOperation(tableName string, op WALOperationType, indexData []byte) error {
+	if !pm.enabled || pm.wal == nil {
+		return nil
+	}
+
+	// Check if WAL manager is running
+	if !pm.wal.running.Load() {
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	// Verify operation type is valid for index operations
+	if op != WALCreateIndex && op != WALDropIndex {
+		return fmt.Errorf("invalid operation type for index operation: %v", op)
+	}
+
+	// Create WAL entry - use a system transaction ID (-998) for index operations
+	entry := WALEntry{
+		TxnID:     -998, // System transaction for index operations
+		TableName: tableName,
+		RowID:     0, // Not applicable for index operations
+		Operation: op,
+		Data:      indexData,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	// Write the entry directly to the WAL
+	// AppendEntry and AppendEntryLocked will now handle all buffer management based on operation type and sync mode
+	lsn, err := pm.wal.AppendEntry(entry)
+	if err != nil {
+		return fmt.Errorf("failed to append index operation entry to WAL: %w", err)
+	}
+
+	// Update the current LSN
+	pm.wal.currentLSN.Store(lsn)
+
+	return nil
+}
+
+// RecordDMLOperation records a DML (Data Manipulation Language) operation in the WAL
+func (pm *PersistenceManager) RecordDMLOperation(txnID int64, tableName string, rowID int64, version RowVersion) error {
+	if !pm.enabled || pm.wal == nil {
+		return nil
+	}
+
+	// Check if WAL manager is running - avoid lock if not running
+	if !pm.wal.running.Load() {
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	// Acquire the lock for WAL operations
+	pm.wal.mu.Lock()
+	defer pm.wal.mu.Unlock()
+
+	// Check again after acquiring the lock
+	if !pm.wal.running.Load() {
+		return fmt.Errorf("WAL manager shut down while waiting for lock")
+	}
+
+	// Serialize the row data without requiring schema (our current implementation doesn't need it)
+	serializedData, err := serializeRow(version.Data)
+	if err != nil {
+		return fmt.Errorf("failed to serialize row data: %w", err)
+	}
+
+	// Determine operation type
+	var opType WALOperationType
+	if version.IsDeleted {
+		opType = WALDelete
+	} else {
+		opType = WALInsert // Default to insert for new data
+	}
+
+	// Create WAL entry
+	entry := WALEntry{
+		TxnID:     txnID,
+		TableName: tableName,
+		RowID:     rowID,
+		Operation: opType,
+		Data:      serializedData,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	// Append entry (passing with lock already held)
+	// AppendEntryLocked now handles all buffer management based on operation type and sync mode
+	lsn, err := pm.wal.AppendEntryLocked(entry)
+	if err != nil {
+		return err
+	}
+
+	pm.meta.lastWALLSN.Store(lsn)
+	return nil
+}
+
+// RecordCommit records a transaction commit in the WAL
+func (pm *PersistenceManager) RecordCommit(txnID int64) error {
+	if !pm.enabled || pm.wal == nil {
+		return nil
+	}
+
+	// Check if WAL manager is running before taking the lock
+	if !pm.wal.running.Load() {
+		fmt.Printf("Warning: Attempted to commit transaction %d after WAL manager shutdown\n", txnID)
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	pm.wal.mu.Lock()
+	defer pm.wal.mu.Unlock()
+
+	// Check again after acquiring the lock
+	if !pm.wal.running.Load() {
+		fmt.Printf("Warning: WAL manager shut down while waiting for lock (commit txnID=%d)\n", txnID)
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	// Create WAL entry - keep minimal data for commit to reduce I/O
+	entry := WALEntry{
+		TxnID:     txnID,
+		Operation: WALCommit,
+		Timestamp: time.Now().UnixNano(),
+		// Explicitly set empty fields to minimize data size
+		TableName: "",
+		RowID:     0,
+		Data:      nil,
+	}
+
+	// Append the entry with lock already held
+	// AppendEntryLocked now handles all buffer management based on operation type and sync mode
+	lsn, err := pm.wal.AppendEntryLocked(entry)
+	if err != nil {
+		fmt.Printf("Error: Failed to append WAL entry: %v\n", err)
+		return err
+	}
+
+	pm.meta.lastWALLSN.Store(lsn)
+	return nil
+}
+
+// cleanupOldSnapshots removes old snapshot files, keeping only the most recent n files
+func (pm *PersistenceManager) cleanupOldSnapshots(tableDir string, keepCount int) error {
+	// Find all snapshot files
+	snapshotFiles, err := findSnapshotFiles(tableDir)
+	if err != nil {
+		return err
+	}
+
+	// If we have fewer snapshots than the keep count, nothing to do
+	if len(snapshotFiles) <= keepCount {
+		return nil
+	}
+
+	// Sort snapshots by name (which includes timestamp), newest first
+	sort.Sort(sort.Reverse(sort.StringSlice(snapshotFiles)))
+
+	// Keep the newest keepCount snapshots, delete the rest
+	for i := keepCount; i < len(snapshotFiles); i++ {
+		fileToDelete := filepath.Join(tableDir, snapshotFiles[i])
+
+		// Also try to delete the corresponding metadata file
+		metaFile := strings.TrimSuffix(fileToDelete, ".bin") + ".meta"
+
+		// Delete both files, but don't fail if metadata doesn't exist
+		if err := os.Remove(fileToDelete); err != nil {
+			return fmt.Errorf("failed to delete old snapshot %s: %w", fileToDelete, err)
+		}
+
+		// Try to delete metadata file, but ignore errors
+		_ = os.Remove(metaFile)
+	}
+
+	return nil
+}
+
+// RecordRollback records a transaction rollback in the WAL with comprehensive deadlock protection
+func (pm *PersistenceManager) RecordRollback(txnID int64) error {
+	if !pm.enabled || pm.wal == nil {
+		return nil
+	}
+
+	// Check if WAL manager is running before taking the lock
+	if !pm.wal.running.Load() {
+		fmt.Printf("Warning: Attempted to rollback transaction %d after WAL manager shutdown\n", txnID)
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	pm.wal.mu.Lock()
+	defer pm.wal.mu.Unlock()
+
+	// Check again after acquiring the lock
+	if !pm.wal.running.Load() {
+		fmt.Printf("Warning: WAL manager shut down while waiting for lock (rollback txnID=%d)\n", txnID)
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	// Create WAL entry
+	entry := WALEntry{
+		TxnID:     txnID,
+		Operation: WALRollback,
+		Timestamp: time.Now().UnixNano(),
+	}
+
+	// AppendEntryLocked now handles all buffer management based on operation type and sync mode
+	lsn, err := pm.wal.AppendEntryLocked(entry)
+	if err != nil {
+		fmt.Printf("Error: Failed to append WAL entry: %v\n", err)
+		return err
+	}
+
+	// Update LSN in metadata
+	pm.meta.lastWALLSN.Store(lsn)
+	return nil
+}

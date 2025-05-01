@@ -1,0 +1,57 @@
+package window
+
+import (
+	"github.com/semihalev/stoolap/internal/functions/contract"
+	"github.com/semihalev/stoolap/internal/functions/registry"
+	"github.com/semihalev/stoolap/internal/parser/funcregistry"
+)
+
+// RowNumberFunction implements the ROW_NUMBER() window function
+type RowNumberFunction struct{}
+
+// Name returns the name of the function
+func (f *RowNumberFunction) Name() string {
+	return "ROW_NUMBER"
+}
+
+// GetInfo returns the function information
+func (f *RowNumberFunction) GetInfo() funcregistry.FunctionInfo {
+	return funcregistry.FunctionInfo{
+		Name:        "ROW_NUMBER",
+		Type:        funcregistry.WindowFunction,
+		Description: "Returns the sequential row number within the current partition",
+		Signature: funcregistry.FunctionSignature{
+			ReturnType:    funcregistry.TypeInteger,
+			ArgumentTypes: []funcregistry.DataType{},
+			MinArgs:       0,
+			MaxArgs:       0,
+			IsVariadic:    false,
+		},
+	}
+}
+
+// Register registers the function with the registry
+func (f *RowNumberFunction) Register(registry funcregistry.Registry) {
+	info := f.GetInfo()
+	registry.MustRegister(info)
+}
+
+// Process returns the row number within the current partition
+func (f *RowNumberFunction) Process(partition []interface{}, orderBy []interface{}) (interface{}, error) {
+	// For ROW_NUMBER(), we don't use any specific column values
+	// We just return the position in the partition (1-based)
+	return int64(1), nil
+}
+
+// NewRowNumberFunction creates a new ROW_NUMBER function
+func NewRowNumberFunction() contract.WindowFunction {
+	return &RowNumberFunction{}
+}
+
+// Self-registration
+func init() {
+	// Register the ROW_NUMBER function with the global registry
+	if registry := registry.GetGlobal(); registry != nil {
+		registry.RegisterWindowFunction(NewRowNumberFunction())
+	}
+}

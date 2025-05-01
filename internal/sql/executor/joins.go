@@ -1,0 +1,278 @@
+package sql
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/semihalev/stoolap/internal/parser"
+	"github.com/semihalev/stoolap/internal/storage"
+)
+
+// ExecuteJoin executes a JOIN operation between two table sources
+func ExecuteJoin(ctx context.Context, joinSource *parser.JoinTableSource, engine storage.Engine,
+	evaluator *Evaluator, params map[string]interface{}) (storage.Result, error) {
+
+	// Execute the left side of the join
+	leftSource := joinSource.Left
+	if leftSource == nil {
+		return nil, fmt.Errorf("left side of JOIN is not a valid table source")
+	}
+	leftResult, leftAlias, err := executeTableSource(ctx, leftSource, engine, evaluator, params)
+	if err != nil {
+		return nil, fmt.Errorf("error executing left side of JOIN: %w", err)
+	}
+
+	// Execute the right side of the join
+	rightSource := joinSource.Right
+	if rightSource == nil {
+		return nil, fmt.Errorf("right side of JOIN is not a valid table source")
+	}
+	rightResult, rightAlias, err := executeTableSource(ctx, rightSource, engine, evaluator, params)
+	if err != nil {
+		leftResult.Close()
+		return nil, fmt.Errorf("error executing right side of JOIN: %w", err)
+	}
+
+	// Determine the join type
+	joinType := strings.ToUpper(joinSource.JoinType)
+	if joinType == "" {
+		joinType = "INNER" // Default to INNER JOIN
+	}
+
+	// Validate join type
+	switch joinType {
+	case "INNER", "LEFT", "RIGHT", "FULL", "CROSS":
+		// Valid join types
+	default:
+		leftResult.Close()
+		rightResult.Close()
+		return nil, fmt.Errorf("unsupported join type: %s", joinType)
+	}
+
+	// For CROSS JOIN, use nil condition to match all rows
+	var joinCond parser.Expression
+	if joinType != "CROSS" {
+		joinCond = joinSource.Condition
+
+		// Ensure there is a join condition for non-CROSS joins
+		if joinCond == nil {
+			leftResult.Close()
+			rightResult.Close()
+			return nil, fmt.Errorf("%s JOIN requires a join condition", joinType)
+		}
+	}
+
+	// Create the join result using the original implementation
+	// TODO: Fix streaming join implementation and re-enable
+	joinResult := NewJoinResult(
+		leftResult,
+		rightResult,
+		joinType,
+		joinCond,
+		evaluator,
+		leftAlias,
+		rightAlias,
+	)
+
+	return joinResult, nil
+}
+
+// executeTableSource executes a table source and returns the result
+// Returns the result, the table alias (if any), and any error
+func executeTableSource(ctx context.Context, tableSource parser.TableSource,
+	engine storage.Engine, evaluator *Evaluator, params map[string]interface{}) (storage.Result, string, error) {
+
+	switch source := tableSource.(type) {
+	case *parser.SimpleTableSource:
+		// Simple table source (table name)
+		tableName := source.Name.Value
+
+		// Start a transaction to get the table
+		tx, err := engine.BeginTx(ctx)
+		if err != nil {
+			return nil, "", fmt.Errorf("error beginning transaction: %w", err)
+		}
+		defer tx.Rollback() // Rollback if not committed
+
+		table, err := tx.GetTable(tableName)
+		if err != nil {
+			return nil, "", fmt.Errorf("error getting table %s: %w", tableName, err)
+		}
+
+		// Get columns to scan
+		columns := make([]string, 0)
+		for _, col := range table.Schema().Columns {
+			columns = append(columns, col.Name)
+		}
+
+		// Create a result from the table
+		result, err := tx.Select(tableName, columns, nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("error creating scanner for table %s: %w", tableName, err)
+		}
+
+		// Use the table alias if provided, otherwise use the table name
+		tableAlias := tableName
+		if source.Alias != nil {
+			tableAlias = source.Alias.Value
+		}
+
+		return result, tableAlias, nil
+
+	case *parser.SubqueryTableSource:
+		// Subquery table source
+		// We need to handle subqueries differently since we don't have a full ExecuteSelect implementation
+		// For now, just return an error indicating this is not implemented yet
+		return nil, "", fmt.Errorf("subqueries in JOIN are not fully implemented yet")
+
+	case *parser.JoinTableSource:
+		// Nested JOIN
+		joinResult, err := ExecuteJoin(ctx, source, engine, evaluator, params)
+		if err != nil {
+			return nil, "", fmt.Errorf("error executing nested JOIN: %w", err)
+		}
+
+		// No obvious alias for a nested join, use empty string
+		return joinResult, "", nil
+
+	case *parser.CTEReference:
+		// Common Table Expression reference
+		// This would need to be implemented to support WITH clauses
+		return nil, "", fmt.Errorf("CTE references in JOINs are not yet supported")
+
+	default:
+		return nil, "", fmt.Errorf("unsupported table source type: %T", tableSource)
+	}
+}
+
+// ExecuteJoinQuery executes a SELECT query that contains JOINs
+func ExecuteJoinQuery(ctx context.Context, stmt *parser.SelectStatement, engine storage.Engine,
+	evaluator *Evaluator, params map[string]interface{}) (storage.Result, error) {
+
+	// Get the joined result
+	joinSource, ok := stmt.TableExpr.(*parser.JoinTableSource)
+	if !ok {
+		return nil, fmt.Errorf("FROM clause is not a JOIN")
+	}
+
+	joinResult, err := ExecuteJoin(ctx, joinSource, engine, evaluator, params)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply WHERE clause if present
+	if stmt.Where != nil {
+		joinResult = &FilteredResult{
+			result:    joinResult,
+			whereExpr: stmt.Where,
+			evaluator: evaluator,
+		}
+	}
+
+	// Apply column projection based on SELECT clause
+	if len(stmt.Columns) > 0 && !isAllColumns(stmt.Columns) {
+		joinResult, err = applyColumnProjection(joinResult, stmt.Columns)
+		if err != nil {
+			joinResult.Close()
+			return nil, err
+		}
+	}
+
+	// Apply ORDER BY, LIMIT, OFFSET if specified
+	if stmt.OrderBy != nil || stmt.Limit != nil || stmt.Offset != nil {
+		// Extract values needed for ORDER BY, LIMIT, OFFSET
+		var limit, offset int64 = -1, 0
+
+		// Extract LIMIT value
+		if stmt.Limit != nil {
+			if limitLit, ok := stmt.Limit.(*parser.IntegerLiteral); ok {
+				limit = limitLit.Value
+			} else {
+				// For more complex expressions, default to -1 (no limit)
+				limit = -1
+			}
+		}
+
+		// Extract OFFSET value
+		if stmt.Offset != nil {
+			if offsetLit, ok := stmt.Offset.(*parser.IntegerLiteral); ok {
+				offset = offsetLit.Value
+			} else {
+				// For more complex expressions, default to 0 (no offset)
+				offset = 0
+			}
+		}
+
+		// Apply ORDER BY if specified
+		if len(stmt.OrderBy) > 0 {
+			joinResult = &OrderedResult{
+				baseResult: joinResult,
+				orderBy:    stmt.OrderBy,
+			}
+		}
+
+		// Apply LIMIT and OFFSET if specified
+		if limit >= 0 || offset > 0 {
+			joinResult = &LimitedResult{
+				baseResult: joinResult,
+				limit:      limit,
+				offset:     offset,
+			}
+		}
+	}
+
+	return joinResult, nil
+}
+
+// isAllColumns checks if the columns clause contains just "*"
+func isAllColumns(columns []parser.Expression) bool {
+	if len(columns) != 1 {
+		return false
+	}
+
+	if ident, ok := columns[0].(*parser.Identifier); ok && ident.Value == "*" {
+		return true
+	}
+
+	return false
+}
+
+// applyColumnProjection applies a column projection to a result
+func applyColumnProjection(result storage.Result, columns []parser.Expression) (storage.Result, error) {
+	// Extract column aliases to map aliases to original column names
+	aliases := make(map[string]string)
+
+	// Extract column aliases and determine output column names
+	for i, col := range columns {
+		// Handle aliased expressions
+		if aliased, ok := col.(*parser.AliasedExpression); ok {
+			alias := aliased.Alias.Value
+
+			// Map the alias to the original column expression
+			switch expr := aliased.Expression.(type) {
+			case *parser.Identifier:
+				// Simple column reference
+				aliases[alias] = expr.Value
+			case *parser.QualifiedIdentifier:
+				// Qualified column reference (table.column)
+				aliases[alias] = expr.String()
+			default:
+				// For more complex expressions, we'll use a placeholder
+				// This will require special handling during result processing
+				aliases[alias] = fmt.Sprintf("column%d", i+1)
+			}
+		}
+	}
+
+	// Apply the column projection
+	if len(aliases) > 0 {
+		// If we have aliases, apply them to the result
+		result = result.WithAliases(aliases)
+	}
+
+	// For a proper projection, we would need to implement a ProjectedResult type
+	// that wraps the original result and only exposes the projected columns
+	// As a simplification, we'll just return the result with aliases for now
+	return result, nil
+}

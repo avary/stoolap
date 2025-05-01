@@ -1,0 +1,275 @@
+package mvcc
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// CommitRequest represents a request to commit a transaction
+type CommitRequest struct {
+	TxnID     int64
+	LSN       uint64
+	Timestamp int64
+	Done      chan error
+}
+
+// GroupCommitter manages batched commit operations
+type GroupCommitter struct {
+	// Configuration
+	maxBatchSize int           // Maximum number of commits in a batch
+	maxLatency   time.Duration // Maximum wait time for a batch
+	minBatchSize int           // Minimum batch size to trigger early flush
+
+	// State
+	commitQueue   chan CommitRequest
+	walManager    *WALManager
+	running       atomic.Bool
+	wg            sync.WaitGroup
+	mu            sync.Mutex // Protects lastFlushTime
+	lastFlushTime time.Time
+
+	// Metrics
+	totalCommits     atomic.Int64
+	totalBatches     atomic.Int64
+	totalSyncTime    atomic.Int64 // in nanoseconds
+	maxSyncTime      atomic.Int64 // in nanoseconds
+	commitQueueDepth atomic.Int64
+}
+
+// NewGroupCommitter creates a new group committer
+func NewGroupCommitter(walManager *WALManager, maxBatchSize int, maxLatency time.Duration) *GroupCommitter {
+	if maxBatchSize <= 0 {
+		maxBatchSize = 100 // Default max batch size
+	}
+
+	if maxLatency <= 0 {
+		maxLatency = 5 * time.Millisecond // Default max latency
+	}
+
+	minBatchSize := maxBatchSize / 10
+	if minBatchSize < 1 {
+		minBatchSize = 1
+	}
+
+	return &GroupCommitter{
+		maxBatchSize:  maxBatchSize,
+		maxLatency:    maxLatency,
+		minBatchSize:  minBatchSize,
+		commitQueue:   make(chan CommitRequest, maxBatchSize*2), // 2x buffer
+		walManager:    walManager,
+		lastFlushTime: time.Now(),
+	}
+}
+
+// Start begins the group commit processing
+func (gc *GroupCommitter) Start() {
+	if !gc.running.CompareAndSwap(false, true) {
+		return // Already running
+	}
+
+	gc.wg.Add(1)
+	go gc.commitWorker()
+}
+
+// Stop halts the group commit processing
+func (gc *GroupCommitter) Stop() {
+	if !gc.running.CompareAndSwap(true, false) {
+		return // Not running
+	}
+
+	// Close the queue to signal the worker to exit
+	close(gc.commitQueue)
+
+	// Wait for the worker to finish
+	gc.wg.Wait()
+}
+
+// EnqueueCommit adds a commit request to the queue
+func (gc *GroupCommitter) EnqueueCommit(txnID int64, lsn uint64) chan error {
+	if !gc.running.Load() {
+		// If not running, create a channel and immediately return an error
+		done := make(chan error, 1)
+		done <- fmt.Errorf("group committer is not running")
+		close(done)
+		return done
+	}
+
+	// Create response channel
+	done := make(chan error, 1)
+
+	// Create the commit request
+	req := CommitRequest{
+		TxnID:     txnID,
+		LSN:       lsn,
+		Timestamp: time.Now().UnixNano(),
+		Done:      done,
+	}
+
+	// Update queue depth metric
+	gc.commitQueueDepth.Add(1)
+
+	// Add to the queue with timeout protection
+	select {
+	case gc.commitQueue <- req:
+		// Successfully enqueued
+	case <-time.After(100 * time.Millisecond):
+		// Timeout - queue might be full or system is under pressure
+		// Return error to caller
+		done <- fmt.Errorf("commit queue full - system under pressure")
+		close(done)
+		gc.commitQueueDepth.Add(-1)
+	}
+
+	return done
+}
+
+// GetMetrics returns current performance metrics
+func (gc *GroupCommitter) GetMetrics() map[string]int64 {
+	totalCommits := gc.totalCommits.Load()
+	totalBatches := gc.totalBatches.Load()
+
+	var avgBatchSize int64 = 0
+	if totalBatches > 0 {
+		avgBatchSize = totalCommits / totalBatches
+	}
+
+	var avgSyncTime int64 = 0
+	if totalBatches > 0 {
+		avgSyncTime = gc.totalSyncTime.Load() / totalBatches / int64(time.Millisecond)
+	}
+
+	return map[string]int64{
+		"total_commits":      totalCommits,
+		"total_batches":      totalBatches,
+		"avg_batch_size":     avgBatchSize,
+		"avg_sync_time_ms":   avgSyncTime,
+		"max_sync_time_ms":   gc.maxSyncTime.Load() / int64(time.Millisecond),
+		"commit_queue_depth": gc.commitQueueDepth.Load(),
+	}
+}
+
+// commitWorker processes commits in batches
+func (gc *GroupCommitter) commitWorker() {
+	defer gc.wg.Done()
+
+	batch := make([]CommitRequest, 0, gc.maxBatchSize)
+	timer := time.NewTimer(gc.maxLatency)
+
+	for gc.running.Load() {
+		// Use select to either add to batch or process due to timeout
+		select {
+		case req, ok := <-gc.commitQueue:
+			if !ok {
+				// Channel closed, process any remaining items and exit
+				if len(batch) > 0 {
+					gc.processBatch(batch)
+				}
+				return
+			}
+
+			// Update queue depth metric
+			gc.commitQueueDepth.Add(-1)
+
+			// Add to batch
+			batch = append(batch, req)
+
+			// If batch is full or exceeds min size with enough time elapsed, process it
+			gc.mu.Lock()
+			timeElapsed := time.Since(gc.lastFlushTime) > gc.maxLatency
+			gc.mu.Unlock()
+
+			if len(batch) >= gc.maxBatchSize ||
+				(len(batch) >= gc.minBatchSize && timeElapsed) {
+				// Process the batch
+				gc.processBatch(batch)
+
+				// Reset the batch and timer
+				batch = batch[:0]
+				if !timer.Stop() {
+					<-timer.C // Drain the channel if timer already fired
+				}
+				timer.Reset(gc.maxLatency)
+			}
+
+		case <-timer.C:
+			// Timeout occurred, process batch if not empty
+			if len(batch) > 0 {
+				gc.processBatch(batch)
+				batch = batch[:0]
+			}
+			timer.Reset(gc.maxLatency)
+		}
+	}
+}
+
+// processBatch handles flushing a batch of commits to disk
+func (gc *GroupCommitter) processBatch(batch []CommitRequest) {
+	batchSize := len(batch)
+	if batchSize == 0 {
+		return
+	}
+
+	// Update metrics
+	gc.totalCommits.Add(int64(batchSize))
+	gc.totalBatches.Add(1)
+
+	// Track highest LSN in batch for checkpoint purposes
+	var highestLSN uint64 = 0
+
+	// Create a WAL entry for each commit in the batch
+	entries := make([]WALEntry, batchSize)
+	for i, req := range batch {
+		entries[i] = WALEntry{
+			LSN:       req.LSN,
+			TxnID:     req.TxnID,
+			Operation: WALCommit,
+			Timestamp: req.Timestamp,
+			// Other fields empty as they're not needed for commit
+		}
+
+		// Track highest LSN
+		if req.LSN > highestLSN {
+			highestLSN = req.LSN
+		}
+	}
+
+	// Perform the actual commit with timing
+	startTime := time.Now()
+
+	// Batch commit through WAL manager
+	err := gc.walManager.BatchCommit(entries)
+
+	// Update timing metrics
+	syncTime := time.Since(startTime)
+	syncTimeNano := syncTime.Nanoseconds()
+	gc.totalSyncTime.Add(syncTimeNano)
+
+	// Update max sync time if this one was longer
+	for {
+		oldMax := gc.maxSyncTime.Load()
+		if syncTimeNano <= oldMax {
+			break
+		}
+		if gc.maxSyncTime.CompareAndSwap(oldMax, syncTimeNano) {
+			break
+		}
+	}
+
+	// Update last flush time
+	gc.mu.Lock()
+	gc.lastFlushTime = time.Now()
+	gc.mu.Unlock()
+
+	// If sync was slow, log a warning
+	if syncTime > 100*time.Millisecond {
+		fmt.Printf("Warning: Slow group commit: %v for %d transactions\n", syncTime, batchSize)
+	}
+
+	// Notify all requesters
+	for _, req := range batch {
+		req.Done <- err
+		close(req.Done)
+	}
+}

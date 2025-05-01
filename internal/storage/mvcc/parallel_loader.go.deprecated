@@ -1,0 +1,278 @@
+package mvcc
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/semihalev/stoolap/internal/storage"
+)
+
+// WorkerPool manages a pool of workers for parallel processing
+type WorkerPool struct {
+	numWorkers int
+	jobs       chan Job
+	results    chan Result
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+}
+
+// Job represents a unit of work to be processed
+type Job interface {
+	Process() (interface{}, error)
+	Description() string
+}
+
+// Result contains the output of a processed job
+type Result struct {
+	Output interface{}
+	Error  error
+	JobID  string
+}
+
+// ProgressTracker tracks progress of batch operations
+type ProgressTracker struct {
+	totalJobs      int32
+	completedJobs  atomic.Int32
+	startTime      time.Time
+	lastUpdateTime time.Time
+	mu             sync.Mutex
+}
+
+// NewWorkerPool creates a new worker pool with the specified number of workers
+func NewWorkerPool(numWorkers int) *WorkerPool {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &WorkerPool{
+		numWorkers: numWorkers,
+		jobs:       make(chan Job, numWorkers*2), // Buffer size = 2x workers
+		results:    make(chan Result, numWorkers*2),
+		ctx:        ctx,
+		cancel:     cancel,
+	}
+}
+
+// Start starts the worker pool
+func (wp *WorkerPool) Start() {
+	for i := 0; i < wp.numWorkers; i++ {
+		wp.wg.Add(1)
+		go wp.worker(i)
+	}
+}
+
+// Stop stops the worker pool
+func (wp *WorkerPool) Stop() {
+	close(wp.jobs)
+	wp.cancel()
+	wp.wg.Wait()
+}
+
+// Submit adds a job to the worker pool
+func (wp *WorkerPool) Submit(job Job) {
+	select {
+	case wp.jobs <- job:
+	case <-wp.ctx.Done():
+	}
+}
+
+// Results returns the results channel
+func (wp *WorkerPool) Results() <-chan Result {
+	return wp.results
+}
+
+// worker processes jobs from the jobs channel
+func (wp *WorkerPool) worker(workerID int) {
+	defer wp.wg.Done()
+
+	for {
+		select {
+		case job, ok := <-wp.jobs:
+			if !ok {
+				return // Channel closed
+			}
+
+			result, err := job.Process()
+			wp.results <- Result{
+				Output: result,
+				Error:  err,
+				JobID:  job.Description(),
+			}
+
+		case <-wp.ctx.Done():
+			return // Context cancelled
+		}
+	}
+}
+
+// NewProgressTracker creates a new progress tracker
+func NewProgressTracker(totalJobs int) *ProgressTracker {
+	tracker := &ProgressTracker{
+		totalJobs:      int32(totalJobs),
+		startTime:      time.Now(),
+		lastUpdateTime: time.Now(),
+	}
+	return tracker
+}
+
+// IncreaseCompleted increases the count of completed jobs
+func (pt *ProgressTracker) IncreaseCompleted() {
+	pt.completedJobs.Add(1)
+}
+
+// GetProgress returns the current progress percentage
+func (pt *ProgressTracker) GetProgress() float64 {
+	completed := float64(pt.completedJobs.Load())
+	total := float64(pt.totalJobs)
+	if total == 0 {
+		return 100.0
+	}
+	return (completed / total) * 100.0
+}
+
+// PrintProgress prints the current progress if enough time has passed since the last update
+func (pt *ProgressTracker) PrintProgress(description string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	// Print progress no more than once per second
+	now := time.Now()
+	if now.Sub(pt.lastUpdateTime) < time.Second {
+		return
+	}
+
+	elapsed := now.Sub(pt.startTime)
+	progress := pt.GetProgress()
+	completed := pt.completedJobs.Load()
+	total := pt.totalJobs
+
+	// Calculate ETA
+	var eta time.Duration
+	if progress > 0 {
+		timePerPercent := elapsed.Seconds() / progress
+		remainingPercent := 100.0 - progress
+		etaSeconds := timePerPercent * remainingPercent
+		eta = time.Duration(etaSeconds * float64(time.Second))
+	}
+
+	pt.lastUpdateTime = now
+	fmt.Printf("%s Progress: %.1f%% (%d/%d) - Elapsed: %s - ETA: %s\n",
+		description, progress, completed, total, formatDuration(elapsed), formatDuration(eta))
+}
+
+// formatDuration formats a duration in a human-readable way
+func formatDuration(d time.Duration) string {
+	if d < 0 {
+		return "unknown"
+	}
+
+	seconds := int(d.Seconds())
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+
+	minutes := seconds / 60
+	seconds = seconds % 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+
+	hours := minutes / 60
+	minutes = minutes % 60
+	return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+}
+
+// TableSnapshotJob represents a job to take a snapshot of a table
+type TableSnapshotJob struct {
+	s         *Snapshotter
+	tableName string
+	ctx       context.Context
+}
+
+// NewTableSnapshotJob creates a new table snapshot job
+func NewTableSnapshotJob(s *Snapshotter, tableName string, ctx context.Context) *TableSnapshotJob {
+	return &TableSnapshotJob{
+		s:         s,
+		tableName: tableName,
+		ctx:       ctx,
+	}
+}
+
+// Process processes the table snapshot job
+func (j *TableSnapshotJob) Process() (interface{}, error) {
+	err := j.s.snapshotTable(j.ctx, j.tableName)
+	return j.tableName, err
+}
+
+// Description returns a description of the job
+func (j *TableSnapshotJob) Description() string {
+	return fmt.Sprintf("snapshot-table-%s", j.tableName)
+}
+
+// IndexBuildJob represents a job to build an index
+type IndexBuildJob struct {
+	index       *ColumnarIndex
+	tracker     *ProgressTracker
+	description string
+}
+
+// NewIndexBuildJob creates a new index build job
+func NewIndexBuildJob(index *ColumnarIndex, tracker *ProgressTracker, description string) *IndexBuildJob {
+	return &IndexBuildJob{
+		index:       index,
+		tracker:     tracker,
+		description: description,
+	}
+}
+
+// Process processes the index build job
+func (j *IndexBuildJob) Process() (interface{}, error) {
+	err := j.index.Build()
+	if j.tracker != nil {
+		j.tracker.IncreaseCompleted()
+		j.tracker.PrintProgress("Index Building")
+	}
+	return j.index.name, err
+}
+
+// Description returns a description of the job
+func (j *IndexBuildJob) Description() string {
+	return j.description
+}
+
+// TableLoadJob represents a job to load a table from a snapshot
+type TableLoadJob struct {
+	s            *Snapshotter
+	tableName    string
+	snapshotFile string
+	ctx          context.Context
+}
+
+// NewTableLoadJob creates a new table load job
+func NewTableLoadJob(s *Snapshotter, tableName, snapshotFile string, ctx context.Context) *TableLoadJob {
+	return &TableLoadJob{
+		s:            s,
+		tableName:    tableName,
+		snapshotFile: snapshotFile,
+		ctx:          ctx,
+	}
+}
+
+// Process processes the table load job
+func (j *TableLoadJob) Process() (interface{}, error) {
+	schema, err := j.s.loadSnapshot(j.tableName, j.snapshotFile)
+	return schema, err
+}
+
+// Description returns a description of the job
+func (j *TableLoadJob) Description() string {
+	return fmt.Sprintf("load-table-%s", j.tableName)
+}
+
+// BatchProcessingResult stores the result of batch processing
+type BatchProcessingResult struct {
+	Schemas          map[string]*storage.Schema
+	SuccessfulTables []string
+	FailedTables     map[string]error
+}

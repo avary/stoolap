@@ -1,0 +1,356 @@
+package mvcc
+
+import (
+	"math/bits"
+	"sync"
+)
+
+// RowBitmap provides a memory-efficient way to track large sets of row IDs
+// using a bitset representation. This significantly reduces memory usage
+// compared to storing complete row objects or maps of row IDs.
+type RowBitmap struct {
+	bits []uint64 // Underlying bit storage (each uint64 represents 64 rows)
+	size int64    // Maximum capacity of the bitmap
+}
+
+var (
+	rowBitmapPool = sync.Pool{
+		New: func() interface{} {
+			// Default size bitmap, will resize if needed
+			return &RowBitmap{
+				bits: make([]uint64, 16), // 1024 rows by default
+				size: 1024,
+			}
+		},
+	}
+)
+
+// Clone creates a deep copy of the RowBitmap
+// This is optimized for performance with direct memory copying
+func (rb *RowBitmap) Clone() *RowBitmap {
+	// Create a new bitmap with the same size
+	result := NewRowBitmap(rb.size)
+
+	// Direct copy of the bits slice - much faster than iterating
+	copy(result.bits, rb.bits)
+
+	return result
+}
+
+// NewRowBitmap creates a new bitmap with the given capacity
+func NewRowBitmap(capacity int64) *RowBitmap {
+	// If capacity is small enough, use the pool
+	if capacity <= 1024 {
+		rb := rowBitmapPool.Get().(*RowBitmap)
+		// Clear all bits to ensure it's fresh
+		for i := range rb.bits {
+			rb.bits[i] = 0
+		}
+		return rb
+	}
+
+	// For larger capacities, create a new bitmap
+	// Calculate how many uint64 values we need to store all bits
+	// Each uint64 can store 64 bits, so we divide and round up
+	numWords := (capacity + 63) / 64
+
+	return &RowBitmap{
+		bits: make([]uint64, numWords),
+		size: capacity,
+	}
+}
+
+// Size returns the size of the bitmap
+func (rb *RowBitmap) Size() int64 {
+	return rb.size
+}
+
+// Resize increases the bitmap capacity if necessary
+func (rb *RowBitmap) Resize(newCapacity int64) {
+	if newCapacity <= rb.size {
+		return // No need to resize
+	}
+
+	// Safety check for extreme values
+	if newCapacity > 1<<30 { // Limit to ~1 billion rows
+		// For extreme cases, cap at a reasonable maximum
+		newCapacity = 1 << 30
+	}
+
+	// Calculate new storage size
+	numWords := (newCapacity + 63) / 64
+
+	// Create new storage
+	newBits := make([]uint64, numWords)
+
+	// Copy existing bits
+	copy(newBits, rb.bits)
+
+	// Update bitmap
+	rb.bits = newBits
+	rb.size = newCapacity
+}
+
+// Reset clears all bits in the bitmap
+func (rb *RowBitmap) Reset() {
+	for i := range rb.bits {
+		rb.bits[i] = 0
+	}
+}
+
+// Set sets the bit for the given row ID
+func (rb *RowBitmap) Set(rowID int64) {
+	// Handle invalid row IDs
+	if rowID < 0 {
+		return // Invalid row ID - silently ignore
+	}
+
+	// For extremely large values, impose a reasonable limit
+	if rowID > (1<<30 - 1) { // Limit to ~1 billion rows
+		return // Silently ignore extreme values to prevent potential DOS
+	}
+
+	// Ensure capacity
+	if rowID >= rb.size {
+		rb.Resize(rowID + 1024) // Add some extra space
+	}
+
+	idx := rowID / 64
+	bit := uint(rowID % 64)
+	rb.bits[idx] |= 1 << bit
+}
+
+// Unset clears the bit for the given row ID
+func (rb *RowBitmap) Unset(rowID int64) {
+	if rowID < 0 || rowID >= rb.size {
+		return // Invalid row ID or out of range
+	}
+
+	idx := rowID / 64
+	bit := uint(rowID % 64)
+	rb.bits[idx] &= ^(1 << bit)
+}
+
+// IsSet checks if the bit for the given row ID is set
+func (rb *RowBitmap) IsSet(rowID int64) bool {
+	if rowID < 0 || rowID >= rb.size {
+		return false // Invalid row ID or out of range
+	}
+
+	idx := rowID / 64
+	bit := uint(rowID % 64)
+	return (rb.bits[idx] & (1 << bit)) != 0
+}
+
+// Count returns the number of bits set in the bitmap
+func (rb *RowBitmap) Count() int64 {
+	var count int64
+	for _, word := range rb.bits {
+		count += int64(bits.OnesCount64(word))
+	}
+	return count
+}
+
+// ForEach applies the given function to each set row ID
+func (rb *RowBitmap) ForEach(fn func(rowID int64)) {
+	if fn == nil {
+		return
+	}
+
+	for i, word := range rb.bits {
+		if word == 0 {
+			continue // Skip words with no bits set
+		}
+
+		// Process each bit in the word
+		baseID := int64(i * 64)
+
+		// Use trailing zeros optimization for faster bit scanning
+		w := word
+		for w != 0 {
+			// Find next set bit
+			tz := bits.TrailingZeros64(w)
+
+			// Call function with this bit's row ID
+			fn(baseID + int64(tz))
+
+			// Clear the bit we just processed
+			w &= ^(uint64(1) << tz)
+		}
+	}
+}
+
+// ForEachBatch applies the given function to set row IDs in batches
+// This is more efficient for processing large sets of rows
+func (rb *RowBitmap) ForEachBatch(batchSize int, fn func(rowIDs []int64)) {
+	if fn == nil || batchSize <= 0 {
+		return
+	}
+
+	// Reuse a single slice for all batches
+	batch := make([]int64, 0, batchSize)
+
+	for i, word := range rb.bits {
+		if word == 0 {
+			continue // Skip words with no bits set
+		}
+
+		// Process each bit in the word
+		baseID := int64(i * 64)
+		for bit := uint(0); bit < 64; bit++ {
+			if (word & (1 << bit)) != 0 {
+				batch = append(batch, baseID+int64(bit))
+
+				// If batch is full, process it
+				if len(batch) >= batchSize {
+					fn(batch)
+					batch = batch[:0] // Reset batch without reallocating
+				}
+			}
+		}
+	}
+
+	// Process remaining rows in the last batch
+	if len(batch) > 0 {
+		fn(batch)
+	}
+}
+
+// Union sets bits that are set in either this bitmap or the other bitmap
+func (rb *RowBitmap) Union(other *RowBitmap) {
+	// Skip empty bitmaps for better performance
+	if other == nil {
+		return
+	}
+
+	// Quick check - if the other bitmap is empty, nothing to do
+	isEmpty := true
+	for _, word := range other.bits {
+		if word != 0 {
+			isEmpty = false
+			break
+		}
+	}
+	if isEmpty {
+		return
+	}
+
+	// Ensure this bitmap is large enough
+	if other.size > rb.size {
+		rb.Resize(other.size)
+	}
+
+	// Perform bitwise OR using the most optimized approach possible
+	// Use unrolled loops for better performance on modern CPUs
+	i := 0
+
+	// Process 8 words at a time if possible (leveraging CPU vectorization)
+	for len(other.bits) >= 8 && i <= len(other.bits)-8 && i <= len(rb.bits)-8 {
+		rb.bits[i] |= other.bits[i]
+		rb.bits[i+1] |= other.bits[i+1]
+		rb.bits[i+2] |= other.bits[i+2]
+		rb.bits[i+3] |= other.bits[i+3]
+		rb.bits[i+4] |= other.bits[i+4]
+		rb.bits[i+5] |= other.bits[i+5]
+		rb.bits[i+6] |= other.bits[i+6]
+		rb.bits[i+7] |= other.bits[i+7]
+		i += 8
+	}
+
+	// Process the remaining words
+	for ; i < len(other.bits) && i < len(rb.bits); i++ {
+		rb.bits[i] |= other.bits[i]
+	}
+}
+
+// Intersect sets bits that are set in both this bitmap and the other bitmap
+func (rb *RowBitmap) Intersect(other *RowBitmap) {
+	// Find the common size
+	commonSize := rb.size
+	if other.size < commonSize {
+		commonSize = other.size
+	}
+
+	// Calculate number of words in common size
+	numWords := (commonSize + 63) / 64
+
+	// Perform bitwise AND for each word in common size
+	for i := 0; i < int(numWords) && i < len(rb.bits) && i < len(other.bits); i++ {
+		rb.bits[i] &= other.bits[i]
+	}
+
+	// Clear any bits beyond the common size
+	for i := int(numWords); i < len(rb.bits); i++ {
+		rb.bits[i] = 0
+	}
+}
+
+// Difference sets bits that are set in this bitmap but not in the other bitmap
+func (rb *RowBitmap) Difference(other *RowBitmap) {
+	// Find the common size
+	commonSize := rb.size
+	if other.size < commonSize {
+		commonSize = other.size
+	}
+
+	// Calculate number of words in common size
+	numWords := (commonSize + 63) / 64
+
+	// Perform bitwise AND NOT for each word in common size
+	for i := 0; i < int(numWords) && i < len(rb.bits) && i < len(other.bits); i++ {
+		rb.bits[i] &= ^other.bits[i]
+	}
+}
+
+// ToSlice converts the bitmap to a slice of row IDs
+func (rb *RowBitmap) ToSlice() []int64 {
+	count := rb.Count()
+	if count == 0 {
+		return nil
+	}
+
+	// Pre-allocate exact size to avoid resize/append allocations
+	result := make([]int64, count)
+
+	// Fill directly with index
+	i := 0
+	rb.ForEach(func(rowID int64) {
+		result[i] = rowID
+		i++
+	})
+
+	return result
+}
+
+// FromSlice initializes a bitmap from a slice of row IDs
+func (rb *RowBitmap) FromSlice(rowIDs []int64) {
+	// Reset the bitmap first
+	rb.Reset()
+
+	// Find max row ID to ensure capacity
+	var maxID int64
+	for _, id := range rowIDs {
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	// Ensure capacity
+	if maxID >= rb.size {
+		rb.Resize(maxID + 64)
+	}
+
+	// Set bits for each row ID
+	for _, id := range rowIDs {
+		rb.Set(id)
+	}
+}
+
+// ReturnToPool returns the bitmap to the pool if it's small enough to be reused
+func (rb *RowBitmap) ReturnToPool() {
+	// Only return small bitmaps to the pool
+	if rb != nil && rb.size <= 1024 {
+		rb.Reset() // Clear all bits
+		rowBitmapPool.Put(rb)
+	}
+}
