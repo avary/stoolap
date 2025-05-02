@@ -46,7 +46,7 @@ func BenchmarkMVCCInsertPersistent(b *testing.B) {
 			"item_"+strconv.Itoa(i+1),
 			float64(i)*1.5,
 			i%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Insert failed: %v", err)
 		}
@@ -104,7 +104,7 @@ func BenchmarkMVCCInsertBatch(b *testing.B) {
 		}
 
 		// Compute current time once for all rows to reduce allocations
-		currentTime := time.Now().Format("2006-01-02 15:04:05")
+		currentTime := time.Now()
 
 		// Insert rows by reusing the prepared statement
 		var totalRowsAffected int64
@@ -246,7 +246,7 @@ func BenchmarkMVCCPrimaryKeySingleUpdate(b *testing.B) {
 			"item_"+strconv.Itoa(i+1),
 			float64(i)*1.5,
 			i%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -311,7 +311,7 @@ func BenchmarkMVCCPrimaryKeyUpdateBatch(b *testing.B) {
 			"item_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -376,7 +376,7 @@ func BenchmarkMVCCColumnarIndexUpdateBatch(b *testing.B) {
 			"item_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -433,7 +433,7 @@ func BenchmarkMVCCPrimaryKeySingleDelete(b *testing.B) {
 			"to_delete_"+strconv.Itoa(i+1),
 			float64(i)*1.5,
 			i%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -492,7 +492,7 @@ func BenchmarkMVCCPrimaryKeyDeleteBatch(b *testing.B) {
 			"to_delete_"+strconv.Itoa(j+1),
 			float64(j)*1.5,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -556,7 +556,7 @@ func BenchmarkMVCCColumnarIndexDeleteBatch(b *testing.B) {
 			"to_delete_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -613,7 +613,7 @@ func BenchmarkMVCCSelect(b *testing.B) {
 			"item_"+strconv.Itoa(i+1),
 			float64(i)*1.5,
 			i%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}

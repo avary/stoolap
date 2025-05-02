@@ -52,10 +52,6 @@ func (e *TimeEncoder) Encode(timestamps []time.Time) ([]byte, error) {
 	switch e.format {
 	case FullTime:
 		return e.encodeFullTime(timestamps, &buf)
-	case DateOnly:
-		return e.encodeDate(timestamps, &buf)
-	case TimeOnly:
-		return e.encodeTime(timestamps, &buf)
 	case DeltaEncoding:
 		return e.encodeDelta(timestamps, &buf)
 	default:
@@ -91,10 +87,6 @@ func (e *TimeEncoder) Decode(data []byte) ([]time.Time, error) {
 	switch format {
 	case FullTime:
 		return e.decodeFullTime(reader, timestamps)
-	case DateOnly:
-		return e.decodeDate(reader, timestamps)
-	case TimeOnly:
-		return e.decodeTime(reader, timestamps)
 	case DeltaEncoding:
 		return e.decodeDelta(reader, timestamps)
 	default:
@@ -111,35 +103,6 @@ func (e *TimeEncoder) encodeFullTime(timestamps []time.Time, buf *bytes.Buffer) 
 		binary.Write(buf, binary.LittleEndian, ts.Unix())
 
 		// Nanoseconds portion (int32)
-		binary.Write(buf, binary.LittleEndian, int32(ts.Nanosecond()))
-	}
-
-	return buf.Bytes(), nil
-}
-
-// encodeDate only encodes the date portion (year, month, day)
-func (e *TimeEncoder) encodeDate(timestamps []time.Time, buf *bytes.Buffer) ([]byte, error) {
-	for _, ts := range timestamps {
-		// Year (int16)
-		binary.Write(buf, binary.LittleEndian, int16(ts.Year()))
-
-		// Month and Day (1 byte each)
-		buf.WriteByte(byte(ts.Month()))
-		buf.WriteByte(byte(ts.Day()))
-	}
-
-	return buf.Bytes(), nil
-}
-
-// encodeTime only encodes the time portion (hour, minute, second, nanosecond)
-func (e *TimeEncoder) encodeTime(timestamps []time.Time, buf *bytes.Buffer) ([]byte, error) {
-	for _, ts := range timestamps {
-		// Hour, Minute, Second (1 byte each)
-		buf.WriteByte(byte(ts.Hour()))
-		buf.WriteByte(byte(ts.Minute()))
-		buf.WriteByte(byte(ts.Second()))
-
-		// Nanoseconds (int32)
 		binary.Write(buf, binary.LittleEndian, int32(ts.Nanosecond()))
 	}
 
@@ -224,65 +187,6 @@ func (e *TimeEncoder) decodeFullTime(reader *bytes.Reader, timestamps []time.Tim
 
 		// Create the timestamp
 		timestamps[i] = time.Unix(seconds, int64(nanos))
-	}
-
-	return timestamps, nil
-}
-
-// decodeDate decodes date-only timestamps
-func (e *TimeEncoder) decodeDate(reader *bytes.Reader, timestamps []time.Time) ([]time.Time, error) {
-	for i := 0; i < len(timestamps); i++ {
-		// Read year
-		var year int16
-		if err := binary.Read(reader, binary.LittleEndian, &year); err != nil {
-			return nil, err
-		}
-
-		// Read month and day
-		monthByte, err := reader.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-		dayByte, err := reader.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-
-		// Create the timestamp (time portion will be zero)
-		timestamps[i] = time.Date(int(year), time.Month(monthByte), int(dayByte), 0, 0, 0, 0, time.UTC)
-	}
-
-	return timestamps, nil
-}
-
-// decodeTime decodes time-only timestamps
-func (e *TimeEncoder) decodeTime(reader *bytes.Reader, timestamps []time.Time) ([]time.Time, error) {
-	baseDate := time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	for i := 0; i < len(timestamps); i++ {
-		// Read hour, minute, second
-		hourByte, err := reader.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-		minuteByte, err := reader.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-		secondByte, err := reader.ReadByte()
-		if err != nil {
-			return nil, err
-		}
-
-		// Read nanoseconds
-		var nanos int32
-		if err := binary.Read(reader, binary.LittleEndian, &nanos); err != nil {
-			return nil, err
-		}
-
-		// Create the timestamp with zero date
-		timestamps[i] = time.Date(baseDate.Year(), baseDate.Month(), baseDate.Day(),
-			int(hourByte), int(minuteByte), int(secondByte), int(nanos), time.UTC)
 	}
 
 	return timestamps, nil

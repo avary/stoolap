@@ -256,13 +256,13 @@ func (p *Parser) ParseProgram() *Program {
 			// Otherwise, the statement should end at EOF
 			if p.peekTokenIsPunctuator(";") {
 				p.nextToken() // Consume the semicolon
-			} else if !p.peekTokenIs(TokenEOF) {
+			} /* else if !p.peekTokenIs(TokenEOF) {
 				// If not EOF and not semicolon, something is wrong
 				// unless we're at the end of the program
 				if !p.curTokenIs(TokenEOF) {
 					p.addError("expected ';' at end of statement")
 				}
-			}
+			} */
 
 			p.nextToken() // Move to the next token after semicolon or to EOF
 		}

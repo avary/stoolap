@@ -47,7 +47,7 @@ func BenchmarkMVCCUpdateWithColumnarIndex(b *testing.B) {
 			"item_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -107,7 +107,7 @@ func BenchmarkMVCCUpdateWithoutIndex(b *testing.B) {
 			"item_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -168,7 +168,7 @@ func BenchmarkMVCCUpdateWithPrimaryKey(b *testing.B) {
 			"item_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}
@@ -234,7 +234,7 @@ func BenchmarkMVCCDeleteWithColumnarIndex(b *testing.B) {
 			"item_"+strconv.Itoa(j+1),
 			float64(j)+1,
 			j%2 == 0,
-			time.Now().Format("2006-01-02 15:04:05"))
+			time.Now())
 		if err != nil {
 			b.Fatalf("Setup insert failed: %v", err)
 		}

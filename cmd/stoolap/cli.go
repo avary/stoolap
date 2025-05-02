@@ -402,16 +402,7 @@ func formatValue(value interface{}, colType *sql.ColumnType) string {
 	case time.Time:
 		// Format time/date values nicely
 		t := v
-		if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
-			// It's just a date
-			return t.Format("2006-01-02")
-		}
-		if t.Year() == 0 || t.Year() == 1 {
-			// It might be just a time
-			return t.Format("15:04:05.999")
-		}
-		// It's a full timestamp
-		return t.Format("2006-01-02 15:04:05.999")
+		return t.Format(time.RFC3339)
 	default:
 		// Fall back to basic formatting
 		return fmt.Sprintf("%v", v)

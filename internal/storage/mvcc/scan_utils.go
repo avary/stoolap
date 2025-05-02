@@ -60,15 +60,7 @@ func init() {
 
 // formatTimestampCached formats a timestamp with caching to reduce allocations
 func formatTimestampCached(t time.Time) string {
-	// For timestamps, we need to cache more aggressively
-	// Use a compound numeric key based on all components
-	// This avoids string allocations for the key
-	encodedKey := (t.Year()*10000+int(t.Month())*100+t.Day())*1000000 +
-		t.Hour()*10000 + t.Minute()*100 + t.Second()
-
-	// Check cache first
-	cacheKey := strconv.FormatInt(int64(encodedKey), 10)
-
+	cacheKey := t.Format(time.RFC3339)
 	cacheMutex.RLock()
 	if formatted, ok := scannerTimestampFormatCache[cacheKey]; ok {
 		cacheMutex.RUnlock()
@@ -76,97 +68,14 @@ func formatTimestampCached(t time.Time) string {
 	}
 	cacheMutex.RUnlock()
 
-	// Format timestamp using buffer pool to avoid allocations
-	bufPtr := stringBufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	buf = buf[:0] // Reset but keep capacity
-
-	// Format date part
-	y, m, d := t.Date()
-	h, min, s := t.Hour(), t.Minute(), t.Second()
-
-	// Year
-	buf = strconv.AppendInt(buf, int64(y), 10)
-	buf = append(buf, '-')
-
-	// Month with leading zero
-	if m < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(m), 10)
-	buf = append(buf, '-')
-
-	// Day with leading zero
-	if d < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(d), 10)
-	buf = append(buf, 'T') // RFC3339 format
-
-	// Hour with leading zero
-	if h < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(h), 10)
-	buf = append(buf, ':')
-
-	// Minute with leading zero
-	if min < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(min), 10)
-	buf = append(buf, ':')
-
-	// Second with leading zero
-	if s < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(s), 10)
-
-	// Add timezone
-	_, offset := t.Zone()
-	if offset == 0 {
-		buf = append(buf, 'Z') // UTC
-	} else {
-		// Format timezone offset
-		if offset < 0 {
-			buf = append(buf, '-')
-			offset = -offset
-		} else {
-			buf = append(buf, '+')
-		}
-
-		// Hours part of offset
-		offsetHours := offset / 3600
-		if offsetHours < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(offsetHours), 10)
-		buf = append(buf, ':')
-
-		// Minutes part of offset
-		offsetMinutes := (offset % 3600) / 60
-		if offsetMinutes < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(offsetMinutes), 10)
-	}
-
-	// Convert to string and intern it
-	formatted := string(buf)
-
-	// Return buffer to pool
-	*bufPtr = buf
-	stringBufferPool.Put(bufPtr)
-
 	// Cache the result
 	cacheMutex.Lock()
 	if len(scannerTimestampFormatCache) < 256 {
-		scannerTimestampFormatCache[cacheKey] = formatted
+		scannerTimestampFormatCache[cacheKey] = cacheKey
 	}
 	cacheMutex.Unlock()
 
-	return formatted
+	return cacheKey
 }
 
 // intToStringCached converts an integer to a string with caching
@@ -567,14 +476,6 @@ func scanValue(value storage.ColumnValue, dest interface{}) error {
 
 	return fmt.Errorf("cannot scan type %T into %T", value, dest)
 }
-
-// Int64Slice attaches the methods of sort.Interface to []int64, sorting in increasing order.
-// This is used with the standard library sort package.
-type Int64Slice []int64
-
-func (x Int64Slice) Len() int           { return len(x) }
-func (x Int64Slice) Less(i, j int) bool { return x[i] < x[j] }
-func (x Int64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
 
 // SortInt64s sorts a slice of int64s in increasing order.
 // This is a backward-compatibility wrapper that uses the SIMD-optimized sort.

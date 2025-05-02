@@ -117,7 +117,6 @@ func (r *Rows) Next(dest []driver.Value) error {
 					}
 				case storage.TIMESTAMP:
 					if v, ok := colVal.AsTimestamp(); ok {
-						// For timestamps, we can pass the time.Time value directly
 						dest[i] = v
 					} else {
 						dest[i] = nil

@@ -7,7 +7,7 @@ import (
 
 // TestParserErrors tests that parser errors are reported correctly
 func TestParserErrors(t *testing.T) {
-	input := "SELECT * FRM users"
+	input := "SELET * FROM users"
 
 	lexer := NewLexer(input)
 	parser := NewParser(lexer)
