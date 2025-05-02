@@ -24,7 +24,7 @@ func toQueryCacheNamedValues(params []interface{}) []driver.NamedValue {
 // TestQueryCacheBasic tests the basic functionality of the query cache
 func TestQueryCacheBasic(t *testing.T) {
 	// Create a memory engine for testing
-	db, err := pkg.Open("db://")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

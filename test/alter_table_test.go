@@ -2,8 +2,6 @@ package test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stoolap/stoolap/internal/sql"
@@ -16,15 +14,6 @@ import (
 // TestAlterTableOperations tests ALTER TABLE operations
 func TestAlterTableOperations(t *testing.T) {
 	t.Skip("The alter table currently not implemented")
-	// Create a temporary directory for the test database
-	tempDir, err := os.MkdirTemp("", "stoolap_test_")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	dbPath := filepath.Join(tempDir, "test.db")
-
 	// Get the block storage engine factory
 	factory := storage.GetEngineFactory("mvcc")
 	if factory == nil {
@@ -32,7 +21,7 @@ func TestAlterTableOperations(t *testing.T) {
 	}
 
 	// Create the engine with the connection string
-	engine, err := factory.Create("db://" + dbPath)
+	engine, err := factory.Create("memory://")
 	if err != nil {
 		t.Fatalf("Failed to create db engine: %v", err)
 	}

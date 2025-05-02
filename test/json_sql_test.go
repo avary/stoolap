@@ -11,7 +11,7 @@ import (
 
 func TestJSONSQL(t *testing.T) {
 	// Connect to an in-memory database
-	db, err := sql.Open("stoolap", "db://")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

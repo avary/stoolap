@@ -14,7 +14,7 @@ import (
 func TestV3CRUDOperations(t *testing.T) {
 	// Initialize the engine and create a test table
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	engine := mvcc.NewMVCCEngine(config)

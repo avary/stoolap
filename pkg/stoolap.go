@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"net/url"
 
 	sqlexecutor "github.com/stoolap/stoolap/internal/sql"
@@ -19,44 +20,36 @@ type DB struct {
 	engine storage.Engine
 }
 
-// StorageType represents the type of storage engine to use
-type StorageType string
-
+// Storage engine constants
 const (
-	// StorageTypeDB is the database storage engine
-	StorageTypeDB StorageType = "db"
+	// MemoryScheme is the in-memory storage engine URI scheme
+	MemoryScheme = "memory"
+	// FileScheme is the persistent file storage engine URI scheme
+	FileScheme = "file"
 )
 
 // Open opens a database connection
 func Open(dsn string) (*DB, error) {
 	var engine storage.Engine
 
-	uri, err := url.Parse(dsn)
+	// Parse URL to validate and extract scheme
+	parsedURL, err := url.Parse(dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid connection string format: %w", err)
 	}
 
-	storageType := StorageTypeDB
-	if uri.Scheme != "" {
-		storageType = StorageType(uri.Scheme)
-	}
-
-	// Only support db:// connection string
-	if storageType != StorageTypeDB {
-		return nil, errors.New("unsupported storage type: " + string(storageType) + " (only db:// is supported)")
-	}
-
-	path := uri.Path
-	if path == "" {
-		path = "/stoolap.db"
-	}
-
-	// Create connection string for the engine
-	connString := "db://" + path
-
-	// Add any query parameters
-	if uri.RawQuery != "" {
-		connString += "?" + uri.RawQuery
+	// Validate scheme
+	switch parsedURL.Scheme {
+	case MemoryScheme:
+		// Memory scheme is valid
+	case FileScheme:
+		// File scheme is valid - ensure path exists
+		// We need to check for both host and path - either one or both must have content
+		if (parsedURL.Path == "" || parsedURL.Path == "/") && parsedURL.Host == "" {
+			return nil, errors.New("file:// scheme requires a non-empty path")
+		}
+	default:
+		return nil, errors.New("unsupported connection string format: use 'memory://' for in-memory or 'file://path' for persistent storage")
 	}
 
 	// Use the storage engine factory to create the engine
@@ -65,7 +58,8 @@ func Open(dsn string) (*DB, error) {
 		return nil, errors.New("database storage engine factory not found")
 	}
 
-	engine, err = factory.Create(connString)
+	// Create the engine with the validated connection string
+	engine, err = factory.Create(dsn)
 	if err != nil {
 		return nil, err
 	}

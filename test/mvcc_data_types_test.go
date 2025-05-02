@@ -11,7 +11,7 @@ import (
 func TestMVCCTableDataTypeValidation(t *testing.T) {
 	// Create engine and transaction
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	engine := mvcc.NewMVCCEngine(config)

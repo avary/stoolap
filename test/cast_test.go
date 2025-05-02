@@ -12,7 +12,7 @@ func TestCastExpression(t *testing.T) {
 	ctx := context.Background()
 
 	// Create an in-memory database
-	db, err := pkg.Open("db://var/tmp/test_cast.db")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}

@@ -37,6 +37,9 @@ type MVCCEngine struct {
 	// Flag to indicate we're loading from disk to avoid triggering redundant snapshots
 	loadingFromDisk atomic.Bool
 
+	// File lock to prevent multiple processes from accessing the same database
+	fileLock *FileLock
+
 	// Cleanup related fields
 	cleanupCancel func() // Function to stop the cleanup goroutine
 }
@@ -63,16 +66,23 @@ func NewMVCCEngine(config *storage.Config) *MVCCEngine {
 		},
 	}
 
-	// Setup persistence if a path is provided
-	if config.Path != "" {
-		persistence, err := NewPersistenceManager(engine, config.Path, config.Persistence)
-		if err != nil {
-			// Log error but continue in memory-only mode
-			fmt.Printf("Warning: Failed to initialize persistence: %v. Running in memory-only mode.\n", err)
+	// For file:// URLs, path will be set and persistence must be enabled
+	// For memory:// URLs, path will be empty and persistence will be disabled
+	persistence, err := NewPersistenceManager(engine, config.Path, config.Persistence)
+	if err != nil {
+		if config.Path != "" && config.Persistence.Enabled {
+			// This is a critical error for file:// URLs where persistence is required
+			fmt.Printf("Error: Failed to initialize required persistence for path %s: %v\n", config.Path, err)
+			// Return the persistence manager anyway, but Open() will fail later
 		} else {
-			engine.persistence = persistence
+			// For memory:// URLs, this is just a warning
+			fmt.Printf("Warning: Failed to initialize persistence: %v. Running in memory-only mode.\n", err)
 		}
 	}
+
+	// Set the persistence manager regardless of success/failure
+	// If we're in memory-only mode, persistence will be disabled in the manager
+	engine.persistence = persistence
 
 	return engine
 }
@@ -84,6 +94,18 @@ func (e *MVCCEngine) Open() error {
 		return nil // Already open
 	}
 
+	// If we're using a persistent database, acquire a file lock to prevent multiple processes
+	// from accessing the same database simultaneously
+	if e.path != "" && e.config.Persistence.Enabled {
+		var err error
+		e.fileLock, err = AcquireFileLock(e.path)
+		if err != nil {
+			// If we fail to acquire the lock, restore the open flag to false
+			e.open.Store(false)
+			return fmt.Errorf("failed to acquire file lock: %w", err)
+		}
+	}
+
 	// Start periodic transaction cleanup (every 10 minutes, clean transactions older than 30 minutes)
 	// These values could be made configurable if needed
 	e.cleanupCancel = e.StartPeriodicCleanup(10*time.Minute, 30*time.Minute)
@@ -93,7 +115,11 @@ func (e *MVCCEngine) Open() error {
 		// Start persistence manager
 		err := e.persistence.Start()
 		if err != nil {
-			// If we fail to start persistence, restore the open flag to false
+			// If we fail to start persistence, release the file lock and restore the open flag
+			if e.fileLock != nil {
+				e.fileLock.Release()
+				e.fileLock = nil
+			}
 			e.open.Store(false)
 			return fmt.Errorf("failed to start persistence: %w", err)
 		}
@@ -211,6 +237,16 @@ func (e *MVCCEngine) Close() error {
 		errMsg := "engine shutdown timeout reached during resource cleanup"
 		shutdownErrors = append(shutdownErrors, errMsg)
 		fmt.Printf("Warning: %s\n", errMsg)
+	}
+
+	// Release file lock if we have one
+	if e.fileLock != nil {
+		if err := e.fileLock.Release(); err != nil {
+			errMsg := fmt.Sprintf("error releasing file lock: %v", err)
+			shutdownErrors = append(shutdownErrors, errMsg)
+			fmt.Printf("Warning: %s\n", errMsg)
+		}
+		e.fileLock = nil
 	}
 
 	// Return combined errors if any occurred during shutdown

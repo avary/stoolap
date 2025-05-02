@@ -10,7 +10,7 @@ import (
 
 func TestSimpleV2TimeFunctions(t *testing.T) {
 	// Connect to the database
-	db, err := sql.Open("stoolap", "db:///memory")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

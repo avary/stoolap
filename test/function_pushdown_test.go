@@ -13,7 +13,7 @@ func TestFunctionPushdown(t *testing.T) {
 	// registered in the init functions of the scalar package
 
 	// Connect to the in-memory database
-	db, err := sql.Open("stoolap", "db:///memory")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}

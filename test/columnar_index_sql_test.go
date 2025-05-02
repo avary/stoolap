@@ -12,7 +12,7 @@ import (
 func TestColumnarIndexSQL(t *testing.T) {
 	// Create a new in-memory database
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 	engine := mvcc.NewMVCCEngine(config)
 	if err := engine.Open(); err != nil {

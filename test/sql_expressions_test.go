@@ -12,7 +12,7 @@ import (
 // TestSQLExpressionCapabilities tests various SQL expressions to determine their support
 func TestSQLExpressionCapabilities(t *testing.T) {
 	// Connect to the in-memory database
-	db, err := sql.Open("stoolap", "db://:memory:")
+	db, err := sql.Open("stoolap", "memory:/")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -412,7 +412,7 @@ type PersistenceConfig struct {
 // DefaultPersistenceConfig returns a PersistenceConfig with default values
 func DefaultPersistenceConfig() PersistenceConfig {
 	return PersistenceConfig{
-		Enabled:          false,
+		Enabled:          true,
 		SyncMode:         1,                // Normal
 		SnapshotInterval: 300,              // 5 minutes
 		KeepSnapshots:    5,                // Keep 5 snapshots

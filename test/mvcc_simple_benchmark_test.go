@@ -20,8 +20,10 @@ func BenchmarkMVCCInsertPersistent(b *testing.B) {
 	}
 	defer os.RemoveAll(tempDir)
 
+	b.Logf("Using temp directory: %s\n", tempDir)
+
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///"+tempDir+"?persistence=true&sync_mode=normal")
+	db, err := sql.Open("stoolap", "file:///"+tempDir+"?sync_mode=normal")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -65,7 +67,7 @@ func BenchmarkMVCCInsertPersistent(b *testing.B) {
 // BenchmarkMVCCInsertBatch provides a benchmark for batch insert operations
 func BenchmarkMVCCInsertBatch(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -150,7 +152,7 @@ func BenchmarkMVCCInsertBatch(b *testing.B) {
 // BenchmarkMVCCInsertBatchBulk provides a benchmark for bulk insert operations using a single multi-value insert
 func BenchmarkMVCCBulkInsertBatch(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -220,7 +222,7 @@ func BenchmarkMVCCBulkInsertBatch(b *testing.B) {
 // BenchmarkMVCCUpdate provides a simple benchmark for MVCC update operations
 func BenchmarkMVCCPrimaryKeySingleUpdate(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -283,7 +285,7 @@ func BenchmarkMVCCPrimaryKeySingleUpdate(b *testing.B) {
 // BenchmarkMVCCUpdateBatch provides a benchmark for batch update operations with a range condition
 func BenchmarkMVCCPrimaryKeyUpdateBatch(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -343,7 +345,7 @@ func BenchmarkMVCCPrimaryKeyUpdateBatch(b *testing.B) {
 // BenchmarkMVCCColumnarIndexUpdateBatch provides a benchmark for batch update operations with a range condition
 func BenchmarkMVCCColumnarIndexUpdateBatch(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -408,7 +410,7 @@ func BenchmarkMVCCColumnarIndexUpdateBatch(b *testing.B) {
 // BenchmarkMVCCPrimaryKeyDelete provides a simple benchmark for MVCC delete operations
 func BenchmarkMVCCPrimaryKeySingleDelete(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -465,7 +467,7 @@ func BenchmarkMVCCPrimaryKeySingleDelete(b *testing.B) {
 // BenchmarkMVCCDeleteBatch provides a benchmark for batch delete operations with a range condition
 func BenchmarkMVCCPrimaryKeyDeleteBatch(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -524,7 +526,7 @@ func BenchmarkMVCCPrimaryKeyDeleteBatch(b *testing.B) {
 // BenchmarkMVCCColumnarIndexDeleteBatch provides a benchmark for batch delete operations with a range condition
 func BenchmarkMVCCColumnarIndexDeleteBatch(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -588,7 +590,7 @@ func BenchmarkMVCCColumnarIndexDeleteBatch(b *testing.B) {
 // BenchmarkMVCCSelect provides a simple benchmark for MVCC select operations
 func BenchmarkMVCCSelect(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}

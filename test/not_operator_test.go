@@ -30,7 +30,7 @@ func TestNotOperator(t *testing.T) {
 	}
 
 	// Create the engine with the connection string
-	engine, err := factory.Create("db://" + dbPath)
+	engine, err := factory.Create("memory://" + dbPath)
 	if err != nil {
 		t.Fatalf("Failed to create db engine: %v", err)
 	}

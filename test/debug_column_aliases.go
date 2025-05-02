@@ -9,7 +9,7 @@ import (
 
 func TestDebugColumnAliases(t *testing.T) {
 	// Open an in-memory database
-	db, err := sql.Open("stoolap", "db:///:memory:")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Error opening database: %v", err)
 	}

@@ -87,41 +87,6 @@ The TIMESTAMP data type stores a point in time (date and time).
   INSERT INTO events (id, title, created_at) VALUES (1, 'Conference', '2023-05-15T14:30:00Z');
   ```
 
-### DATE
-
-The DATE data type stores calendar dates without time information.
-
-- **Storage**: Stored as a Go time.Time value (with time component set to 00:00:00)
-- **Format**: 'YYYY-MM-DD'
-- **Usage Example**:
-  ```sql
-  CREATE TABLE employees (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      hire_date DATE
-  );
-  
-  INSERT INTO employees (id, name, hire_date) VALUES (1, 'Jane Smith', '2023-05-15');
-  ```
-
-### TIME
-
-The TIME data type stores time-of-day information without date information.
-
-- **Storage**: Stored as a Go time.Time value (with date component set to a zero value)
-- **Format**: 'HH:MM:SS'
-- **Usage Example**:
-  ```sql
-  CREATE TABLE schedules (
-      id INTEGER PRIMARY KEY,
-      day_of_week TEXT NOT NULL,
-      start_time TIME,
-      end_time TIME
-  );
-  
-  INSERT INTO schedules (id, day_of_week, start_time, end_time) VALUES (1, 'Monday', '09:00:00', '17:00:00');
-  ```
-
 ### JSON
 
 The JSON data type stores JSON (JavaScript Object Notation) formatted data.

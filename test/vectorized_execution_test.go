@@ -112,7 +112,7 @@ func TestColumnComparison(t *testing.T) {
 	testID := fmt.Sprintf("colcomp_%d", time.Now().UnixNano())
 
 	// Open a new database for this test
-	db, err := pkg.Open("db:///memory?buffer_size=41943040&segment_size=262144")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestConstantComparison(t *testing.T) {
 	testID := fmt.Sprintf("constcomp_%d", time.Now().UnixNano())
 
 	// Open a new database for this test
-	db, err := pkg.Open("db:///memory?buffer_size=1048576&segment_size=65536")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestStringOperations(t *testing.T) {
 	testID := fmt.Sprintf("string_%d", time.Now().UnixNano())
 
 	// Open a new database for this test
-	db, err := pkg.Open("db:///memory?buffer_size=1048576&segment_size=65536")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -456,7 +456,7 @@ func setupTestDatabase() (*pkg.DB, string, error) {
 	// Generate a unique table name using a timestamp
 	tableName := fmt.Sprintf("test_table_%d", time.Now().UnixNano())
 	// Create an in-memory database
-	db, err := pkg.Open("db:///memory?buffer_size=10485760&segment_size=65536")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to open database: %v", err)
 	}

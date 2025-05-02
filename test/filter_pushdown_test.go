@@ -11,7 +11,7 @@ import (
 // TestFilterPushdown tests that filters are properly pushed down to the storage engine
 func TestFilterPushdown(t *testing.T) {
 	// Create a new database connection using database/sql API
-	db, err := sql.Open("stoolap", "db:///tmp/pushdown_test?parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestFilterPushdown(t *testing.T) {
 // TestCountWithPushdown tests COUNT(*) queries with filter pushdown
 func TestCountWithPushdown(t *testing.T) {
 	// Create a new database connection using database/sql API
-	db, err := sql.Open("stoolap", "db:///tmp/pushdown_test?parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestCountWithPushdown(t *testing.T) {
 // TestComplexFilterPushdown tests the advanced pushdown optimization for complex AND/OR expressions
 func TestComplexFilterPushdown(t *testing.T) {
 	// Create a new database connection using database/sql API
-	db, err := sql.Open("stoolap", "db:///tmp/complex_pushdown_test?parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

@@ -2,23 +2,13 @@ package test
 
 import (
 	"database/sql"
-	"os"
-	"path/filepath"
 	"testing"
 
 	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 func TestCountAggregation(t *testing.T) {
-	// Create a temporary directory for the test database
-	tempDir, err := os.MkdirTemp("", "stoolap_count_test_")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	dbPath := filepath.Join(tempDir, "test.db")
-	connStr := "db://" + dbPath
+	connStr := "memory://"
 
 	// Open DB using database/sql interface
 	db, err := sql.Open("stoolap", connStr)

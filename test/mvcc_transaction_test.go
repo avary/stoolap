@@ -10,7 +10,7 @@ import (
 
 func TestBasicTransactionOperations(t *testing.T) {
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	testEngine := mvcc.NewMVCCEngine(config)
@@ -112,7 +112,7 @@ func TestBasicTransactionOperations(t *testing.T) {
 func TestTransactionIsolation(t *testing.T) {
 	// t.Skip("The current MVCC design has several fundamental issues that prevent proper isolation between transactions")
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	testEngine := mvcc.NewMVCCEngine(config)
@@ -359,7 +359,7 @@ func TestTransactionIsolation(t *testing.T) {
 
 func TestTransactionConcurrency(t *testing.T) {
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	testEngine := mvcc.NewMVCCEngine(config)

@@ -11,7 +11,7 @@ import (
 func TestCastDiagnosis(t *testing.T) {
 	// Create a simple test database
 	ctx := context.Background()
-	db, _ := pkg.Open("db://var/tmp/test_cast_diagnosis.db")
+	db, _ := pkg.Open("memory://")
 	defer db.Close()
 
 	executor := db.Executor()

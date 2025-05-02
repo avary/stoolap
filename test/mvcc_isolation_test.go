@@ -13,7 +13,7 @@ import (
 func TestMVCCTransactionIsolation(t *testing.T) {
 	// Create the engine
 	engine := mvcc.NewMVCCEngine(&storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	})
 
 	if err := engine.Open(); err != nil {
@@ -249,7 +249,7 @@ func TestMVCCTransactionIsolation(t *testing.T) {
 func TestMVCCDeleteVisibility(t *testing.T) {
 	// Create the engine
 	engine := mvcc.NewMVCCEngine(&storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	})
 
 	if err := engine.Open(); err != nil {

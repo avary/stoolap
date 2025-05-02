@@ -10,7 +10,7 @@ import (
 
 func TestCollateFunction(t *testing.T) {
 	// Connect to the database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_collate.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

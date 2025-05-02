@@ -11,7 +11,7 @@ import (
 func TestCastFix(t *testing.T) {
 	// Create a test database
 	ctx := context.Background()
-	db, _ := pkg.Open("db://var/tmp/test_cast_fix.db")
+	db, _ := pkg.Open("memory://")
 	defer db.Close()
 
 	executor := db.Executor()

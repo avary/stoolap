@@ -143,12 +143,19 @@ func DeserializeIndexMetadata(data []byte) (*IndexMetadata, error) {
 
 // NewPersistenceManager creates a new persistence manager
 func NewPersistenceManager(engine *MVCCEngine, path string, config storage.PersistenceConfig) (*PersistenceManager, error) {
-	if path == "" || !config.Enabled {
+	// For memory:// URLs, path will be empty and config.Enabled will be false
+	// For file:// URLs, path will be set and config.Enabled will be true
+	if path == "" {
 		// Memory-only mode
 		return &PersistenceManager{
 			enabled: false,
 			engine:  engine,
 		}, nil
+	}
+
+	// For file:// URLs, persistence must be enabled
+	if !config.Enabled {
+		return nil, fmt.Errorf("persistence must be enabled when using file:// scheme with path: %s", path)
 	}
 
 	// Create base directory

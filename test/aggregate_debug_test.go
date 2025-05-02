@@ -12,7 +12,7 @@ import (
 // TestAggregationDebug is a debug test to help diagnose issues with aggregation functions
 func TestAggregationDebug(t *testing.T) {
 	// Create a test database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_agg.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

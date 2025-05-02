@@ -12,7 +12,7 @@ import (
 // BenchmarkTimestampOperations tests timestamp operations with and without columnar index
 func BenchmarkTimestampOperations(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db:///memory?buffer_size=134217728&segment_size=65536&parallel_scan=true")
+	db, err := sql.Open("stoolap", "memory://?buffer_size=134217728&segment_size=65536&parallel_scan=true")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}

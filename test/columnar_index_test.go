@@ -12,7 +12,7 @@ import (
 func TestColumnarIndex(t *testing.T) {
 	// Create a test config
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	// Create a test engine
@@ -192,7 +192,7 @@ func TestColumnarIndex(t *testing.T) {
 func TestColumnarIndexWithTransaction(t *testing.T) {
 	// Create a test config
 	config := &storage.Config{
-		Path: ":memory:",
+		Path: "memory://",
 	}
 
 	// Create a test engine

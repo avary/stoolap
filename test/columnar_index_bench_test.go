@@ -14,7 +14,7 @@ import (
 // Testing update with columnar index on non-primary key column
 func BenchmarkMVCCUpdateWithColumnarIndex(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_columnar_index.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -79,7 +79,7 @@ func BenchmarkMVCCUpdateWithColumnarIndex(b *testing.B) {
 // Run the same test but without columnar index
 func BenchmarkMVCCUpdateWithoutIndex(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_no_index.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -140,7 +140,7 @@ func BenchmarkMVCCUpdateWithoutIndex(b *testing.B) {
 // Run with primary key instead to compare
 func BenchmarkMVCCUpdateWithPrimaryKey(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_pk.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}
@@ -201,7 +201,7 @@ func BenchmarkMVCCUpdateWithPrimaryKey(b *testing.B) {
 // Run the same test but with deletion
 func BenchmarkMVCCDeleteWithColumnarIndex(b *testing.B) {
 	// Open a connection to the database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_columnar_index.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		b.Fatalf("Failed to open database connection: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 
 func TestColumnAliasInWhereClause(t *testing.T) {
 	// Open an in-memory database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_column_alias_where_test.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Error opening database: %v", err)
 	}

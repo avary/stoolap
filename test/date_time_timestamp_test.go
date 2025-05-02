@@ -10,7 +10,7 @@ import (
 
 func TestDateTimeTimestampExecution(t *testing.T) {
 	// Initialize in-memory database
-	db, err := sql.Open("stoolap", "db://")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}

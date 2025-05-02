@@ -20,7 +20,7 @@ func TestBooleanColumnarIndexBulkDelete(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create a temporary database in memory
-	dbPath := "db:///" + tempDir + "/boolean_test.db?persistence=true&sync_mode=normal&snapshot_interval=1"
+	dbPath := "file:///" + tempDir + "/boolean_test.db?persistence=true&sync_mode=normal&snapshot_interval=1"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

@@ -10,7 +10,7 @@ import (
 func TestCastSimpleDebug(t *testing.T) {
 	// Create an in-memory database
 	ctx := context.Background()
-	db, _ := pkg.Open("db://var/tmp/test_cast_simple_debug.db")
+	db, _ := pkg.Open("memory://")
 	defer db.Close()
 
 	executor := db.Executor()

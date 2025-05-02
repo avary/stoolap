@@ -134,7 +134,7 @@ func abs(n int64) int64 {
 // and correctly aggregate FIRST(open), MAX(high), MIN(low), LAST(close), and SUM(volume)
 func TestCandleTimeAggregation(t *testing.T) {
 	// Connect to the database
-	db, err := sql.Open("stoolap", "db://var/tmp/test_candle.db")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

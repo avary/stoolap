@@ -10,7 +10,7 @@ import (
 func TestIndexOperations(t *testing.T) {
 	t.Skip("Skipping index operations test due to unresolved issues with unique constraints")
 	// Initialize in-memory database
-	db, err := sql.Open("stoolap", "db://")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestIndexOperations(t *testing.T) {
 
 func TestIndexRangeOperations(t *testing.T) {
 	// Initialize in-memory database
-	db, err := sql.Open("stoolap", "db://")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}

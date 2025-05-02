@@ -19,7 +19,7 @@ func TestAggregations(t *testing.T) {
 	}
 
 	// Create the engine with the connection string
-	engine, err := factory.Create("db://var/tmp/test_agg_test.db")
+	engine, err := factory.Create("memory://")
 	if err != nil {
 		t.Fatalf("Failed to create db engine: %v", err)
 	}

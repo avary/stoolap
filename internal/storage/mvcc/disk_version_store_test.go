@@ -18,7 +18,7 @@ func TestDiskVersionStore(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create an engine and schema for testing
-	config := &storage.Config{Path: tempDir}
+	config := &storage.Config{Path: tempDir, Persistence: storage.DefaultPersistenceConfig()}
 	engine := NewMVCCEngine(config)
 	if err := engine.Open(); err != nil {
 		t.Fatalf("Failed to open engine: %v", err)
@@ -345,7 +345,7 @@ func TestDiskVersionStoreEdgeCases(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create an engine and schema for testing
-	config := &storage.Config{Path: tempDir}
+	config := &storage.Config{Path: tempDir, Persistence: storage.DefaultPersistenceConfig()}
 	engine := NewMVCCEngine(config)
 	if err := engine.Open(); err != nil {
 		t.Fatalf("Failed to open engine: %v", err)

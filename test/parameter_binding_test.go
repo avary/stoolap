@@ -25,7 +25,7 @@ func toNamedValues(params []interface{}) []driver.NamedValue {
 
 func TestParameterBinding(t *testing.T) {
 	// Create a memory engine for testing
-	db, err := pkg.Open("db://")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -239,7 +239,7 @@ func isSelect(query string) bool {
 
 func TestBindExpressionTraversal(t *testing.T) {
 	// Create a memory engine for testing
-	db, err := pkg.Open("db://")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

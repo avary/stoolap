@@ -10,7 +10,7 @@ import (
 
 func TestStreamingJoin(t *testing.T) {
 	// Connect to the in-memory database
-	db, err := sql.Open("stoolap", "db:///memory")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to connect to database: %v", err)
 	}

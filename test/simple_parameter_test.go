@@ -103,9 +103,9 @@ func (v *testColumnValue) Compare(val storage.ColumnValue) (int, error) {
 }
 
 func TestSimpleParameter(t *testing.T) {
-	// Create a db engine for testing (db:// is not supported anymore, using db://)
+	// Create a memory engine for testing
 	t.Log("Opening database connection...")
-	db, err := pkg.Open("db://")
+	db, err := pkg.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

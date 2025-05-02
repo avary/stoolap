@@ -12,7 +12,7 @@ import (
 
 func TestSQLLiterals(t *testing.T) {
 	// Open an in-memory database
-	db, err := sql.Open("stoolap", "db:///:memory:")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Error opening database: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestSQLLiterals(t *testing.T) {
 
 func TestSQLDualTable(t *testing.T) {
 	// Open an in-memory database
-	db, err := sql.Open("stoolap", "db:///:memory:")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Error opening database: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestSQLDualTable(t *testing.T) {
 
 func TestSQLBenchmarkLiterals(t *testing.T) {
 	// Open an in-memory database
-	db, err := sql.Open("stoolap", "db:///:memory:")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Error opening database: %v", err)
 	}

@@ -10,7 +10,7 @@ import (
 // TestCastWhereClause tests CAST expressions in WHERE clauses
 func TestCastWhereClause(t *testing.T) {
 	ctx := context.Background()
-	db, _ := pkg.Open("db://var/tmp/test_cast_where.db")
+	db, _ := pkg.Open("memory://")
 	defer db.Close()
 
 	executor := db.Executor()

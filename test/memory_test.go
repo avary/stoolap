@@ -9,7 +9,7 @@ import (
 
 func TestMemoryDatabase(t *testing.T) {
 	// Open an in-memory database
-	db, err := sql.Open("stoolap", "db://test")
+	db, err := sql.Open("stoolap", "memory://test")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
