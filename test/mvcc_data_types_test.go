@@ -37,8 +37,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 			{ID: 3, Name: "string_col", Type: storage.TypeString, Nullable: true},
 			{ID: 4, Name: "bool_col", Type: storage.TypeBoolean, Nullable: true},
 			{ID: 5, Name: "timestamp_col", Type: storage.TypeTimestamp, Nullable: true},
-			{ID: 6, Name: "date_col", Type: storage.TypeDate, Nullable: true},
-			{ID: 7, Name: "time_col", Type: storage.TypeTime, Nullable: true},
 			{ID: 8, Name: "json_col", Type: storage.TypeJSON, Nullable: true},
 		},
 		CreatedAt: time.Now(),
@@ -60,8 +58,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -78,8 +74,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -96,8 +90,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -114,8 +106,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewIntegerValue(123), // Type mismatch - Integer value in string column
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -132,8 +122,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewIntegerValue(1), // Type mismatch
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -150,8 +138,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewBooleanValue(true),
 		storage.NewStringValue("not a timestamp"), // Type mismatch
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -169,7 +155,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
 		storage.NewIntegerValue(20230101), // Type mismatch
-		storage.NewTimeValue(now),
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
 
@@ -186,7 +171,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
 		storage.NewIntegerValue(1200), // Type mismatch
 		storage.NewJSONValue(`{"key":"value"}`),
 	}
@@ -204,8 +188,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewStringValue("hello"),
 		storage.NewBooleanValue(true),
 		storage.NewTimestampValue(now),
-		storage.NewDateValue(now),
-		storage.NewTimeValue(now),
 		storage.NewBooleanValue(false), // Type mismatch
 	}
 
@@ -222,8 +204,6 @@ func TestMVCCTableDataTypeValidation(t *testing.T) {
 		storage.NewNullStringValue(),
 		storage.NewNullBooleanValue(),
 		storage.NewNullTimestampValue(),
-		storage.NewNullDateValue(),
-		storage.NewNullTimeValue(),
 		storage.NewNullJSONValue(),
 	}
 

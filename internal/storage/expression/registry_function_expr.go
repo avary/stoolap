@@ -70,7 +70,7 @@ func (e *RegistryFunctionExpression) Evaluate(row storage.Row) (bool, error) {
 				colValue = val
 				colFound = true
 			}
-		case storage.TIMESTAMP, storage.DATE, storage.TIME:
+		case storage.TIMESTAMP:
 			if val, ok := col.AsTimestamp(); ok {
 				colValue = val
 				colFound = true

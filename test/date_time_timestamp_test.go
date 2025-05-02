@@ -20,8 +20,8 @@ func TestDateTimeTimestampExecution(t *testing.T) {
 	_, err = db.Exec(`
 		CREATE TABLE datetime_test (
 			id INTEGER,
-			date_val DATE,
-			time_val TIME,
+			date_val TIMESTAMP,
+			time_val TIMESTAMP,
 			timestamp_val TIMESTAMP,
 			str_val TEXT
 		)
@@ -34,7 +34,7 @@ func TestDateTimeTimestampExecution(t *testing.T) {
 	_, err = db.Exec(`
 		CREATE TABLE timevalue_test (
 			id INTEGER,
-			time_val TIME
+			time_val TIMESTAMP
 		)
 	`)
 	if err != nil {

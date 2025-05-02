@@ -364,7 +364,7 @@ func TestSQLLiterals(t *testing.T) {
 				_, err := time.Parse("2006-01-02 15:04:05", timestamp)
 				if err != nil {
 					// Try RFC3339nano format
-					_, err = time.Parse(time.RFC3339Nano, timestamp)
+					_, err = time.Parse(time.RFC3339, timestamp)
 					if err != nil {
 						t.Fatalf("Expected a valid timestamp but got '%s': %v", timestamp, err)
 					}

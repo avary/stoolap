@@ -173,13 +173,13 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		return fmt.Errorf("failed to create disk reader: %w", err)
 	}
 
-		// Add to readers list and transfer loaded rowIDs tracking
+	// Add to readers list and transfer loaded rowIDs tracking
 	dvs.mu.Lock()
-	
+
 	// Transfer loaded rowIDs tracking from previous reader to the new one
 	if len(dvs.readers) > 0 {
 		previousReader := dvs.readers[len(dvs.readers)-1]
-		
+
 		// Iterate through all loaded rowIDs and transfer them to the new reader
 		// This ensures we don't reload rows that were already loaded into memory
 		previousReader.LoadedRowIDs.ForEach(func(rowID int64, _ struct{}) bool {
@@ -187,7 +187,7 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 			return true // Continue iteration
 		})
 	}
-	
+
 	// Manage readers list according to keepCount
 	if len(dvs.readers) > 0 && len(dvs.readers) >= dvs.versionStore.engine.persistence.keepCount {
 		// Remove the oldest reader if we exceed the limit
@@ -195,7 +195,7 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		oldestReader.Close()
 		dvs.readers = dvs.readers[1:]
 	}
-	
+
 	// Add the new reader to the list
 	dvs.readers = append(dvs.readers, reader)
 	dvs.mu.Unlock()
@@ -861,22 +861,6 @@ func serializeRow(row storage.Row) ([]byte, error) {
 			// Write directly to the buffer at the correct position
 			binary.LittleEndian.PutUint64(buf[len(buf)-8:], uint64(v.UnixNano()))
 
-		case storage.TypeDate:
-			v, _ := col.AsDate()
-			buf = append(buf, binser.TypeTime)
-			// Allocate space for the date value (int64 nanoseconds)
-			buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
-			// Write directly to the buffer at the correct position
-			binary.LittleEndian.PutUint64(buf[len(buf)-8:], uint64(v.UnixNano()))
-
-		case storage.TypeTime:
-			v, _ := col.AsTime()
-			buf = append(buf, binser.TypeTime)
-			// Allocate space for the time value (int64 nanoseconds)
-			buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
-			// Write directly to the buffer at the correct position
-			binary.LittleEndian.PutUint64(buf[len(buf)-8:], uint64(v.UnixNano()))
-
 		case storage.TypeJSON:
 			v, _ := col.AsJSON()
 			buf = append(buf, binser.TypeString)
@@ -1028,7 +1012,7 @@ func deserializeRow(data []byte) (storage.Row, error) {
 				row[i] = storage.NewBooleanValue(val)
 				pos++
 
-			case storage.TypeTimestamp, storage.TypeDate, storage.TypeTime:
+			case storage.TypeTimestamp:
 				if err := ensureSpace(1, "time marker"); err != nil {
 					return nil, err
 				}
@@ -1043,15 +1027,7 @@ func deserializeRow(data []byte) (storage.Row, error) {
 				val := time.Unix(0, nanos)
 				pos += 8
 
-				// Create appropriate time-based value
-				switch colType {
-				case storage.TypeTimestamp:
-					row[i] = storage.NewTimestampValue(val)
-				case storage.TypeDate:
-					row[i] = storage.NewDateValue(val)
-				case storage.TypeTime:
-					row[i] = storage.NewTimeValue(val)
-				}
+				row[i] = storage.NewTimestampValue(val)
 
 			case storage.TypeJSON:
 				if err := ensureSpace(1, "JSON marker"); err != nil {

@@ -797,18 +797,8 @@ func (vr *VectorizedResult) Row() storage.Row {
 		} else if col, exists := vr.batch.BoolColumns[colName]; exists && vr.currentIndex < len(col) {
 			row[i] = storage.NewBooleanValue(col[vr.currentIndex])
 		} else if col, exists := vr.batch.TimeColumns[colName]; exists && vr.currentIndex < len(col) {
-			// Determine appropriate type based on time value
 			t := col[vr.currentIndex]
-			if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
-				// Looks like just a date
-				row[i] = storage.NewDateValue(t)
-			} else if t.Year() == 1 && t.Month() == 1 && t.Day() == 1 {
-				// Looks like just a time
-				row[i] = storage.NewTimeValue(t)
-			} else {
-				// Full timestamp
-				row[i] = storage.NewTimestampValue(t)
-			}
+			row[i] = storage.NewTimestampValue(t)
 		} else {
 			// Not found or unsupported type
 			row[i] = storage.StaticNullUnknown

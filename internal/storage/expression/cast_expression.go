@@ -80,12 +80,8 @@ func (ce *CastExpression) PerformCast(value storage.ColumnValue) (storage.Column
 		return castToString(value)
 	case storage.BOOLEAN:
 		return castToBoolean(value)
-	case storage.DATE:
-		return castToDate(value)
 	case storage.TIMESTAMP:
 		return castToTimestamp(value)
-	case storage.TIME:
-		return castToTime(value)
 	case storage.JSON:
 		return castToJSON(value)
 	default:
@@ -339,7 +335,7 @@ func compareColumnValues(a, b storage.ColumnValue) int {
 			}
 			return 0
 
-		case storage.TIMESTAMP, storage.DATE, storage.TIME:
+		case storage.TIMESTAMP:
 			aVal, _ := a.AsTimestamp()
 			bVal, _ := b.AsTimestamp()
 			if aVal.Before(bVal) {
@@ -419,7 +415,7 @@ func castToInteger(value storage.ColumnValue) (storage.ColumnValue, error) {
 			return storage.NewIntegerValue(1), nil
 		}
 		return storage.NewIntegerValue(0), nil
-	case storage.TIMESTAMP, storage.DATE, storage.TIME:
+	case storage.TIMESTAMP:
 		// Convert timestamp to Unix timestamp (seconds since epoch)
 		t, ok := value.AsTimestamp()
 		if !ok {
@@ -458,7 +454,7 @@ func castToFloat(value storage.ColumnValue) (storage.ColumnValue, error) {
 			return storage.NewFloatValue(1.0), nil
 		}
 		return storage.NewFloatValue(0.0), nil
-	case storage.TIMESTAMP, storage.DATE, storage.TIME:
+	case storage.TIMESTAMP:
 		// Convert timestamp to Unix timestamp as float
 		t, ok := value.AsTimestamp()
 		if !ok {
@@ -499,20 +495,6 @@ func castToString(value storage.ColumnValue) (storage.ColumnValue, error) {
 			return storage.NewStringValue(""), nil
 		}
 		return storage.NewStringValue(t.Format(time.RFC3339)), nil
-	case storage.DATE:
-		// Format date as string (YYYY-MM-DD)
-		d, ok := value.AsDate()
-		if !ok {
-			return storage.NewStringValue(""), nil
-		}
-		return storage.NewStringValue(d.Format("2006-01-02")), nil
-	case storage.TIME:
-		// Format time as string (HH:MM:SS)
-		t, ok := value.AsTime()
-		if !ok {
-			return storage.NewStringValue(""), nil
-		}
-		return storage.NewStringValue(t.Format("15:04:05")), nil
 	case storage.JSON:
 		// JSON as string (the raw JSON string)
 		s, _ := value.AsString()
@@ -548,36 +530,6 @@ func castToBoolean(value storage.ColumnValue) (storage.ColumnValue, error) {
 	}
 }
 
-func castToDate(value storage.ColumnValue) (storage.ColumnValue, error) {
-	switch value.Type() {
-	case storage.TIMESTAMP:
-		// Extract date part from timestamp
-		t, ok := value.AsTimestamp()
-		if !ok {
-			return storage.NewDateValue(time.Now()), nil
-		}
-		// Remove time component
-		date := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-		return storage.NewDateValue(date), nil
-	case storage.DATE:
-		// Already a date, return as is
-		d, _ := value.AsDate()
-		return storage.NewDateValue(d), nil
-	case storage.TEXT:
-		// Parse string to date
-		s, _ := value.AsString()
-		// Try various date formats
-		if d, err := storage.ParseDate(s); err == nil {
-			return storage.NewDateValue(d), nil
-		}
-		// Default to current date if parsing fails
-		return storage.NewDateValue(time.Now()), nil
-	default:
-		// Default to current date for unsupported types
-		return storage.NewDateValue(time.Now()), nil
-	}
-}
-
 func castToTimestamp(value storage.ColumnValue) (storage.ColumnValue, error) {
 	switch value.Type() {
 	case storage.INTEGER:
@@ -592,10 +544,6 @@ func castToTimestamp(value storage.ColumnValue) (storage.ColumnValue, error) {
 		// Already a timestamp, return as is
 		t, _ := value.AsTimestamp()
 		return storage.NewTimestampValue(t), nil
-	case storage.DATE:
-		// Convert date to timestamp (midnight on that date)
-		d, _ := value.AsDate()
-		return storage.NewTimestampValue(d), nil
 	case storage.TEXT:
 		// Parse string to timestamp
 		s, _ := value.AsString()
@@ -607,39 +555,6 @@ func castToTimestamp(value storage.ColumnValue) (storage.ColumnValue, error) {
 	default:
 		// Default to current timestamp for unsupported types
 		return storage.NewTimestampValue(time.Now()), nil
-	}
-}
-
-func castToTime(value storage.ColumnValue) (storage.ColumnValue, error) {
-	switch value.Type() {
-	case storage.TIME:
-		// Already a time, return as is
-		t, _ := value.AsTime()
-		return storage.NewTimeValue(t), nil
-	case storage.TIMESTAMP:
-		// Extract time part from timestamp
-		t, ok := value.AsTimestamp()
-		if !ok {
-			return storage.NewTimeValue(time.Now()), nil
-		}
-		timeOnly := time.Date(1, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
-		return storage.NewTimeValue(timeOnly), nil
-	case storage.TEXT:
-		// Parse string to time
-		s, _ := value.AsString()
-		if t, err := storage.ParseTime(s); err == nil {
-			timeOnly := time.Date(1, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
-			return storage.NewTimeValue(timeOnly), nil
-		}
-		// Default to current time if parsing fails
-		now := time.Now()
-		timeOnly := time.Date(1, 1, 1, now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), now.Location())
-		return storage.NewTimeValue(timeOnly), nil
-	default:
-		// Default to current time for unsupported types
-		now := time.Now()
-		timeOnly := time.Date(1, 1, 1, now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), now.Location())
-		return storage.NewTimeValue(timeOnly), nil
 	}
 }
 

@@ -2,7 +2,6 @@ package parser
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -3037,13 +3036,7 @@ func (p *Parser) parseStringLiteral() Expression {
 		}
 
 		// Add type hints based on content for special types
-		// Check for DATE format (YYYY-MM-DD)
-		if matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, value); matched {
-			strLiteral.TypeHint = "DATE"
-		} else if matched, _ := regexp.MatchString(`^\d{2}:\d{2}:\d{2}$`, value); matched {
-			// Check for TIME format (HH:MM:SS)
-			strLiteral.TypeHint = "TIME"
-		} else if len(value) > 0 && value[0] == '{' && value[len(value)-1] == '}' {
+		if len(value) > 0 && value[0] == '{' && value[len(value)-1] == '}' {
 			// Check for JSON format (starts with { and ends with })
 			strLiteral.TypeHint = "JSON"
 		}

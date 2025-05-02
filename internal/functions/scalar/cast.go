@@ -91,11 +91,7 @@ func (f *CastFunction) Evaluate(args ...interface{}) (interface{}, error) {
 		return castToString(value)
 	case "BOOLEAN", "BOOL":
 		return castToBoolean(value)
-	case "DATE":
-		return castToDate(value)
-	case "TIME":
-		return castToTime(value)
-	case "TIMESTAMP", "DATETIME":
+	case "TIMESTAMP", "DATETIME", "DATE", "TIME":
 		return castToTimestamp(value)
 	case "JSON":
 		return castToJSON(value)
@@ -201,7 +197,7 @@ func castToString(value interface{}) (string, error) {
 	case bool:
 		return strconv.FormatBool(v), nil
 	case time.Time:
-		return v.Format(time.RFC3339Nano), nil
+		return v.Format(time.RFC3339), nil
 	default:
 		// For any other type, use fmt.Sprintf for general string conversion
 		return fmt.Sprintf("%v", v), nil
@@ -227,37 +223,6 @@ func castToBoolean(value interface{}) (bool, error) {
 		return s == "true" || s == "yes" || s == "1" || s != "" && s != "0" && s != "false" && s != "no", nil
 	default:
 		return false, fmt.Errorf("cannot convert %T to BOOLEAN", value)
-	}
-}
-
-func castToDate(value interface{}) (time.Time, error) {
-	switch v := value.(type) {
-	case time.Time:
-		// Keep just the date part
-		year, month, day := v.Date()
-		return time.Date(year, month, day, 0, 0, 0, 0, time.UTC), nil
-	case string:
-		if t, err := storage.ParseDate(v); err == nil {
-			return t, nil
-		}
-		return time.Time{}, fmt.Errorf("cannot parse %q as DATE", v)
-	default:
-		return time.Time{}, fmt.Errorf("cannot convert %T to DATE", value)
-	}
-}
-
-func castToTime(value interface{}) (time.Time, error) {
-	switch v := value.(type) {
-	case time.Time:
-		// Keep just the time part
-		return time.Date(0, 1, 1, v.Hour(), v.Minute(), v.Second(), v.Nanosecond(), time.UTC), nil
-	case string:
-		if t, err := storage.ParseTime(v); err == nil {
-			return t, nil
-		}
-		return time.Time{}, fmt.Errorf("cannot parse %q as TIME", v)
-	default:
-		return time.Time{}, fmt.Errorf("cannot convert %T to TIME", value)
 	}
 }
 

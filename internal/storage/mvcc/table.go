@@ -351,14 +351,6 @@ func (mt *MVCCTable) validateRow(row storage.Row) error {
 				if _, ok := row[i].AsTimestamp(); !ok {
 					return fmt.Errorf("type mismatch in column '%s': expected Timestamp", col.Name)
 				}
-			case storage.TypeDate:
-				if _, ok := row[i].AsDate(); !ok {
-					return fmt.Errorf("type mismatch in column '%s': expected Date", col.Name)
-				}
-			case storage.TypeTime:
-				if _, ok := row[i].AsTime(); !ok {
-					return fmt.Errorf("type mismatch in column '%s': expected Time", col.Name)
-				}
 			case storage.TypeJSON:
 				if _, ok := row[i].AsJSON(); !ok {
 					return fmt.Errorf("type mismatch in column '%s': expected JSON", col.Name)

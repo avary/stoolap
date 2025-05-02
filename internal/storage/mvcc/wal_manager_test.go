@@ -133,9 +133,9 @@ func TestSnapshotTimestampParsing(t *testing.T) {
 	utcOffsetHours := float64(utcOffset) / 3600.0
 
 	t.Logf("Local timezone offset: %.1f hours", utcOffsetHours)
-	t.Logf("Original time: %v", now.Format(time.RFC3339Nano))
-	t.Logf("UTC parsed:    %v", utcTime.Format(time.RFC3339Nano))
-	t.Logf("Local parsed:  %v", localTime.Format(time.RFC3339Nano))
+	t.Logf("Original time: %v", now.Format(time.RFC3339))
+	t.Logf("UTC parsed:    %v", utcTime.Format(time.RFC3339))
+	t.Logf("Local parsed:  %v", localTime.Format(time.RFC3339))
 	t.Logf("Nanosecond difference: %d", nanosDiff)
 
 	// In a non-UTC timezone, there should be a difference

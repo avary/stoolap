@@ -19,12 +19,8 @@ func convertDataTypeFromString(typeStr string) (storage.DataType, error) {
 		return storage.TEXT, nil
 	case "BOOLEAN", "BOOL":
 		return storage.BOOLEAN, nil
-	case "TIMESTAMP", "DATETIME":
+	case "TIMESTAMP", "TIMESTAMPTZ", "DATETIME", "DATE", "TIME":
 		return storage.TIMESTAMP, nil
-	case "DATE":
-		return storage.DATE, nil
-	case "TIME":
-		return storage.TIME, nil
 	case "JSON":
 		return storage.JSON, nil
 	default:

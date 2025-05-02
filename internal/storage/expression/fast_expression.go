@@ -139,7 +139,7 @@ func (e *FastSimpleExpression) Evaluate(row storage.Row) (bool, error) {
 		return e.evaluateString(colVal)
 	case storage.TypeBoolean:
 		return e.evaluateBoolean(colVal)
-	case storage.TypeTimestamp, storage.TypeDate, storage.TypeTime:
+	case storage.TypeTimestamp:
 		return e.evaluateTime(colVal)
 	default:
 		// For other types, fall back to string comparison
@@ -288,25 +288,7 @@ func (e *FastSimpleExpression) evaluateBoolean(colVal storage.ColumnValue) (bool
 
 // evaluateTime handles time/date/timestamp comparisons efficiently
 func (e *FastSimpleExpression) evaluateTime(colVal storage.ColumnValue) (bool, error) {
-	var v time.Time
-	var ok bool
-
-	// Try to extract time based on the column type
-	switch colVal.Type() {
-	case storage.TypeTimestamp:
-		v, ok = colVal.AsTimestamp()
-	case storage.TypeDate:
-		v, ok = colVal.AsDate()
-		if !ok { // Fallback for older implementations
-			v, ok = colVal.AsTimestamp()
-		}
-	case storage.TypeTime:
-		v, ok = colVal.AsTime()
-		if !ok { // Fallback for older implementations
-			v, ok = colVal.AsTimestamp()
-		}
-	}
-
+	v, ok := colVal.AsTimestamp()
 	if !ok {
 		return false, nil
 	}
@@ -347,7 +329,7 @@ func (e *FastSimpleExpression) GetValue() interface{} {
 		return e.StringValue
 	case storage.TypeBoolean:
 		return e.BoolValue
-	case storage.TypeTimestamp, storage.TypeDate, storage.TypeTime:
+	case storage.TypeTimestamp:
 		return e.TimeValue
 	default:
 		return nil

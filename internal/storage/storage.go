@@ -22,10 +22,6 @@ const (
 	BOOLEAN
 	// TIMESTAMP represents a timestamp data type
 	TIMESTAMP
-	// DATE represents a date data type (without time)
-	DATE
-	// TIME represents a time data type (without date)
-	TIME
 	// JSON represents a JSON data type
 	JSON
 )
@@ -45,10 +41,6 @@ func (dt DataType) String() string {
 		return "BOOLEAN"
 	case TIMESTAMP:
 		return "TIMESTAMP"
-	case DATE:
-		return "DATE"
-	case TIME:
-		return "TIME"
 	case JSON:
 		return "JSON"
 	default:
@@ -122,8 +114,6 @@ const (
 	TypeString    = TEXT
 	TypeBoolean   = BOOLEAN
 	TypeTimestamp = TIMESTAMP
-	TypeDate      = DATE
-	TypeTime      = TIME
 	TypeJSON      = JSON
 )
 
@@ -182,8 +172,6 @@ type ColumnValue interface {
 	AsBoolean() (bool, bool)
 	AsString() (string, bool)
 	AsTimestamp() (time.Time, bool)
-	AsDate() (time.Time, bool)
-	AsTime() (time.Time, bool)
 	AsJSON() (string, bool)
 	AsInterface() interface{} // Returns the underlying value as an interface{}
 

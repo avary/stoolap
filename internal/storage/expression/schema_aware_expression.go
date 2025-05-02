@@ -865,56 +865,6 @@ func evaluateComparison(colValue storage.ColumnValue, operator storage.Operator,
 			return false, fmt.Errorf("unsupported operator for boolean: %v", operator)
 		}
 
-		// Handle date and timestamp types
-	case storage.TypeDate:
-		// For dates, we need special handling
-		dateTime, ok := colValue.AsDate()
-		if !ok {
-			// Try timestamp as fallback
-			dateTime, ok = colValue.AsTimestamp()
-			if !ok {
-				return false, nil
-			}
-		}
-
-		// Convert value to time.Time for comparison
-		var compareTime time.Time
-		switch val := value.(type) {
-		case time.Time:
-			compareTime = val
-		case string:
-			var err error
-			compareTime, err = storage.ParseDate(val)
-			if err != nil {
-				return false, fmt.Errorf("could not parse date string: %v", err)
-			}
-		default:
-			return false, fmt.Errorf("cannot compare date with %T", value)
-		}
-
-		// For date comparison, we only care about the date part
-		// Strip out the time components
-		dt1 := time.Date(dateTime.Year(), dateTime.Month(), dateTime.Day(), 0, 0, 0, 0, time.UTC)
-		dt2 := time.Date(compareTime.Year(), compareTime.Month(), compareTime.Day(), 0, 0, 0, 0, time.UTC)
-
-		// Apply the operator to the dates
-		switch operator {
-		case storage.EQ:
-			return dt1.Equal(dt2), nil
-		case storage.NE:
-			return !dt1.Equal(dt2), nil
-		case storage.GT:
-			return dt1.After(dt2), nil
-		case storage.GTE:
-			return dt1.After(dt2) || dt1.Equal(dt2), nil
-		case storage.LT:
-			return dt1.Before(dt2), nil
-		case storage.LTE:
-			return dt1.Before(dt2) || dt1.Equal(dt2), nil
-		default:
-			return false, fmt.Errorf("unsupported operator for date: %v", operator)
-		}
-
 	case storage.TypeTimestamp:
 		// For timestamps, use a similar approach to date but with full precision
 		timestamp, ok := colValue.AsTimestamp()
@@ -953,55 +903,6 @@ func evaluateComparison(colValue storage.ColumnValue, operator storage.Operator,
 			return timestamp.Before(compareTime) || timestamp.Equal(compareTime), nil
 		default:
 			return false, fmt.Errorf("unsupported operator for timestamp: %v", operator)
-		}
-
-	case storage.TypeTime:
-		// For time values, first try AsTime then fall back to AsTimestamp
-		timeVal, ok := colValue.AsTime()
-		if !ok {
-			// Fall back to AsTimestamp for backward compatibility
-			timeVal, ok = colValue.AsTimestamp()
-			if !ok {
-				return false, nil
-			}
-		}
-
-		// Convert value to time.Time for comparison
-		var compareTime time.Time
-		switch val := value.(type) {
-		case time.Time:
-			compareTime = time.Date(1, 1, 1, val.Hour(), val.Minute(), val.Second(), val.Nanosecond(), time.UTC)
-		case string:
-			var err error
-			compareTime, err = storage.ParseTime(val)
-			if err != nil {
-				return false, fmt.Errorf("could not parse time string: %v", err)
-			}
-		default:
-			return false, fmt.Errorf("cannot compare time with %T", value)
-		}
-
-		// For time comparison, ALWAYS normalize both to year 1 and use time.Time's comparison methods
-		// This is critical for consistent behavior with TIME values that may have different dates
-		norm1 := time.Date(1, 1, 1, timeVal.Hour(), timeVal.Minute(), timeVal.Second(), 0, time.UTC)
-		norm2 := time.Date(1, 1, 1, compareTime.Hour(), compareTime.Minute(), compareTime.Second(), 0, time.UTC)
-
-		// Apply the operator to the normalized times using time.Time's built-in methods
-		switch operator {
-		case storage.EQ:
-			return norm1.Equal(norm2), nil
-		case storage.NE:
-			return !norm1.Equal(norm2), nil
-		case storage.GT:
-			return norm1.After(norm2), nil
-		case storage.GTE:
-			return norm1.After(norm2) || norm1.Equal(norm2), nil
-		case storage.LT:
-			return norm1.Before(norm2), nil
-		case storage.LTE:
-			return norm1.Before(norm2) || norm1.Equal(norm2), nil
-		default:
-			return false, fmt.Errorf("unsupported operator for time: %v", operator)
 		}
 	}
 

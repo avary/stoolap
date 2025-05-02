@@ -98,19 +98,7 @@ func (e *Evaluator) Evaluate(expr parser.Expression) (storage.ColumnValue, error
 	case *parser.StringLiteral:
 		// Handle special types based on TypeHint
 		switch expr.TypeHint {
-		case "DATE":
-			date, err := storage.ParseDate(expr.Value)
-			if err != nil {
-				return nil, err
-			}
-			return storage.GetPooledDateValue(date), nil
-		case "TIME":
-			t, err := storage.ParseTime(expr.Value)
-			if err != nil {
-				return nil, err
-			}
-			return storage.GetPooledTimeValue(t), nil
-		case "TIMESTAMP":
+		case "TIMESTAMP", "DATE", "TIME":
 			// Try various timestamp formats
 			timestamp, err := storage.ParseTimestamp(expr.Value)
 			if err != nil {
@@ -149,10 +137,6 @@ func (e *Evaluator) Evaluate(expr parser.Expression) (storage.ColumnValue, error
 				return storage.StaticNullString, nil
 			case "BOOLEAN", "BOOL":
 				return storage.StaticNullBoolean, nil
-			case "DATE":
-				return storage.StaticNullDate, nil
-			case "TIME":
-				return storage.StaticNullTime, nil
 			case "TIMESTAMP":
 				return storage.StaticNullTimestamp, nil
 			case "JSON":
@@ -258,42 +242,7 @@ func (e *Evaluator) Evaluate(expr parser.Expression) (storage.ColumnValue, error
 			}
 			return storage.StaticNullBoolean, fmt.Errorf("cannot cast to BOOLEAN")
 
-		case "DATE":
-			// Cast to date - parse from string or use existing date value
-			if exprValue.Type() == storage.TEXT {
-				dateStr, _ := exprValue.AsString()
-				date, err := storage.ParseDate(dateStr)
-				if err != nil {
-					return storage.StaticNullDate, fmt.Errorf("cannot cast '%s' to DATE: %v", dateStr, err)
-				}
-				return storage.GetPooledDateValue(date), nil
-			} else if exprValue.Type() == storage.DATE || exprValue.Type() == storage.TIMESTAMP {
-				t, ok := exprValue.AsTimestamp()
-				if ok {
-					return storage.GetPooledDateValue(t), nil
-				}
-			}
-			return storage.StaticNullDate, fmt.Errorf("cannot cast to DATE")
-
-		case "TIME":
-			// Cast to time - parse from string or use existing time value
-			if exprValue.Type() == storage.TEXT {
-				timeStr, _ := exprValue.AsString()
-				t, err := storage.ParseTime(timeStr)
-				if err != nil {
-					return storage.StaticNullTime, fmt.Errorf("cannot cast '%s' to TIME: %v", timeStr, err)
-				}
-				return storage.GetPooledTimeValue(t), nil
-			} else if exprValue.Type() == storage.TIME || exprValue.Type() == storage.TIMESTAMP {
-				t, ok := exprValue.AsTimestamp()
-				if ok {
-					// Normalize to year 1
-					return storage.GetPooledTimeValue(t), nil
-				}
-			}
-			return storage.StaticNullTime, fmt.Errorf("cannot cast to TIME")
-
-		case "TIMESTAMP":
+		case "TIMESTAMP", "DATE", "TIME":
 			// Cast to timestamp - parse from string or use existing timestamp value
 			if exprValue.Type() == storage.TEXT {
 				tsStr, _ := exprValue.AsString()
@@ -302,7 +251,7 @@ func (e *Evaluator) Evaluate(expr parser.Expression) (storage.ColumnValue, error
 					return storage.StaticNullTimestamp, fmt.Errorf("cannot cast '%s' to TIMESTAMP: %v", tsStr, err)
 				}
 				return storage.GetPooledTimestampValue(ts), nil
-			} else if exprValue.Type() == storage.TIMESTAMP || exprValue.Type() == storage.DATE {
+			} else if exprValue.Type() == storage.TIMESTAMP {
 				t, ok := exprValue.AsTimestamp()
 				if ok {
 					return storage.GetPooledTimestampValue(t), nil

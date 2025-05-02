@@ -115,20 +115,6 @@ func (r *Rows) Next(dest []driver.Value) error {
 					} else {
 						dest[i] = nil
 					}
-				case storage.DATE:
-					if v, ok := colVal.AsDate(); ok {
-						// Format date as YYYY-MM-DD string for standard driver.Value compatibility
-						dest[i] = v.Format("2006-01-02")
-					} else {
-						dest[i] = nil
-					}
-				case storage.TIME:
-					if v, ok := colVal.AsTime(); ok {
-						// Format time as HH:MM:SS string for standard driver.Value compatibility
-						dest[i] = v.Format("15:04:05")
-					} else {
-						dest[i] = nil
-					}
 				case storage.TIMESTAMP:
 					if v, ok := colVal.AsTimestamp(); ok {
 						// For timestamps, we can pass the time.Time value directly

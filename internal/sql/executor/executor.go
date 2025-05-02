@@ -294,10 +294,6 @@ func (e *Executor) getDataTypeString(dataType storage.DataType) string {
 		return "TEXT"
 	case storage.TypeTimestamp:
 		return "TIMESTAMP"
-	case storage.TypeDate:
-		return "DATE"
-	case storage.TypeTime:
-		return "TIME"
 	case storage.TypeJSON:
 		return "JSON"
 	case storage.TypeNull:

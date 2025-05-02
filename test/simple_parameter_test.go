@@ -64,20 +64,6 @@ func (v *testColumnValue) AsTimestamp() (time.Time, bool) {
 	return v.timeValue, true
 }
 
-func (v *testColumnValue) AsDate() (time.Time, bool) {
-	if v.isNil || v.dataType != storage.DATE {
-		return time.Time{}, false
-	}
-	return v.timeValue, true
-}
-
-func (v *testColumnValue) AsTime() (time.Time, bool) {
-	if v.isNil || v.dataType != storage.TIME {
-		return time.Time{}, false
-	}
-	return v.timeValue, true
-}
-
 func (v *testColumnValue) AsJSON() (string, bool) {
 	if v.isNil || v.dataType != storage.JSON {
 		return "", false
@@ -99,7 +85,7 @@ func (v *testColumnValue) AsInterface() interface{} {
 		return v.stringValue
 	case storage.BOOLEAN:
 		return v.boolValue
-	case storage.TIMESTAMP, storage.DATE, storage.TIME:
+	case storage.TIMESTAMP:
 		return v.timeValue
 	case storage.JSON:
 		return v.stringValue

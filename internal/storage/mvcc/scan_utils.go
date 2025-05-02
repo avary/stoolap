@@ -36,8 +36,6 @@ var (
 	scannerFloatStringCache map[int64]string
 
 	// Common date/time format strings
-	scannerDateFormatCache      map[string]string
-	scannerTimeFormatCache      map[string]string
 	scannerTimestampFormatCache map[string]string
 )
 
@@ -57,231 +55,11 @@ func init() {
 	scannerFloatStringCache = make(map[int64]string, 5000)
 
 	// Initialize date/time format caches
-	scannerDateFormatCache = make(map[string]string, 256)
-	scannerTimeFormatCache = make(map[string]string, 256)
 	scannerTimestampFormatCache = make(map[string]string, 256)
-}
-
-// formatDateCached formats a date with caching to reduce allocations
-func formatDateCached(t time.Time) string {
-	// For common dates (last few days/next few days), use pre-computed values
-	// This is a simple but effective optimization for time-series data
-	now := time.Now()
-	dayDiff := (t.Year()-now.Year())*365 + int(t.Month()-now.Month())*30 + (t.Day() - now.Day())
-
-	// If the date is within a week of today, use a fast path
-	if dayDiff >= -7 && dayDiff <= 7 {
-		// Create a cache key (year-month-day) without fmt.Sprintf allocation
-		y, m, d := t.Year(), t.Month(), t.Day()
-
-		// Get an existing buffer from the pool
-		bufPtr := stringBufferPool.Get().(*[]byte)
-		buf := *bufPtr
-		buf = buf[:0] // Reset but keep capacity
-
-		// Format year with 4 digits (manual formatting to avoid allocations)
-		buf = append(buf, byte('0'+y/1000))
-		buf = append(buf, byte('0'+(y/100)%10))
-		buf = append(buf, byte('0'+(y/10)%10))
-		buf = append(buf, byte('0'+y%10))
-		buf = append(buf, '-')
-
-		// Format month with 2 digits
-		if m < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(m), 10)
-		buf = append(buf, '-')
-
-		// Format day with 2 digits
-		if d < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(d), 10)
-
-		// Convert buffer to string and intern it
-		result := string(buf)
-
-		// Return buffer to pool
-		*bufPtr = buf
-		stringBufferPool.Put(bufPtr)
-
-		return result
-	}
-
-	// For other dates, use the cache
-	// Create a direct key without fmt (faster)
-	y, m, d := t.Year(), t.Month(), t.Day()
-
-	// Use a simple encoding scheme to avoid string allocation for the key
-	// Encode as (year*10000 + month*100 + day) which is unique for all dates
-	encodedKey := y*10000 + int(m)*100 + d
-
-	// Check if we have this in a numeric map (faster than string map)
-	cacheMutex.RLock()
-	if formatted, ok := scannerDateFormatCache[strconv.Itoa(encodedKey)]; ok {
-		cacheMutex.RUnlock()
-		return formatted
-	}
-	cacheMutex.RUnlock()
-
-	// Format and cache the result - we use our buffer pool to reduce allocations
-	bufPtr := stringBufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	buf = buf[:0] // Reset but keep capacity
-
-	// Format manually using our buffer
-	y, m, d = t.Date()
-
-	// Format year with 4 digits
-	buf = append(buf, byte('0'+y/1000))
-	buf = append(buf, byte('0'+(y/100)%10))
-	buf = append(buf, byte('0'+(y/10)%10))
-	buf = append(buf, byte('0'+y%10))
-	buf = append(buf, '-')
-
-	// Format month with 2 digits
-	if m < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(m), 10)
-	buf = append(buf, '-')
-
-	// Format day with 2 digits
-	if d < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(d), 10)
-
-	// Convert to string and intern it
-	formatted := string(buf)
-
-	// Return buffer to pool
-	*bufPtr = buf
-	stringBufferPool.Put(bufPtr)
-
-	// Store in cache with a write lock
-	cacheMutex.Lock()
-	// Limit cache size
-	if len(scannerDateFormatCache) < 256 {
-		scannerDateFormatCache[strconv.Itoa(encodedKey)] = formatted
-	}
-	cacheMutex.Unlock()
-
-	return formatted
-}
-
-// formatTimeCached formats a time with caching to reduce allocations
-func formatTimeCached(t time.Time) string {
-	// Use a simple integer key for times (hours*3600 + minutes*60 + seconds)
-	// This avoids string allocations for the key
-	encodedKey := t.Hour()*3600 + t.Minute()*60 + t.Second()
-
-	// Fast path for common time values (every second, every 5 minutes, etc.)
-	// This is very effective for time-series data with regular intervals
-	if (t.Second() == 0 && t.Minute()%5 == 0) || // Every 5 minutes on the hour
-		(t.Minute() == 0 && t.Second() == 0) { // On the hour
-
-		// Get a buffer from the pool
-		bufPtr := stringBufferPool.Get().(*[]byte)
-		buf := *bufPtr
-		buf = buf[:0] // Reset but keep capacity
-
-		// Format time without allocations
-		h, m, s := t.Hour(), t.Minute(), t.Second()
-
-		// Hour with leading zero if needed
-		if h < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(h), 10)
-		buf = append(buf, ':')
-
-		// Minute with leading zero if needed
-		if m < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(m), 10)
-		buf = append(buf, ':')
-
-		// Second with leading zero if needed
-		if s < 10 {
-			buf = append(buf, '0')
-		}
-		buf = strconv.AppendInt(buf, int64(s), 10)
-
-		// Convert to string and intern it
-		formatted := string(buf)
-
-		// Return buffer to pool
-		*bufPtr = buf
-		stringBufferPool.Put(bufPtr)
-
-		return formatted
-	}
-
-	// For other times, check the cache first
-	cacheMutex.RLock()
-	if formatted, ok := scannerTimeFormatCache[strconv.Itoa(encodedKey)]; ok {
-		cacheMutex.RUnlock()
-		return formatted
-	}
-	cacheMutex.RUnlock()
-
-	// Format using buffer pool to avoid allocations
-	bufPtr := stringBufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	buf = buf[:0] // Reset but keep capacity
-
-	// Format time manually
-	h, m, s := t.Hour(), t.Minute(), t.Second()
-
-	// Hour with leading zero if needed
-	if h < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(h), 10)
-	buf = append(buf, ':')
-
-	// Minute with leading zero if needed
-	if m < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(m), 10)
-	buf = append(buf, ':')
-
-	// Second with leading zero if needed
-	if s < 10 {
-		buf = append(buf, '0')
-	}
-	buf = strconv.AppendInt(buf, int64(s), 10)
-
-	// Convert to string and intern it
-	formatted := string(buf)
-
-	// Return buffer to pool
-	*bufPtr = buf
-	stringBufferPool.Put(bufPtr)
-
-	// Store in cache
-	cacheMutex.Lock()
-	if len(scannerTimeFormatCache) < 256 {
-		scannerTimeFormatCache[strconv.Itoa(encodedKey)] = formatted
-	}
-	cacheMutex.Unlock()
-
-	return formatted
 }
 
 // formatTimestampCached formats a timestamp with caching to reduce allocations
 func formatTimestampCached(t time.Time) string {
-	// Check if it's likely a DATE value (no time component)
-	// For DATE values, use the date-only format
-	if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
-		// Use the date formatter instead
-		return formatDateCached(t)
-	}
-
 	// For timestamps, we need to cache more aggressively
 	// Use a compound numeric key based on all components
 	// This avoids string allocations for the key
@@ -550,16 +328,6 @@ func scanDirect(value storage.ColumnValue, ptrType reflect.Type, ptrVal reflect.
 				ptrVal.Elem().SetString(floatToStringCached(f))
 				return true, nil
 			}
-		case storage.DATE:
-			if d, ok := value.AsDate(); ok {
-				ptrVal.Elem().SetString(formatDateCached(d))
-				return true, nil
-			}
-		case storage.TIME:
-			if t, ok := value.AsTime(); ok {
-				ptrVal.Elem().SetString(formatTimeCached(t))
-				return true, nil
-			}
 		case storage.TIMESTAMP:
 			if t, ok := value.AsTimestamp(); ok {
 				ptrVal.Elem().SetString(formatTimestampCached(t))
@@ -580,14 +348,6 @@ func scanDirect(value storage.ColumnValue, ptrType reflect.Type, ptrVal reflect.
 		// Check if it's a time.Time
 		if ptrType.Elem() == reflect.TypeOf(time.Time{}) {
 			if t, ok := value.AsTimestamp(); ok {
-				ptrVal.Elem().Set(reflect.ValueOf(t))
-				return true, nil
-			}
-			if d, ok := value.AsDate(); ok {
-				ptrVal.Elem().Set(reflect.ValueOf(d))
-				return true, nil
-			}
-			if t, ok := value.AsTime(); ok {
 				ptrVal.Elem().Set(reflect.ValueOf(t))
 				return true, nil
 			}
@@ -644,15 +404,6 @@ func formatValueAsString(value storage.ColumnValue) string {
 	case storage.BOOLEAN:
 		if b, ok := value.AsBoolean(); ok {
 			return boolToStringCached(b)
-		}
-	case storage.DATE:
-		// DATE should be formatted in YYYY-MM-DD format without time component
-		if d, ok := value.AsDate(); ok {
-			return formatDateCached(d)
-		}
-	case storage.TIME:
-		if t, ok := value.AsTime(); ok {
-			return formatTimeCached(t)
 		}
 	case storage.TIMESTAMP:
 		if t, ok := value.AsTimestamp(); ok {
@@ -766,16 +517,6 @@ func scanValue(value storage.ColumnValue, dest interface{}) error {
 			*v = t
 			return nil
 		}
-		// Then try date
-		if d, ok := value.AsDate(); ok {
-			*v = d
-			return nil
-		}
-		// Finally try time
-		if t, ok := value.AsTime(); ok {
-			*v = t
-			return nil
-		}
 	case *interface{}:
 		// First try to use the DirectValue.AsInterface() method if available
 		// This avoids any boxing/unboxing and uses the original value reference
@@ -812,16 +553,6 @@ func scanValue(value storage.ColumnValue, dest interface{}) error {
 			}
 		case storage.TIMESTAMP:
 			if t, ok := value.AsTimestamp(); ok {
-				*v = t
-				return nil
-			}
-		case storage.DATE:
-			if d, ok := value.AsDate(); ok {
-				*v = d
-				return nil
-			}
-		case storage.TIME:
-			if t, ok := value.AsTime(); ok {
 				*v = t
 				return nil
 			}

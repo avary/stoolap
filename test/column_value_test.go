@@ -77,17 +77,6 @@ func TestColumnValues(t *testing.T) {
 
 	// Test date/time values
 	now := time.Now()
-	dateValue := storage.NewDateValue(now)
-	if dateValue.Type() != storage.DATE {
-		t.Errorf("Expected TypeDate, got %v", dateValue.Type())
-	}
-	if dateValue.IsNull() {
-		t.Errorf("Expected non-null value")
-	}
-	if _, ok := dateValue.AsDate(); !ok {
-		t.Errorf("Failed to get date value (ok=%v)", ok)
-	}
-
 	timestampValue := storage.NewTimestampValue(now)
 	if timestampValue.Type() != storage.TIMESTAMP {
 		t.Errorf("Expected TypeTimestamp, got %v", timestampValue.Type())

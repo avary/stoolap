@@ -17,7 +17,7 @@ import (
 
 func main() {
 	// Parse command line flags
-	dbPath := flag.String("db", "db:///var/data/binanceapp.db?persistence=true&snapshot_interval=30&keep_snapshots=2", "Database path (db://<path>)")
+	dbPath := flag.String("db", "db:///stoolap.db?persistence=true&snapshot_interval=30&keep_snapshots=2", "Database path (db://<path>)")
 	flag.Parse()
 
 	// Open the database

@@ -142,24 +142,6 @@ func TestInsertWithAllDataTypes(t *testing.T) {
 			},
 		},
 		{
-			name:         "Insert with DATE value",
-			sql:          "INSERT INTO employees (hire_date) VALUES ('2023-05-15')",
-			expectedType: time.Time{},
-			checkFunction: func(v interface{}) bool {
-				t, ok := v.(time.Time)
-				return ok && t.Year() == 2023 && t.Month() == 5 && t.Day() == 15
-			},
-		},
-		{
-			name:         "Insert with TIME value",
-			sql:          "INSERT INTO employees (start_time) VALUES ('14:30:00')",
-			expectedType: time.Time{},
-			checkFunction: func(v interface{}) bool {
-				t, ok := v.(time.Time)
-				return ok && t.Hour() == 14 && t.Minute() == 30 && t.Second() == 0
-			},
-		},
-		{
 			name:         "Insert with JSON object value",
 			sql:          "INSERT INTO employees (metadata) VALUES ('{\"department\":\"Engineering\",\"skills\":[\"Go\",\"SQL\"]}')",
 			expectedType: map[string]interface{}{},

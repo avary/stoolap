@@ -1,9 +1,7 @@
 package test
 
 import (
-	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/bitmap"
@@ -203,59 +201,6 @@ func TestBitmapIndexRangeMultipleTypes(t *testing.T) {
 		resultBitmap.Iterate(func(pos int64) bool {
 			if !expected[pos] {
 				t.Errorf("Unexpected position in boolean range: %d", pos)
-			}
-			delete(expected, pos)
-			return true
-		})
-	})
-
-	// Test date range
-	t.Run("DateRange", func(t *testing.T) {
-		dateIndex := bitmap.NewSingleColumnIndex("date_column", storage.DATE, 0)
-
-		// Add dates for each month of 2023
-		for i := int64(1); i <= 12; i++ {
-			// Make sure single-digit months have leading zero
-			monthStr := strconv.Itoa(int(i))
-			if i < 10 {
-				monthStr = "0" + monthStr
-			}
-
-			dateStr := "2023-" + monthStr + "-01"
-			date, _ := time.Parse("2006-01-02", dateStr)
-			err := dateIndex.AddValue(date, i)
-			if err != nil {
-				t.Fatalf("Failed to add date value %s to index: %v", dateStr, err)
-			}
-		}
-
-		// Test range query: March to July 2023
-		startDate, _ := time.Parse("2006-01-02", "2023-03-01")
-		endDate, _ := time.Parse("2006-01-02", "2023-07-01")
-
-		resultBitmap, err := dateIndex.GetMatchingRange(startDate, endDate, true, true)
-		if err != nil {
-			t.Fatalf("Failed to execute date range query: %v", err)
-		}
-
-		// We should have 5 bits set (positions 3, 4, 5, 6, 7 corresponding to March through July)
-		if resultBitmap.Cardinality() != 5 {
-			t.Errorf("Expected 5 bits set, got %d", resultBitmap.Cardinality())
-
-			// Debug: Print the content of the index
-			t.Logf("Debug: Bitmap index content:")
-			dateIndex.LockForRead()
-			for k := range dateIndex.GetValueMap() {
-				t.Logf("Key: %s", k)
-			}
-			dateIndex.UnlockRead()
-		}
-
-		// Verify exact positions
-		expected := map[int64]bool{3: true, 4: true, 5: true, 6: true, 7: true}
-		resultBitmap.Iterate(func(pos int64) bool {
-			if !expected[pos] {
-				t.Errorf("Unexpected position in date range: %d", pos)
 			}
 			delete(expected, pos)
 			return true

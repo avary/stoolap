@@ -429,24 +429,16 @@ func (idx *Index) GetMatchingPositions(op storage.Operator, value interface{}) (
 					match = !indexVal || compareVal // false <= true or true <= true (always true except when comparing true < false)
 				}
 
-			case storage.TIMESTAMP, storage.DATE:
+			case storage.TIMESTAMP:
 				// Try to parse timestamps
-				indexTime, err := time.Parse(time.RFC3339Nano, strVal)
+				indexTime, err := storage.ParseTimestamp(strVal)
 				if err != nil {
-					// Try date format
-					indexTime, err = time.Parse("2006-01-02", strVal)
-					if err != nil {
-						continue // Skip if not a valid timestamp
-					}
+					continue // Skip if not a valid timestamp
 				}
 
-				compareTime, err := time.Parse(time.RFC3339Nano, strValue)
+				compareTime, err := storage.ParseTimestamp(strValue)
 				if err != nil {
-					// Try date format
-					compareTime, err = time.Parse("2006-01-02", strValue)
-					if err != nil {
-						continue // Skip if not a valid timestamp
-					}
+					continue // Skip if not a valid timestamp
 				}
 
 				// Apply the appropriate comparison
@@ -630,76 +622,22 @@ func (idx *Index) GetMatchingRange(min, max interface{}, minInclusive, maxInclus
 					cmp = 0 // same values
 				}
 
-			case storage.TIMESTAMP, storage.DATE:
+			case storage.TIMESTAMP:
 				// Try to parse timestamps
-				indexTime, err := time.Parse(time.RFC3339Nano, strVal)
+				indexTime, err := storage.ParseTimestamp(strVal)
 				if err != nil {
-					// Try date format
-					indexTime, err = time.Parse("2006-01-02", strVal)
-					if err != nil {
-						continue // Skip if not a valid timestamp
-					}
+					continue // Skip if not a valid timestamp
 				}
 
-				minTime, err := time.Parse(time.RFC3339Nano, minStr)
+				minTime, err := storage.ParseTimestamp(minStr)
 				if err != nil {
-					// Try date format
-					minTime, err = time.Parse("2006-01-02", minStr)
-					if err != nil {
-						continue // Skip if not a valid timestamp
-					}
+					continue // Skip if not a valid timestamp
 				}
 
 				// Compare times
 				if indexTime.Before(minTime) {
 					cmp = -1
 				} else if indexTime.After(minTime) {
-					cmp = 1
-				} else {
-					cmp = 0
-				}
-
-			case storage.TIME:
-				// Try to parse time strings with multiple formats
-				parseFormats := []string{
-					"15:04:05.999999999",
-					"15:04:05",
-					"15:04",
-				}
-
-				var indexTime, maxTime time.Time
-				var timeErr1, timeErr2 error
-
-				// Try to parse index time value with multiple formats
-				for _, format := range parseFormats {
-					indexTime, timeErr1 = time.Parse(format, strVal)
-					if timeErr1 == nil {
-						break
-					}
-				}
-				if timeErr1 != nil {
-					continue // Skip if not parseable as time
-				}
-
-				// Try to parse max time value with multiple formats
-				for _, format := range parseFormats {
-					maxTime, timeErr2 = time.Parse(format, maxStr)
-					if timeErr2 == nil {
-						break
-					}
-				}
-				if timeErr2 != nil {
-					continue // Skip if not parseable as time
-				}
-
-				// Normalize both times to 0001-01-01 date for proper TIME comparison
-				indexNorm := time.Date(1, 1, 1, indexTime.Hour(), indexTime.Minute(), indexTime.Second(), indexTime.Nanosecond(), time.UTC)
-				maxNorm := time.Date(1, 1, 1, maxTime.Hour(), maxTime.Minute(), maxTime.Second(), maxTime.Nanosecond(), time.UTC)
-
-				// Compare times
-				if indexNorm.Before(maxNorm) {
-					cmp = -1
-				} else if indexNorm.After(maxNorm) {
 					cmp = 1
 				} else {
 					cmp = 0
@@ -777,9 +715,9 @@ func (idx *Index) GetMatchingRange(min, max interface{}, minInclusive, maxInclus
 					cmp = 0 // same values
 				}
 
-			case storage.TIMESTAMP, storage.DATE:
+			case storage.TIMESTAMP:
 				// Try to parse timestamps
-				indexTime, err := time.Parse(time.RFC3339Nano, strVal)
+				indexTime, err := time.Parse(time.RFC3339, strVal)
 				if err != nil {
 					// Try date format
 					indexTime, err = time.Parse("2006-01-02", strVal)
@@ -788,7 +726,7 @@ func (idx *Index) GetMatchingRange(min, max interface{}, minInclusive, maxInclus
 					}
 				}
 
-				maxTime, err := time.Parse(time.RFC3339Nano, maxStr)
+				maxTime, err := time.Parse(time.RFC3339, maxStr)
 				if err != nil {
 					// Try date format
 					maxTime, err = time.Parse("2006-01-02", maxStr)
@@ -801,52 +739,6 @@ func (idx *Index) GetMatchingRange(min, max interface{}, minInclusive, maxInclus
 				if indexTime.Before(maxTime) {
 					cmp = -1
 				} else if indexTime.After(maxTime) {
-					cmp = 1
-				} else {
-					cmp = 0
-				}
-
-			case storage.TIME:
-				// Try to parse time strings with multiple formats
-				parseFormats := []string{
-					"15:04:05.999999999",
-					"15:04:05",
-					"15:04",
-				}
-
-				var indexTime, maxTime time.Time
-				var timeErr1, timeErr2 error
-
-				// Try to parse index time value with multiple formats
-				for _, format := range parseFormats {
-					indexTime, timeErr1 = time.Parse(format, strVal)
-					if timeErr1 == nil {
-						break
-					}
-				}
-				if timeErr1 != nil {
-					continue // Skip if not parseable as time
-				}
-
-				// Try to parse max time value with multiple formats
-				for _, format := range parseFormats {
-					maxTime, timeErr2 = time.Parse(format, maxStr)
-					if timeErr2 == nil {
-						break
-					}
-				}
-				if timeErr2 != nil {
-					continue // Skip if not parseable as time
-				}
-
-				// Normalize both times to 0001-01-01 date for proper TIME comparison
-				indexNorm := time.Date(1, 1, 1, indexTime.Hour(), indexTime.Minute(), indexTime.Second(), indexTime.Nanosecond(), time.UTC)
-				maxNorm := time.Date(1, 1, 1, maxTime.Hour(), maxTime.Minute(), maxTime.Second(), maxTime.Nanosecond(), time.UTC)
-
-				// Compare times
-				if indexNorm.Before(maxNorm) {
-					cmp = -1
-				} else if indexNorm.After(maxNorm) {
 					cmp = 1
 				} else {
 					cmp = 0

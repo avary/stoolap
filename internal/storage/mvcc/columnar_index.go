@@ -218,11 +218,6 @@ func compareTimestamps(a, b time.Time, dataType storage.DataType) int {
 	aNorm := storage.NormalizeForDataType(a, dataType)
 	bNorm := storage.NormalizeForDataType(b, dataType)
 
-	// For pure DATE comparisons, we want to compare only the date part
-	if dataType == storage.DATE {
-		return aNorm.Compare(bNorm)
-	}
-
 	// For TIMESTAMP comparisons, we use Unix time for better performance
 	aUnix := aNorm.UnixNano()
 	bUnix := bNorm.UnixNano()
@@ -312,7 +307,7 @@ func compareColumnValues(a, b interface{}) int {
 		}
 		return 1
 
-	case storage.TIMESTAMP, storage.DATE, storage.TIME:
+	case storage.TIMESTAMP:
 		aTime, _ := aVal.AsTimestamp()
 		bTime, _ := bVal.AsTimestamp()
 		// Use specialized timestamp comparison for better performance
@@ -591,21 +586,10 @@ func (idx *ColumnarIndex) GetRowIDsInRange(minValue, maxValue storage.ColumnValu
 	defer idx.mutex.RUnlock()
 
 	// Fast path - most common case
-	if !(idx.dataType == storage.TIMESTAMP || idx.dataType == storage.DATE) ||
+	if !(idx.dataType == storage.TIMESTAMP) ||
 		!(maxValue != nil && !maxValue.IsNull() && includeMax) {
 		// Use the valueTree directly with ColumnValue objects for best performance
 		return idx.valueTree.RangeSearch(minValue, maxValue, includeMin, includeMax)
-	}
-
-	// Special handling only for DATE type with inclusive upper bound - critical optimization path
-	if idx.dataType == storage.DATE {
-		// Make a copy of the value to avoid modifying the original
-		if t, ok := maxValue.AsTimestamp(); ok {
-			// Set to end of day to include the entire day
-			t = storage.DateToEndOfDay(t)
-			adjustedMaxValue := storage.NewDateValue(t)
-			return idx.valueTree.RangeSearch(minValue, adjustedMaxValue, includeMin, includeMax)
-		}
 	}
 
 	// Use the valueTree directly with ColumnValue objects
@@ -614,17 +598,11 @@ func (idx *ColumnarIndex) GetRowIDsInRange(minValue, maxValue storage.ColumnValu
 
 // GetLatestBefore finds the most recent row IDs before a given timestamp
 func (idx *ColumnarIndex) GetLatestBefore(timestamp time.Time) []int64 {
-	if idx.dataType != storage.TIMESTAMP && idx.dataType != storage.DATE {
+	if idx.dataType != storage.TIMESTAMP {
 		return nil
 	}
 
-	// Convert to appropriate column value
-	var tsValue storage.ColumnValue
-	if idx.dataType == storage.TIMESTAMP {
-		tsValue = storage.NewTimestampValue(timestamp)
-	} else {
-		tsValue = storage.NewDateValue(timestamp)
-	}
+	tsValue := storage.NewTimestampValue(timestamp)
 
 	// Use range query with max value as the timestamp and no min value
 	return idx.GetRowIDsInRange(nil, tsValue, false, true) // Up to and including timestamp
@@ -757,16 +735,6 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			}
 
 			if hasRange {
-				// Special case for DATE type with inclusive upper bound
-				if idx.dataType == storage.DATE && maxValue != nil && !maxValue.IsNull() && includeMax {
-					// Make a copy of the value to avoid modifying the original
-					if t, ok := maxValue.AsTimestamp(); ok {
-						// Set to end of day to include the entire day
-						t = storage.DateToEndOfDay(t)
-						maxValue = storage.NewDateValue(t)
-					}
-				}
-
 				return idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
 			}
 		}

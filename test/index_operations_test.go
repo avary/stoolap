@@ -213,7 +213,7 @@ func TestIndexRangeOperations(t *testing.T) {
 			float_val FLOAT,
 			str_val TEXT,
 			bool_val BOOLEAN,
-			date_val DATE
+			date_val TIMESTAMP
 		)
 	`)
 	if err != nil {
@@ -541,8 +541,8 @@ func TestIndexRangeOperations(t *testing.T) {
 			t.Logf("Found match: ID: %d, Date: %s", id, date_val)
 
 			// Validate the date_val is in range
-			if date_val < "2023-03-01" || date_val > "2023-07-01" {
-				t.Errorf("Expected date_val in range ['2023-03-01', '2023-07-01'], got '%s'", date_val)
+			if date_val < "2023-03-01T00:00:00Z" || date_val > "2023-07-01T00:00:00Z" {
+				t.Errorf("Expected date_val in range ['2023-03-01T00:00:00Z', '2023-07-01T00:00:00Z'], got '%s'", date_val)
 			}
 		}
 		if err := rows.Err(); err != nil {

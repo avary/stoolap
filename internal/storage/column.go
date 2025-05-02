@@ -18,8 +18,6 @@ var (
 	StaticNullString    = &DirectValue{dataType: TEXT, isNull: true}
 	StaticNullBoolean   = &DirectValue{dataType: BOOLEAN, isNull: true}
 	StaticNullTimestamp = &DirectValue{dataType: TIMESTAMP, isNull: true}
-	StaticNullDate      = &DirectValue{dataType: DATE, isNull: true}
-	StaticNullTime      = &DirectValue{dataType: TIME, isNull: true}
 	StaticNullJSON      = &DirectValue{dataType: JSON, isNull: true}
 
 	// Map for fast lookup by data type
@@ -30,8 +28,6 @@ var (
 		TEXT:      StaticNullString,
 		BOOLEAN:   StaticNullBoolean,
 		TIMESTAMP: StaticNullTimestamp,
-		DATE:      StaticNullDate,
-		TIME:      StaticNullTime,
 		JSON:      StaticNullJSON,
 	}
 
@@ -194,11 +190,7 @@ func (v *DirectValue) AsString() (string, bool) {
 		}
 		return "false", true
 	case TIMESTAMP:
-		return v.timeValue.Format(time.RFC3339Nano), true
-	case DATE:
-		return v.timeValue.Format("2006-01-02"), true
-	case TIME:
-		return v.timeValue.Format("15:04:05"), true
+		return v.timeValue.Format(time.RFC3339), true
 	default:
 		return "", false
 	}
@@ -210,45 +202,7 @@ func (v *DirectValue) AsTimestamp() (time.Time, bool) {
 		return time.Time{}, true
 	}
 
-	if v.dataType == TIMESTAMP || v.dataType == DATE || v.dataType == TIME {
-		return v.timeValue, true
-	}
-	return time.Time{}, false
-}
-
-// AsDate returns the date value
-func (v *DirectValue) AsDate() (time.Time, bool) {
-	if v.isNull {
-		return time.Time{}, true
-	}
-
-	if v.dataType == DATE || v.dataType == TIMESTAMP {
-		if v.dataType == TIMESTAMP {
-			// Normalize to date-only
-			return time.Date(
-				v.timeValue.Year(), v.timeValue.Month(), v.timeValue.Day(),
-				0, 0, 0, 0, v.timeValue.Location(),
-			), true
-		}
-		return v.timeValue, true
-	}
-	return time.Time{}, false
-}
-
-// AsTime returns the time value
-func (v *DirectValue) AsTime() (time.Time, bool) {
-	if v.isNull {
-		return time.Time{}, true
-	}
-
-	if v.dataType == TIME || v.dataType == TIMESTAMP {
-		// For TIME type, normalize to year 1
-		if v.dataType == TIMESTAMP {
-			return time.Date(
-				1, 1, 1, v.timeValue.Hour(), v.timeValue.Minute(),
-				v.timeValue.Second(), v.timeValue.Nanosecond(), v.timeValue.Location(),
-			), true
-		}
+	if v.dataType == TIMESTAMP {
 		return v.timeValue, true
 	}
 	return time.Time{}, false
@@ -270,16 +224,6 @@ func (v *DirectValue) AsJSON() (string, bool) {
 func (v *DirectValue) AsInterface() interface{} {
 	if v.isNull {
 		return nil
-	}
-
-	// Special case for date/time types - ensure proper string representation
-	switch v.dataType {
-	case DATE:
-		// For DATE type, return a properly formatted date string
-		return FormatDate(v.timeValue)
-	case TIME:
-		// For TIME type, return a properly formatted time string
-		return FormatTime(v.timeValue)
 	}
 
 	return v.valueRef
@@ -326,7 +270,7 @@ func (v *DirectValue) Equals(other ColumnValue) bool {
 		v2, _ := other.AsBoolean()
 		return v1 == v2
 
-	case TIMESTAMP, DATE, TIME:
+	case TIMESTAMP:
 		v1, _ := v.AsTimestamp()
 		v2, _ := other.AsTimestamp()
 		return v1.Equal(v2)
@@ -397,7 +341,7 @@ func (v *DirectValue) Compare(other ColumnValue) (int, error) {
 			}
 			return 0, nil
 
-		case TIMESTAMP, DATE, TIME:
+		case TIMESTAMP:
 			v1, _ := v.AsTimestamp()
 			v2, _ := other.AsTimestamp()
 			return v1.Compare(v2), nil
@@ -501,32 +445,10 @@ func NewDirectValueFromInterface(val interface{}) *DirectValue {
 		}
 		return staticBooleanFalse
 	case time.Time:
-		// Determine if it's a date, time, or timestamp based on zero values
-		hasTime := v.Hour() != 0 || v.Minute() != 0 || v.Second() != 0 || v.Nanosecond() != 0
-		hasDate := v.Year() != 1 || v.Month() != 1 || v.Day() != 1
-
-		if hasDate && hasTime {
-			dv := NewDirectValue(TIMESTAMP)
-			dv.timeValue = v
-			dv.valueRef = v
-			return dv
-		} else if hasDate {
-			dv := NewDirectValue(DATE)
-			dv.timeValue = NormalizeDate(v)
-			dv.valueRef = dv.timeValue
-			return dv
-		} else if hasTime {
-			dv := NewDirectValue(TIME)
-			dv.timeValue = NormalizeTime(v)
-			dv.valueRef = dv.timeValue
-			return dv
-		} else {
-			// Default to timestamp for empty time
-			dv := NewDirectValue(TIMESTAMP)
-			dv.timeValue = v
-			dv.valueRef = v
-			return dv
-		}
+		dv := NewDirectValue(TIMESTAMP)
+		dv.timeValue = v.UTC()
+		dv.valueRef = v.UTC()
+		return dv
 	case []byte:
 		// Try to parse as JSON
 		var jsonObj interface{}
@@ -611,26 +533,8 @@ func NewBooleanValue(value bool) ColumnValue {
 // NewTimestampValue creates a new timestamp value
 func NewTimestampValue(value time.Time) ColumnValue {
 	v := NewDirectValue(TIMESTAMP)
-	v.timeValue = value
-	v.valueRef = value // Store reference to original value
-	return v
-}
-
-// NewDateValue creates a new date value
-func NewDateValue(value time.Time) ColumnValue {
-	v := NewDirectValue(DATE)
-	v.timeValue = value
-	v.valueRef = value // Store reference to original value
-	return v
-}
-
-// NewTimeValue creates a new time value
-func NewTimeValue(value time.Time) ColumnValue {
-	// Always normalize to year 1 for consistent behavior - critical for time comparisons
-	normalizedTime := time.Date(1, 1, 1, value.Hour(), value.Minute(), value.Second(), value.Nanosecond(), time.UTC)
-	v := NewDirectValue(TIME)
-	v.timeValue = normalizedTime
-	v.valueRef = normalizedTime // Store reference to normalized value
+	v.timeValue = value.UTC()
+	v.valueRef = value.UTC() // Store reference to original value
 	return v
 }
 
@@ -667,16 +571,6 @@ func NewNullBooleanValue() ColumnValue {
 // NewNullTimestampValue creates a new NULL timestamp value
 func NewNullTimestampValue() ColumnValue {
 	return StaticNullTimestamp
-}
-
-// NewNullDateValue creates a new NULL date value
-func NewNullDateValue() ColumnValue {
-	return StaticNullDate
-}
-
-// NewNullTimeValue creates a new NULL time value
-func NewNullTimeValue() ColumnValue {
-	return StaticNullTime
 }
 
 // NewNullJSONValue creates a new NULL JSON value

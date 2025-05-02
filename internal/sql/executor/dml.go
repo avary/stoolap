@@ -589,10 +589,6 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 					targetType = storage.TEXT
 				case "BOOLEAN", "BOOL":
 					targetType = storage.BOOLEAN
-				case "DATE":
-					targetType = storage.DATE
-				case "TIME":
-					targetType = storage.TIME
 				case "TIMESTAMP":
 					targetType = storage.TIMESTAMP
 				case "JSON":
@@ -782,10 +778,6 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 				targetType = storage.TEXT
 			case "BOOLEAN", "BOOL":
 				targetType = storage.BOOLEAN
-			case "DATE":
-				targetType = storage.DATE
-			case "TIME":
-				targetType = storage.TIME
 			case "TIMESTAMP":
 				targetType = storage.TIMESTAMP
 			case "JSON":

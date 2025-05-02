@@ -37,7 +37,7 @@ as deprecated.
 // Standard format constants for consistent handling
 const (
 	// Date/time formats for consistent use throughout the codebase
-	TimestampFormat  = time.RFC3339Nano      // Standard output format for timestamps
+	TimestampFormat  = time.RFC3339          // Standard output format for timestamps
 	DateFormat       = "2006-01-02"          // Standard output format for dates
 	TimeFormat       = "15:04:05.999999999"  // Standard output format for times with nanoseconds
 	TimeFormatSimple = "15:04:05"            // Simple time format without nanoseconds
@@ -51,7 +51,7 @@ const (
 var (
 	// Shared format arrays for all time-related parsing to ensure consistency
 	TimestampFormats = []string{
-		time.RFC3339Nano,                // Full precision format
+		time.RFC3339,                    // Full precision format
 		time.RFC3339,                    // Standard ISO format
 		"2006-01-02T15:04:05Z07:00",     // ISO format
 		"2006-01-02T15:04:05",           // ISO format without timezone
@@ -62,26 +62,18 @@ var (
 		"2006-01-02",                    // Date only (will set time to 00:00:00)
 		"2006/01/02 15:04:05",           // Alternative format with slashes
 		"2006/01/02",                    // Alternative date only
-	}
-
-	// Date formats to try
-	DateFormats = []string{
-		"2006-01-02",       // ISO date format
-		"2006/01/02",       // Alternative date format
-		"01/02/2006",       // US format
-		"02/01/2006",       // European format
-		"Jan 02, 2006",     // Month name format
-		"January 02, 2006", // Full month name format
-	}
-
-	// Time formats to try
-	TimeFormats = []string{
-		"15:04:05.999999999", // High precision format
-		"15:04:05.999",       // Millisecond format
-		"15:04:05",           // Standard time format
-		"15:04",              // Hours and minutes only
-		"3:04:05 PM",         // 12-hour format
-		"3:04 PM",            // 12-hour format without seconds
+		"2006-01-02",                    // ISO date format
+		"2006/01/02",                    // Alternative date format
+		"01/02/2006",                    // US format
+		"02/01/2006",                    // European format
+		"Jan 02, 2006",                  // Month name format
+		"January 02, 2006",              // Full month name format
+		"15:04:05.999999999",            // High precision format
+		"15:04:05.999",                  // Millisecond format
+		"15:04:05",                      // Standard time format
+		"15:04",                         // Hours and minutes only
+		"3:04:05 PM",                    // 12-hour format
+		"3:04 PM",                       // 12-hour format without seconds
 	}
 )
 
@@ -95,93 +87,12 @@ func ParseTimestamp(value string) (time.Time, error) {
 		}
 	}
 
-	// If we couldn't parse it as a timestamp, try as a date
-	t, err := ParseDate(value)
-	if err == nil {
-		return t, nil
-	}
-
 	return time.Time{}, fmt.Errorf("invalid timestamp format: %s", value)
-}
-
-// ParseTime parses a time string with better format support
-func ParseTime(value string) (time.Time, error) {
-	// First try all registered time formats
-	for _, format := range TimeFormats {
-		t, err := time.Parse(format, value)
-		if err == nil {
-			// Always normalize to year 1 for time-only values
-			return NormalizeTime(t), nil
-		}
-	}
-
-	// Also try as timestamp and extract time portion
-	t, err := ParseTimestamp(value)
-	if err == nil {
-		return NormalizeTime(t), nil
-	}
-
-	return time.Time{}, fmt.Errorf("invalid time format: %s", value)
-}
-
-// ParseDate parses a date string with better format support
-func ParseDate(value string) (time.Time, error) {
-	// First try all registered date formats
-	for _, format := range DateFormats {
-		t, err := time.Parse(format, value)
-		if err == nil {
-			// Always normalize to start of day in UTC
-			return NormalizeDate(t), nil
-		}
-	}
-
-	// Try timestamp formats and extract date portion
-	for _, format := range TimestampFormats {
-		t, err := time.Parse(format, value)
-		if err == nil {
-			// Normalize to start of day in UTC
-			return NormalizeDate(t), nil
-		}
-	}
-
-	return time.Time{}, fmt.Errorf("invalid date format: %s", value)
-}
-
-// NormalizeDate ensures a time value only contains date information (time set to 00:00:00)
-func NormalizeDate(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-}
-
-// NormalizeTime ensures a time value only contains time information (date set to 0001-01-01)
-func NormalizeTime(t time.Time) time.Time {
-	return time.Date(1, 1, 1, t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
-}
-
-// DateToEndOfDay converts a date to the last nanosecond of that day (23:59:59.999999999)
-func DateToEndOfDay(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
 }
 
 // FormatTimestamp formats a timestamp consistently
 func FormatTimestamp(t time.Time) string {
-	// For dates (time is midnight), use date format
-	if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
-		return t.Format(DateFormat)
-	}
-	return t.Format(TimestampFormat)
-}
-
-// FormatDate formats a date consistently (without time component)
-func FormatDate(t time.Time) string {
-	return t.Format(DateFormat)
-}
-
-// FormatTime formats a time consistently (without date component)
-func FormatTime(t time.Time) string {
-	if t.Nanosecond() == 0 {
-		return t.Format(TimeFormatSimple)
-	}
-	return t.Format(TimeFormat)
+	return t.Format(time.RFC3339)
 }
 
 // ConvertValueToString converts a value to its string representation for indexing
@@ -231,15 +142,6 @@ func ValueToString(value interface{}) string {
 		}
 		return "false"
 	case time.Time:
-		// Use date-only format for values that appear to be just dates
-		if v.Hour() == 0 && v.Minute() == 0 && v.Second() == 0 && v.Nanosecond() == 0 {
-			return FormatDate(v)
-		}
-		// For times with no date component (year 1)
-		if v.Year() == 1 && v.Month() == 1 && v.Day() == 1 {
-			return FormatTime(v)
-		}
-		// Regular timestamp
 		return FormatTimestamp(v)
 	case ColumnValue:
 		// Handle ColumnValue interface
@@ -267,14 +169,6 @@ func ValueToString(value interface{}) string {
 				}
 				return "false"
 			}
-		case DATE:
-			if d, ok := v.AsDate(); ok {
-				return FormatDate(d)
-			}
-		case TIME:
-			if t, ok := v.AsTime(); ok {
-				return FormatTime(t)
-			}
 		case TIMESTAMP:
 			if t, ok := v.AsTimestamp(); ok {
 				return FormatTimestamp(t)
@@ -296,18 +190,6 @@ func ValueToString(value interface{}) string {
 	}
 
 	return ""
-}
-
-// NormalizeDateForRange normalizes a date value for range comparisons
-// For max boundaries with inclusive flag, it sets the time to end of day
-func NormalizeDateForRange(date time.Time, isMaxBoundary, inclusive bool) time.Time {
-	// For inclusive max boundary (<=), set to end of day to include the full day
-	if isMaxBoundary && inclusive {
-		return DateToEndOfDay(date)
-	}
-
-	// Otherwise, normalize to start of day
-	return NormalizeDate(date)
 }
 
 // ConvertToColumnValue converts an interface{} value to a ColumnValue
@@ -404,28 +286,6 @@ func ValueToColumnValue(value interface{}, dataType DataType) ColumnValue {
 		}
 		return NewNullTimestampValue()
 
-	case DATE:
-		switch v := value.(type) {
-		case time.Time:
-			return NewDateValue(NormalizeDate(v))
-		case string:
-			if t, err := ParseDate(v); err == nil {
-				return NewDateValue(t)
-			}
-		}
-		return NewNullDateValue()
-
-	case TIME:
-		switch v := value.(type) {
-		case time.Time:
-			return NewTimeValue(NormalizeTime(v))
-		case string:
-			if t, err := ParseTime(v); err == nil {
-				return NewTimeValue(t)
-			}
-		}
-		return NewNullTimeValue()
-
 	case JSON:
 		switch v := value.(type) {
 		case string:
@@ -494,29 +354,6 @@ func ConvertStorageValueToGoValue(value interface{}, destType DataType) interfac
 	return ValueToColumnValue(value, destType).AsInterface()
 }
 
-// CompareDates compares two dates with proper normalization
-// Returns: -1 if date1 < date2, 0 if equal, 1 if date1 > date2
-func CompareDates(date1, date2 time.Time) int {
-	// Normalize both dates to start of day in UTC
-	date1 = NormalizeDate(date1)
-	date2 = NormalizeDate(date2)
-
-	// Compare using time.Time.Compare()
-	return date1.Compare(date2)
-}
-
-// CompareTimes compares two time values with proper normalization
-// This ensures consistent comparison of time-only values regardless of date component
-// Returns: -1 if time1 < time2, 0 if equal, 1 if time1 > time2
-func CompareTimes(time1, time2 time.Time) int {
-	// Normalize both times to same date in UTC
-	time1 = NormalizeTime(time1)
-	time2 = NormalizeTime(time2)
-
-	// Compare using time.Time.Compare()
-	return time1.Compare(time2)
-}
-
 // CompareTimestamps compares two timestamps with nanosecond precision
 // Returns: -1 if ts1 < ts2, 0 if equal, 1 if ts1 > ts2
 func CompareTimestamps(ts1, ts2 time.Time) int {
@@ -532,14 +369,10 @@ func CompareTimestamps(ts1, ts2 time.Time) int {
 // This ensures consistent handling across the codebase
 func NormalizeForDataType(t time.Time, dataType DataType) time.Time {
 	switch dataType {
-	case DATE:
-		return NormalizeDate(t)
-	case TIME:
-		return NormalizeTime(t)
 	case TIMESTAMP:
 		return t.UTC()
 	default:
-		return t
+		return t.UTC()
 	}
 }
 
@@ -548,10 +381,6 @@ func NormalizeForDataType(t time.Time, dataType DataType) time.Time {
 // Returns: -1 if t1 < t2, 0 if equal, 1 if t1 > t2
 func CompareTimeValues(t1, t2 time.Time, dataType DataType) int {
 	switch dataType {
-	case DATE:
-		return CompareDates(t1, t2)
-	case TIME:
-		return CompareTimes(t1, t2)
 	case TIMESTAMP:
 		return CompareTimestamps(t1, t2)
 	default:
@@ -668,14 +497,6 @@ func ScanColumnValueToDestination(value ColumnValue, dest interface{}) error {
 					reflect.ValueOf(dest).Elem().Set(reflect.ValueOf(t))
 					return nil
 				}
-				if d, ok := value.AsDate(); ok {
-					reflect.ValueOf(dest).Elem().Set(reflect.ValueOf(d))
-					return nil
-				}
-				if t, ok := value.AsTime(); ok {
-					reflect.ValueOf(dest).Elem().Set(reflect.ValueOf(t))
-					return nil
-				}
 				return fmt.Errorf("cannot convert %v to time.Time", value.Type())
 			}
 		}
@@ -748,14 +569,6 @@ func ScanColumnValueToDestination(value ColumnValue, dest interface{}) error {
 			*d = t
 			return nil
 		}
-		if date, ok := value.AsDate(); ok {
-			*d = date
-			return nil
-		}
-		if t, ok := value.AsTime(); ok {
-			*d = t
-			return nil
-		}
 		return fmt.Errorf("cannot convert %v to time.Time", value.Type())
 
 	default:
@@ -821,12 +634,7 @@ func IsTimeInRange(target, min, max time.Time,
 
 	// Handle maximum boundary
 	if !max.IsZero() {
-		// For DATE types with inclusive max, set to end of day
-		if dataType == DATE && maxInclusive {
-			max = DateToEndOfDay(max)
-		} else {
-			max = NormalizeForDataType(max, dataType)
-		}
+		max = NormalizeForDataType(max, dataType)
 
 		// For non-inclusive boundary (<), it must be strictly less
 		if !maxInclusive {

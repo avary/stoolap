@@ -48,20 +48,6 @@ var (
 		},
 	}
 
-	// DateValuePool is a pool for date values
-	dateValuePool = sync.Pool{
-		New: func() interface{} {
-			return &DirectValue{dataType: DATE}
-		},
-	}
-
-	// TimeValuePool is a pool for time values
-	timeValuePool = sync.Pool{
-		New: func() interface{} {
-			return &DirectValue{dataType: TIME}
-		},
-	}
-
 	// JSONValuePool is a pool for JSON values
 	jsonValuePool = sync.Pool{
 		New: func() interface{} {
@@ -151,40 +137,12 @@ func GetPooledColumnValue(val interface{}) ColumnValue {
 		}
 		return staticBooleanFalse
 	case time.Time:
-		// Determine if it's a date, time, or timestamp based on zero values
-		hasTime := v.Hour() != 0 || v.Minute() != 0 || v.Second() != 0 || v.Nanosecond() != 0
-		hasDate := v.Year() != 1 || v.Month() != 1 || v.Day() != 1
-
-		if hasDate && hasTime {
-			obj := timestampValuePool.Get().(*DirectValue)
-			obj.pooled.Store(true)
-			obj.timeValue = v
-			obj.valueRef = v
-			obj.isNull = false
-			return obj
-		} else if hasDate {
-			obj := dateValuePool.Get().(*DirectValue)
-			obj.pooled.Store(true)
-			obj.timeValue = NormalizeDate(v)
-			obj.valueRef = obj.timeValue
-			obj.isNull = false
-			return obj
-		} else if hasTime {
-			obj := timeValuePool.Get().(*DirectValue)
-			obj.pooled.Store(true)
-			obj.timeValue = NormalizeTime(v)
-			obj.valueRef = obj.timeValue
-			obj.isNull = false
-			return obj
-		} else {
-			// Default to timestamp for empty time
-			obj := timestampValuePool.Get().(*DirectValue)
-			obj.pooled.Store(true)
-			obj.timeValue = v
-			obj.valueRef = v
-			obj.isNull = false
-			return obj
-		}
+		obj := timestampValuePool.Get().(*DirectValue)
+		obj.pooled.Store(true)
+		obj.timeValue = v.UTC()
+		obj.valueRef = v.UTC()
+		obj.isNull = false
+		return obj
 	case []byte:
 		// Try to parse as JSON
 		var jsonObj interface{}
@@ -283,30 +241,8 @@ func GetPooledBooleanValue(val bool) ColumnValue {
 func GetPooledTimestampValue(val time.Time) ColumnValue {
 	obj := timestampValuePool.Get().(*DirectValue)
 	obj.pooled.Store(true)
-	obj.timeValue = val
-	obj.valueRef = val
-	obj.isNull = false
-	return obj
-}
-
-// GetPooledDateValue gets a pooled date value
-func GetPooledDateValue(val time.Time) ColumnValue {
-	obj := dateValuePool.Get().(*DirectValue)
-	obj.pooled.Store(true)
-	obj.timeValue = val
-	obj.valueRef = val
-	obj.isNull = false
-	return obj
-}
-
-// GetPooledTimeValue gets a pooled time value
-func GetPooledTimeValue(val time.Time) ColumnValue {
-	// Always normalize to year 1 for consistent behavior
-	normalizedTime := time.Date(1, 1, 1, val.Hour(), val.Minute(), val.Second(), val.Nanosecond(), time.UTC)
-	obj := timeValuePool.Get().(*DirectValue)
-	obj.pooled.Store(true)
-	obj.timeValue = normalizedTime
-	obj.valueRef = normalizedTime
+	obj.timeValue = val.UTC()
+	obj.valueRef = val.UTC()
 	obj.isNull = false
 	return obj
 }
@@ -380,18 +316,6 @@ func PutPooledColumnValue(val ColumnValue) {
 		dv.stringValue = ""
 		dv.boolValue = false
 		timestampValuePool.Put(dv)
-	case DATE:
-		dv.intValue = 0
-		dv.floatValue = 0
-		dv.stringValue = ""
-		dv.boolValue = false
-		dateValuePool.Put(dv)
-	case TIME:
-		dv.intValue = 0
-		dv.floatValue = 0
-		dv.stringValue = ""
-		dv.boolValue = false
-		timeValuePool.Put(dv)
 	case JSON:
 		dv.intValue = 0
 		dv.floatValue = 0

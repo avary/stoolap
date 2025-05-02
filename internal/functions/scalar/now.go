@@ -40,7 +40,7 @@ func (f *NowFunction) Register(registry funcregistry.Registry) {
 
 // Evaluate returns the current date and time
 func (f *NowFunction) Evaluate(args ...interface{}) (interface{}, error) {
-	return time.Now().Format(time.RFC3339Nano), nil
+	return time.Now().Format(time.RFC3339), nil
 }
 
 // NewNowFunction creates a new NOW function
