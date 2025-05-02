@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Object pools for map structures to reduce memory allocations

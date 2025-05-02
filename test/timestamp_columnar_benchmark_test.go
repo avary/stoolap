@@ -6,7 +6,7 @@ import (
 	"time"
 
 	// Import for side effects - driver registration
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 // BenchmarkTimestampOperations tests timestamp operations with and without columnar index

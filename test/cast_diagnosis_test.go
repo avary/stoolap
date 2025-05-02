@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/functions/scalar"
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/internal/functions/scalar"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 func TestCastDiagnosis(t *testing.T) {

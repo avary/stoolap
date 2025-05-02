@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // TestVectorizedExecution tests basic functionality of vectorized execution

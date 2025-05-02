@@ -5,9 +5,9 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/functions/contract"
-	"github.com/semihalev/stoolap/internal/functions/registry"
-	"github.com/semihalev/stoolap/internal/parser/funcregistry"
+	"github.com/stoolap/stoolap/internal/functions/contract"
+	"github.com/stoolap/stoolap/internal/functions/registry"
+	"github.com/stoolap/stoolap/internal/parser/funcregistry"
 )
 
 // MinFunction implements the MIN aggregate function

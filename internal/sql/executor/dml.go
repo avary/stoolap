@@ -7,11 +7,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/semihalev/stoolap/internal/functions/contract"
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
-	"github.com/semihalev/stoolap/internal/storage/mvcc"
+	"github.com/stoolap/stoolap/internal/functions/contract"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
+	"github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 var (

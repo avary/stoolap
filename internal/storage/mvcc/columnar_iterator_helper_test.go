@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // TestIntersectSortedIDs tests the intersectSortedIDs helper function

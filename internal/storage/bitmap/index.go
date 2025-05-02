@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/binser"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/binser"
 )
 
 // Index represents a bitmap index for one or more columns

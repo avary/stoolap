@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // executeCreateIndex executes a CREATE INDEX statement
@@ -91,20 +91,25 @@ func (e *Executor) executeCreateColumnarIndex(tx storage.Transaction, stmt *pars
 	// Get the table name
 	tableName := stmt.TableName.Value
 
-	// Check if the table exists
-	exists, err := e.engine.TableExists(tableName)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return storage.ErrTableNotFound
-	}
-
 	// Get the column name
 	columnName := stmt.ColumnName.Value
 
 	// Determine if this is a unique index
 	isUnique := stmt.IsUnique
+
+	// Check if the index already exists
+	indexExists, err := e.engine.IndexExists(columnName, tableName)
+	if err != nil {
+		return err
+	}
+
+	if indexExists {
+		if stmt.IfNotExists {
+			// If IF NOT EXISTS is specified, silently ignore
+			return nil
+		}
+		return fmt.Errorf("columnar index for column %s already exists on table %s", columnName, tableName)
+	}
 
 	// Create the columnar index
 	return tx.CreateTableColumnarIndex(tableName, columnName, isUnique)
@@ -115,17 +120,22 @@ func (e *Executor) executeDropColumnarIndex(tx storage.Transaction, stmt *parser
 	// Get the table name
 	tableName := stmt.TableName.Value
 
-	// Check if the table exists
-	exists, err := e.engine.TableExists(tableName)
+	// Get the column name
+	columnName := stmt.ColumnName.Value
+
+	// Check if the index already exists
+	indexExists, err := e.engine.IndexExists(columnName, tableName)
 	if err != nil {
 		return err
 	}
-	if !exists {
-		return storage.ErrTableNotFound
-	}
 
-	// Get the column name
-	columnName := stmt.ColumnName.Value
+	if !indexExists {
+		if stmt.IfExists {
+			// If IF EXISTS is specified, silently ignore
+			return nil
+		}
+		return fmt.Errorf("columnar index for column %s not exists on table %s", columnName, tableName)
+	}
 
 	// Drop the columnar index
 	return tx.DropTableColumnarIndex(tableName, columnName)

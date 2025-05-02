@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // InListExpression represents an expression that checks if a column value is in a list of values

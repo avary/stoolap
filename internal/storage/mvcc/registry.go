@@ -4,7 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/fastmap"
+	"github.com/stoolap/stoolap/internal/fastmap"
 )
 
 // IsolationLevel represents the transaction isolation level

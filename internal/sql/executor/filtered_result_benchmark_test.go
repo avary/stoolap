@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // MockResult implements a simple storage.Result for testing

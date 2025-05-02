@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/common"
-	"github.com/semihalev/stoolap/internal/functions/contract"
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/common"
+	"github.com/stoolap/stoolap/internal/functions/contract"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Evaluator evaluates SQL expressions

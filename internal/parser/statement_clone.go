@@ -1,7 +1,7 @@
 package parser
 
 import (
-	"github.com/semihalev/stoolap/internal/parser/funcregistry"
+	"github.com/stoolap/stoolap/internal/parser/funcregistry"
 )
 
 // Cloner is an interface that allows a Node to be cloned

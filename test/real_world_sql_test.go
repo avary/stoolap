@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/parser"
 )
 
 // getParser creates a new parser with functions registered

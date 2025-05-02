@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // Helper function to convert interface slice to driver.NamedValue slice

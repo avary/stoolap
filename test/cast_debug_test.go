@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 func TestCastDebug(t *testing.T) {

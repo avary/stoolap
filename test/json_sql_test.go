@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 func TestJSONSQL(t *testing.T) {

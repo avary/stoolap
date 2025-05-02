@@ -2,3 +2,7 @@ test/var
 var
 works
 CLAUDE.md
+cmd/stoolap/stoolap
+cmd/stoolap/stoolap.db
+
+**/.claude/settings.local.json

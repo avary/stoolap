@@ -1,7 +1,7 @@
 package expression
 
 import (
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Verify all expression types implement IndexableExpression

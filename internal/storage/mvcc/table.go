@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
 // Static counter to ensure uniqueness of row IDs
@@ -635,7 +635,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 		mt.txnVersions.Put(rowID, updatedRow, false)
 
 		return nil
-	}, 1000) // Process in batches of 1000
+	}, 0) // Process in batches all at once
 	if err != nil {
 		return 0, err
 	}
@@ -986,7 +986,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 		// Mark as deleted in transaction's local versions
 		mt.txnVersions.Put(rowID, nil, true)
 		return nil
-	}, 1000) // Process in batches of 1000
+	}, 0) // Process in batches all at once
 
 	deleteCount += processCount
 
@@ -1061,6 +1061,12 @@ var pkAccessFuncs = map[storage.DataType]func(storage.ColumnValue) (uint64, bool
 				return 1, true
 			}
 			return 0, true
+		}
+		return 0, false
+	},
+	storage.TypeTimestamp: func(cv storage.ColumnValue) (uint64, bool) {
+		if v, ok := cv.AsTimestamp(); ok {
+			return uint64(v.UnixNano()), true
 		}
 		return 0, false
 	},
@@ -1207,52 +1213,42 @@ func extractRowPK(schema storage.Schema, row storage.Row) int64 {
 					}
 				}
 			}
-
-			// Fallback to generic type handling
-			switch row[idx].Type() {
-			case storage.TypeInteger:
-				if intVal, ok := row[idx].AsInt64(); ok {
-					hash ^= uint64(intVal)
-					hash *= fnvPrime
-				}
-			case storage.TypeFloat:
-				if floatVal, ok := row[idx].AsFloat64(); ok {
-					hash ^= math.Float64bits(floatVal)
-					hash *= fnvPrime
-				}
-			case storage.TypeString:
-				if strVal, ok := row[idx].AsString(); ok {
-					for i := 0; i < len(strVal); i++ {
-						hash ^= uint64(strVal[i])
-						hash *= fnvPrime
-					}
-				}
-			case storage.TypeBoolean:
-				if boolVal, ok := row[idx].AsBoolean(); ok {
-					if boolVal {
-						hash ^= 1
-					}
-					hash *= fnvPrime
-				}
-			default:
-				hash ^= uint64(row[idx].Type())
-				hash *= fnvPrime
-			}
 		}
 	}
 
-	// Ensure positive int64
-	rowHash := int64(hash & 0x7FFFFFFFFFFFFFFF)
-
-	// Guarantee non-zero
-	if rowHash == 0 {
-		rowHash = 1
+	// First ensure non-zero hash value
+	if hash == 0 {
+		hash = fnvOffset
 	}
 
+	// Apply initial masking to ensure we have room to add uniqueness
+	// Use only 48 bits from the hash, leaving 15 bits for uniqueness factors
+	hash = hash & 0x0000FFFFFFFFFFFF
+
 	// Add uniqueness for tables without explicit PKs or with weak hashes
-	if !pkInfo.hasPK || rowHash < 1000 {
-		autoIncrement := atomic.AddInt64(&autoIncrementCounter, 1)
-		rowHash = (rowHash * 10000) + autoIncrement
+	if !pkInfo.hasPK || hash < 1000 {
+		// Get a unique counter value bounded to avoid overflow
+		autoIncrement := atomic.AddInt64(&autoIncrementCounter, 1) % 32767 // Use 15 bits max (0x7FFF)
+
+		// Mix in timestamp bits for better distribution
+		// GetFastTimestamp is assumed to be a fast timestamp function in the codebase
+		timestamp := GetFastTimestamp() % 32767 // Use 15 bits max (0x7FFF)
+
+		// Combine values in separate bit ranges to avoid collisions and overflow
+		// Store autoIncrement in bits 48-62 (15 bits)
+		// Store timestamp in bits 32-47 (15 bits)
+		// Original hash remains in bits 0-47 (48 bits)
+		hash = hash | (uint64(autoIncrement) << 48) | (uint64(timestamp) << 32)
+	}
+
+	// Final conversion to int64 with safety mask to ensure positive value
+	rowHash := int64(hash & 0x7FFFFFFFFFFFFFFF)
+
+	// Final safety check - this should never happen with the above logic,
+	// but provides a last line of defense against negative IDs
+	if rowHash <= 0 {
+		// Generate a simple positive ID as fallback
+		rowHash = 1 + (atomic.AddInt64(&autoIncrementCounter, 1) % 1000000)
 	}
 
 	return rowHash

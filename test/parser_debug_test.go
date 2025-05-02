@@ -3,11 +3,11 @@ package test
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/parser"
 
 	// Import required for function registration
-	_ "github.com/semihalev/stoolap/internal/functions/aggregate"
-	_ "github.com/semihalev/stoolap/internal/functions/scalar"
+	_ "github.com/stoolap/stoolap/internal/functions/aggregate"
+	_ "github.com/stoolap/stoolap/internal/functions/scalar"
 )
 
 func TestParserDebug(t *testing.T) {

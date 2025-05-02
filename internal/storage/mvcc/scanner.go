@@ -3,8 +3,8 @@ package mvcc
 import (
 	"sync"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
 // MVCCScannerMode defines the scanner's operation mode

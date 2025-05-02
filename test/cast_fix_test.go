@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // TestCastFix tests a direct fix for the CAST expression issue in WHERE clauses

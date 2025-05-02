@@ -4,9 +4,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
-	mvcc "github.com/semihalev/stoolap/internal/storage/mvcc"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
+	mvcc "github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 // TestPrimaryKeyFastPath tests the fast path optimization for primary key operations

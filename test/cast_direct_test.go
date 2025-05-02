@@ -3,7 +3,7 @@ package test
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/functions/scalar"
+	"github.com/stoolap/stoolap/internal/functions/scalar"
 )
 
 func TestCastDirect(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // EngineMetadata represents serializable metadata for the database engine

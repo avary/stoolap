@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/bitmap"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/bitmap"
 )
 
 func TestBitmapIndexRangeOperations(t *testing.T) {

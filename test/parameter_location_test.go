@@ -3,7 +3,7 @@ package test
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/parser"
 )
 
 // parameterInfo holds information about a parameter for testing purposes

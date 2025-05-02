@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 // TestSimpleUpdate tests a simple UPDATE operation with a direct ID comparison

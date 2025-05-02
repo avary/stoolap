@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver" // Import for database registration
+	_ "github.com/stoolap/stoolap/pkg/driver" // Import for database registration
 )
 
 func TestSQLLiteralsSimple(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 // TestFilterPushdown tests that filters are properly pushed down to the storage engine

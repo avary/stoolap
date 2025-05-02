@@ -3,7 +3,7 @@ package mvcc
 import (
 	"context"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // AliasedResult wraps a storage.Result and manages column aliases

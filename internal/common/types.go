@@ -4,7 +4,7 @@ package common
 import (
 	"sync"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Global sync.Pool for map[string]storage.ColumnValue to reduce allocations

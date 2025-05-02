@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/functions/registry"
-	_ "github.com/semihalev/stoolap/pkg/driver" // Register database driver
+	"github.com/stoolap/stoolap/internal/functions/registry"
+	_ "github.com/stoolap/stoolap/pkg/driver" // Register database driver
 )
 
 // TestAggregationDebug is a debug test to help diagnose issues with aggregation functions

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // TestCastSpecialHelper creates a specialized test to diagnose the CAST issue

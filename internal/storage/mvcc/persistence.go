@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/binser"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/binser"
 )
 
 // Default persistence configuration values
@@ -67,7 +67,6 @@ func SerializeIndexMetadata(index *ColumnarIndex) ([]byte, error) {
 	writer := binser.NewWriter()
 	defer writer.Release()
 
-	// Write basic index information
 	writer.WriteString(index.name)
 	writer.WriteString(index.tableName)
 	writer.WriteString(index.columnName)

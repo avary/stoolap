@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/sql"
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/mvcc"
+	"github.com/stoolap/stoolap/internal/sql"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 func TestColumnarIndexSQL(t *testing.T) {

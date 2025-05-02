@@ -5,7 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Tx represents a transaction

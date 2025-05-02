@@ -2,8 +2,6 @@
 package mvcc
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -15,9 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/btree"
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/binser"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/binser"
 )
 
 // Constants for file layout
@@ -135,6 +132,8 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		// Copy the version to avoid concurrent modification issues
 		versionCopy := *version
 
+		versionCopy.TxnID = -1 // Set to -1 to indicate it's a snapshot version
+
 		// Add to batch
 		batch = append(batch, versionCopy)
 
@@ -174,8 +173,30 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		return fmt.Errorf("failed to create disk reader: %w", err)
 	}
 
-	// Add to readers list
+		// Add to readers list and transfer loaded rowIDs tracking
 	dvs.mu.Lock()
+	
+	// Transfer loaded rowIDs tracking from previous reader to the new one
+	if len(dvs.readers) > 0 {
+		previousReader := dvs.readers[len(dvs.readers)-1]
+		
+		// Iterate through all loaded rowIDs and transfer them to the new reader
+		// This ensures we don't reload rows that were already loaded into memory
+		previousReader.LoadedRowIDs.ForEach(func(rowID int64, _ struct{}) bool {
+			reader.LoadedRowIDs.Set(rowID, struct{}{})
+			return true // Continue iteration
+		})
+	}
+	
+	// Manage readers list according to keepCount
+	if len(dvs.readers) > 0 && len(dvs.readers) >= dvs.versionStore.engine.persistence.keepCount {
+		// Remove the oldest reader if we exceed the limit
+		oldestReader := dvs.readers[0]
+		oldestReader.Close()
+		dvs.readers = dvs.readers[1:]
+	}
+	
+	// Add the new reader to the list
 	dvs.readers = append(dvs.readers, reader)
 	dvs.mu.Unlock()
 
@@ -236,28 +257,74 @@ func (dvs *DiskVersionStore) writeMetadata(path string, schema *storage.Schema) 
 	writer.WriteBytes(schemaBytes)
 
 	// Save columnar indexes metadata
+	// First collect all index data under the read lock to minimize lock time
 	var indexDataList [][]byte
 	dvs.versionStore.columnarMutex.RLock()
-	// Write index count
-	writer.WriteUint16(uint16(len(dvs.versionStore.columnarIndexes)))
+	// Store the number of indexes
+	indexCount := len(dvs.versionStore.columnarIndexes)
 
-	// Collect and serialize index data
-	for _, index := range dvs.versionStore.columnarIndexes {
+	// Collect indexes in a deterministic order using a map to prevent duplicate indexes
+	indexMap := make(map[string]*ColumnarIndex)
+	indexNames := make([]string, 0, indexCount)
+
+	// Collect all columnar indexes with details and ensure we have unique instances
+	for name, index := range dvs.versionStore.columnarIndexes {
 		if colIndex, ok := index.(*ColumnarIndex); ok {
-			indexData, err := SerializeIndexMetadata(colIndex)
-			if err != nil {
-				dvs.versionStore.columnarMutex.RUnlock()
-				return fmt.Errorf("failed to serialize index metadata: %w", err)
-			}
-			indexDataList = append(indexDataList, indexData)
+			// Store in our map and track the index names in order
+			indexMap[name] = colIndex
+			indexNames = append(indexNames, name)
 		}
 	}
+
+	// Now create an ordered list of indexes from our map to ensure consistent ordering
+	var columnarIndexes []*ColumnarIndex
+	for _, name := range indexNames {
+		columnarIndexes = append(columnarIndexes, indexMap[name])
+	}
+
 	dvs.versionStore.columnarMutex.RUnlock()
 
-	// Write each index's metadata
+	// Write index count
+	writer.WriteUint16(uint16(indexCount))
+
+	// Create a map to keep track of the indexes by name for verification
+	indexSerialData := make(map[string][]byte)
+
+	// Process each index to create serialized data
+	for _, colIndex := range columnarIndexes {
+		indexData, err := SerializeIndexMetadata(colIndex)
+		if err != nil {
+			return fmt.Errorf("failed to serialize index metadata for %s: %w", colIndex.name, err)
+		}
+
+		// Store in our map
+		indexSerialData[colIndex.name] = indexData
+
+		// Create deep copy of the data to prevent any reference issues
+		dataCopy := make([]byte, len(indexData))
+		copy(dataCopy, indexData)
+
+		// Add the copy to our list
+		indexDataList = append(indexDataList, dataCopy)
+	}
+
+	// Verify the arrays have the same length
+	if len(indexDataList) != len(columnarIndexes) {
+		return fmt.Errorf("mismatch between indexDataList (%d) and columnarIndexes (%d)",
+			len(indexDataList), len(columnarIndexes))
+	}
+
+	// Now write each index's serialized data to the file
 	for _, indexData := range indexDataList {
+		// Write a separator marker (byte value of 0xFF)
+		writer.WriteByte(0xFF)
+
+		// Write data length and content
 		writer.WriteUint32(uint32(len(indexData)))
-		writer.WriteBytes(indexData)
+
+		for _, b := range indexData {
+			writer.WriteByte(b)
+		}
 	}
 
 	_, err = file.Write(writer.Bytes())
@@ -268,7 +335,7 @@ func (dvs *DiskVersionStore) writeMetadata(path string, schema *storage.Schema) 
 	return file.Sync()
 }
 
-// LoadSnapshots loads all snapshots for the table
+// LoadSnapshots loads the most recent snapshot for the table
 func (dvs *DiskVersionStore) LoadSnapshots() error {
 	tableDir := filepath.Join(dvs.baseDir, dvs.tableName)
 
@@ -299,42 +366,61 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 	sort.Strings(snapshotFiles)
 	sort.Strings(metadataFiles)
 
+	if len(snapshotFiles) == 0 {
+		return nil // No snapshots available
+	}
+
 	// Get transaction registry from version store's engine
 	registry := dvs.versionStore.engine.GetRegistry()
 	if registry == nil {
 		return fmt.Errorf("transaction registry not found")
 	}
 
-	// First load metadata files to get index information
-	// Since they should be paired with snapshot files, we'll only need the newest one
+	// Load metadata from the newest file
 	if len(metadataFiles) > 0 {
 		// Get the most recent metadata file
 		metaFile := metadataFiles[len(metadataFiles)-1]
 		err := dvs.loadMetadataFile(metaFile)
 		if err != nil {
 			fmt.Printf("Warning: Failed to load metadata %s: %v\n", metaFile, err)
+			// Continue despite the error, as we might still be able to load the snapshot
 		}
 	}
 
-	// Load each snapshot file
-	for _, file := range snapshotFiles {
-		reader, err := NewDiskReader(file)
-		if err != nil {
-			fmt.Printf("Warning: Failed to load snapshot %s: %v\n", file, err)
-			continue
-		}
+	// Only load the most recent snapshot
+	var reader *DiskReader
+	var loadErr error
 
-		// Get committed transaction IDs from the snapshot and register them
-		// This ensures proper visibility for versions stored in snapshots
-		committedTxns := reader.GetCommittedTransactions()
-		for txnID, commitTS := range committedTxns {
-			// Register each transaction with the transaction registry
-			registry.RecoverCommittedTransaction(txnID, commitTS)
-		}
+	// Try to load the newest snapshot first
+	newestSnapshot := snapshotFiles[len(snapshotFiles)-1]
+	reader, loadErr = NewDiskReader(newestSnapshot)
 
+	// If the newest snapshot fails, try older ones in reverse order
+	if loadErr != nil {
+		fmt.Printf("Warning: Failed to load newest snapshot %s: %v\n", newestSnapshot, loadErr)
+
+		// Try older snapshots as fallback, from newest to oldest
+		for i := len(snapshotFiles) - 2; i >= 0; i-- {
+			reader, loadErr = NewDiskReader(snapshotFiles[i])
+			if loadErr == nil {
+				fmt.Printf("Successfully loaded fallback snapshot %s\n", snapshotFiles[i])
+				break
+			}
+			fmt.Printf("Warning: Failed to load fallback snapshot %s: %v\n", snapshotFiles[i], loadErr)
+		}
+	}
+
+	// If we managed to load any snapshot, add it to readers
+	if reader != nil && loadErr == nil {
 		dvs.mu.Lock()
 		dvs.readers = append(dvs.readers, reader)
 		dvs.mu.Unlock()
+		return nil
+	}
+
+	// If all snapshots failed to load, return the most recent error
+	if loadErr != nil {
+		return fmt.Errorf("failed to load any snapshot: %w", loadErr)
 	}
 
 	return nil
@@ -399,36 +485,72 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	// Process each index
 	var createdIndexes []*ColumnarIndex
 
+	// First read all index metadata
+	var indexMetaList []*IndexMetadata
+
 	for i := uint16(0); i < indexCount; i++ {
-		// Read index data length
-		indexLen, err := reader.ReadUint32()
+		// Always expect and read a separator marker
+		marker, err := reader.ReadByte()
 		if err != nil {
-			return fmt.Errorf("failed to read index data length: %w", err)
+			return fmt.Errorf("failed to read separator marker for index %d: %w", i, err)
+		}
+		if marker != 0xFF {
+			return fmt.Errorf("invalid separator marker for index %d: expected 0xFF, got %X", i, marker)
 		}
 
-		// Read index data
-		indexData, err := reader.ReadBytes()
+		// Read index data length with its type marker
+		indexLen, err := reader.ReadUint32()
 		if err != nil {
-			return fmt.Errorf("failed to read index data: %w", err)
+			return fmt.Errorf("failed to read index data length for index %d: %w", i, err)
 		}
-		if uint32(len(indexData)) != indexLen {
-			return fmt.Errorf("index data length mismatch: %d != %d", len(indexData), indexLen)
+
+		// Additional sanity check for data length
+		if indexLen == 0 || indexLen > 10*1024*1024 { // 10MB max size as sanity check
+			return fmt.Errorf("invalid index data length: %d", indexLen)
+		}
+
+		// Read index data directly (without using ReadBytes that would expect a TypeBytes marker)
+		// Create a buffer for the index data
+		indexData := make([]byte, indexLen)
+
+		// Check if we have enough bytes remaining
+		if reader.RemainingBytes() < int(indexLen) {
+			return fmt.Errorf("not enough data remaining for index %d: need %d bytes, have %d bytes",
+				i, indexLen, reader.RemainingBytes())
+		}
+
+		// Read each byte manually
+		for j := uint32(0); j < indexLen; j++ {
+			b, err := reader.ReadByte()
+			if err != nil {
+				return fmt.Errorf("failed to read byte %d of index data for index %d: %w", j, i, err)
+			}
+			indexData[j] = b
 		}
 
 		// Deserialize index metadata
-		indexMeta, err := DeserializeIndexMetadata(indexData)
-		if err != nil {
-			return fmt.Errorf("failed to deserialize index metadata: %w", err)
+		if len(indexData) < 10 {
+			return fmt.Errorf("index data too small for index %d: %d bytes", i, len(indexData))
 		}
 
+		// Use debug version for detailed logging
+		indexMeta, err := DeserializeIndexMetadata(indexData)
+		if err != nil {
+			return fmt.Errorf("failed to deserialize index metadata for index %d: %w", i, err)
+		}
+
+		// Add to our list for processing after reading all metadata
+		indexMetaList = append(indexMetaList, indexMeta)
+	}
+
+	// Now process each index metadata and create only non-existing indexes
+	for i, indexMeta := range indexMetaList {
 		// Check if this index already exists
 		exists := false
 		dvs.versionStore.columnarMutex.RLock()
-		for name := range dvs.versionStore.columnarIndexes {
-			if name == indexMeta.ColumnName {
-				exists = true
-				break
-			}
+		if _, ok := dvs.versionStore.columnarIndexes[indexMeta.Name]; ok {
+			exists = true
+			fmt.Printf("Index %d (%s) already exists, skipping creation\n", i, indexMeta.Name)
 		}
 		dvs.versionStore.columnarMutex.RUnlock()
 
@@ -449,13 +571,17 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 			return fmt.Errorf("failed to create columnar index: %w", err)
 		}
 
-		// If it's a time index, configure time bucketing
-		if colIndex, ok := index.(*ColumnarIndex); ok && indexMeta.EnableTimeBucketing {
-			colIndex.EnableTimeBucketing(indexMeta.TimeGranularity)
-		}
-
-		// Add to list of created indexes
+		// If it's a columnar index, configure additional properties
 		if colIndex, ok := index.(*ColumnarIndex); ok {
+			// Set primary key flag
+			colIndex.isPrimaryKey = indexMeta.IsPrimaryKey
+
+			// Set time bucketing if needed
+			if indexMeta.EnableTimeBucketing {
+				colIndex.EnableTimeBucketing(indexMeta.TimeGranularity)
+			}
+
+			// Add to list of created indexes
 			createdIndexes = append(createdIndexes, colIndex)
 		}
 	}
@@ -482,14 +608,23 @@ func (dvs *DiskVersionStore) QuickCheckRowExists(rowID int64) bool {
 	dvs.mu.RLock()
 	defer dvs.mu.RUnlock()
 
+	if len(dvs.readers) == 0 {
+		return false // No snapshots available
+	}
+
 	// Check each reader from newest to oldest
-	for i := len(dvs.readers) - 1; i >= 0; i-- {
-		// Check if the rowID exists in the index without reading the row
-		if dvs.readers[i].index != nil {
-			_, found := dvs.readers[i].index.Search(rowID)
-			if found {
-				return true
-			}
+	neweastReader := dvs.readers[len(dvs.readers)-1]
+
+	// Check if the rowID exists in the in-memory version store
+	if _, exists := neweastReader.LoadedRowIDs.Get(rowID); exists {
+		return false
+	}
+
+	// Check if the rowID exists in the index without reading the row
+	if neweastReader.index != nil {
+		_, found := neweastReader.index.Search(rowID)
+		if found {
+			return true
 		}
 	}
 
@@ -501,62 +636,19 @@ func (dvs *DiskVersionStore) GetVersionFromDisk(rowID int64) (RowVersion, bool) 
 	dvs.mu.RLock()
 	defer dvs.mu.RUnlock()
 
+	if len(dvs.readers) == 0 {
+		return RowVersion{}, false // No snapshots available
+	}
+
 	// Check each reader from newest to oldest
-	for i := len(dvs.readers) - 1; i >= 0; i-- {
-		version, found := dvs.readers[i].GetRow(rowID)
-		if found {
-			return version, true
-		}
+	neweastReader := dvs.readers[len(dvs.readers)-1]
+
+	version, found := neweastReader.GetRow(rowID)
+	if found {
+		return version, true
 	}
 
 	return RowVersion{}, false
-}
-
-// GetVersionsInRange retrieves all row versions with rowIDs in the given range
-func (dvs *DiskVersionStore) GetVersionsInRange(minRowID, maxRowID int64) []RowVersion {
-	dvs.mu.RLock()
-	defer dvs.mu.RUnlock()
-
-	if len(dvs.readers) == 0 {
-		return nil
-	}
-
-	// Use the most recent reader for range query
-	reader := dvs.readers[len(dvs.readers)-1]
-
-	// Get the B-Tree index entries in the range
-	values := reader.index.RangeSearch(minRowID, maxRowID)
-	if len(values) == 0 {
-		return nil
-	}
-
-	// Allocate results array
-	results := make([]RowVersion, 0, len(values))
-
-	// Read row versions from disk
-	for _, pair := range values {
-		// Read length prefix using reader's pre-allocated buffer
-		if _, err := reader.file.ReadAt(reader.lenBuffer, pair); err != nil {
-			continue
-		}
-		rowLen := binary.LittleEndian.Uint32(reader.lenBuffer)
-
-		// Read row data
-		rowBytes := make([]byte, rowLen)
-		if _, err := reader.file.ReadAt(rowBytes, pair+4); err != nil {
-			continue
-		}
-
-		// Deserialize row version
-		version, err := deserializeRowVersion(rowBytes)
-		if err != nil {
-			continue
-		}
-
-		results = append(results, version)
-	}
-
-	return results
 }
 
 // GetVersionsBatch retrieves multiple row versions by their IDs
@@ -574,30 +666,15 @@ func (dvs *DiskVersionStore) GetVersionsBatch(rowIDs []int64) map[int64]RowVersi
 
 	result := make(map[int64]RowVersion, len(rowIDs))
 
-	// Start with the newest reader
-	for i := len(dvs.readers) - 1; i >= 0; i-- {
-		reader := dvs.readers[i]
+	// Check each reader from newest to oldest
+	reader := dvs.readers[len(dvs.readers)-1]
 
-		// Process only rowIDs we haven't found yet
-		var remaining []int64
-		for _, id := range rowIDs {
-			if _, found := result[id]; !found {
-				remaining = append(remaining, id)
-			}
-		}
+	// Get rows from this reader
+	versions := reader.GetRowBatch(rowIDs)
 
-		// If we found all rows, we're done
-		if len(remaining) == 0 {
-			break
-		}
-
-		// Get rows from this reader
-		versions := reader.GetRowBatch(remaining)
-
-		// Add found versions to the result
-		for id, version := range versions {
-			result[id] = version
-		}
+	// Add found versions to the result
+	for id, version := range versions {
+		result[id] = version
 	}
 
 	return result
@@ -619,567 +696,6 @@ func (dvs *DiskVersionStore) Close() error {
 	dvs.readers = nil
 
 	return lastErr
-}
-
-// DiskAppender handles writing row versions to disk
-type DiskAppender struct {
-	file            *os.File
-	writer          *bufio.Writer
-	indexBuffer     *bytes.Buffer
-	dataOffset      uint64
-	rowCount        uint64
-	rowIDIndex      map[int64]uint64 // Maps rowIDs to offsets
-	committedTxnIDs map[int64]int64  // Maps committed TxnIDs to timestamps
-}
-
-// NewDiskAppender creates a new disk appender
-func NewDiskAppender(filePath string) (*DiskAppender, error) {
-	file, err := os.Create(filePath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Initialize with 16 byte header
-	header := FileHeader{
-		Magic:   MagicBytes,
-		Version: FileFormatVersion,
-		Flags:   0,
-	}
-
-	headerBytes := make([]byte, FileHeaderSize)
-	binary.LittleEndian.PutUint64(headerBytes[0:8], header.Magic)
-	binary.LittleEndian.PutUint32(headerBytes[8:12], header.Version)
-	binary.LittleEndian.PutUint32(headerBytes[12:16], header.Flags)
-
-	writer := bufio.NewWriterSize(file, DefaultBlockSize)
-	if _, err := writer.Write(headerBytes); err != nil {
-		file.Close()
-		return nil, err
-	}
-
-	return &DiskAppender{
-		file:            file,
-		writer:          writer,
-		indexBuffer:     bytes.NewBuffer(make([]byte, 0, 1024*1024)), // 1MB initial capacity
-		dataOffset:      FileHeaderSize,                              // Start after header
-		rowIDIndex:      make(map[int64]uint64),
-		committedTxnIDs: make(map[int64]int64), // Initialize map of committed TxnIDs
-	}, nil
-}
-
-// Close closes the appender and its file
-func (a *DiskAppender) Close() error {
-	if a.file != nil {
-		if a.writer != nil {
-			a.writer.Flush()
-		}
-		return a.file.Close()
-	}
-	return nil
-}
-
-// WriteSchema writes the table schema to the file
-func (a *DiskAppender) WriteSchema(schema *storage.Schema) error {
-	schemaBytes, err := serializeSchema(schema)
-	if err != nil {
-		return err
-	}
-
-	// Write length of schema data (uint32)
-	lenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBytes, uint32(len(schemaBytes)))
-	if _, err := a.writer.Write(lenBytes); err != nil {
-		return err
-	}
-
-	// Write schema data
-	if _, err := a.writer.Write(schemaBytes); err != nil {
-		return err
-	}
-
-	// Update offset
-	a.dataOffset += 4 + uint64(len(schemaBytes))
-
-	return nil
-}
-
-// AppendRow appends a single row version to the file
-func (a *DiskAppender) AppendRow(version RowVersion) error {
-	// Serialize row
-	rowBytes, err := serializeRowVersion(version)
-	if err != nil {
-		return err
-	}
-
-	// Check if this rowID already exists
-	if _, exists := a.rowIDIndex[version.RowID]; exists {
-		return fmt.Errorf("duplicate rowID: %d", version.RowID)
-	}
-
-	// Store the offset in our index
-	a.rowIDIndex[version.RowID] = a.dataOffset
-
-	// Track committed transaction ID and timestamp
-	// If this version is in the snapshot, its transaction must have been committed
-	// Store the CreateTime as the approximate commit timestamp
-	a.committedTxnIDs[version.TxnID] = version.CreateTime
-
-	// Write row length (uint32)
-	lenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBytes, uint32(len(rowBytes)))
-	if _, err := a.writer.Write(lenBytes); err != nil {
-		return err
-	}
-
-	// Write row data
-	if _, err := a.writer.Write(rowBytes); err != nil {
-		return err
-	}
-
-	// Update offset and counter
-	a.dataOffset += 4 + uint64(len(rowBytes))
-	a.rowCount++
-
-	return nil
-}
-
-// AppendBatch appends a batch of row versions to the file
-func (a *DiskAppender) AppendBatch(versions []RowVersion) error {
-	for _, version := range versions {
-		if err := a.AppendRow(version); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Finalize completes the file by writing the index and footer
-func (a *DiskAppender) Finalize() error {
-	// Flush any pending data
-	if err := a.writer.Flush(); err != nil {
-		return err
-	}
-
-	// Build index - sort by rowID for binary search
-	var sortedKeys []int64
-	for rowID := range a.rowIDIndex {
-		sortedKeys = append(sortedKeys, rowID)
-	}
-	sort.Slice(sortedKeys, func(i, j int) bool {
-		return sortedKeys[i] < sortedKeys[j]
-	})
-
-	// Write each index entry
-	indexOffset := a.dataOffset
-	for _, rowID := range sortedKeys {
-		offset := a.rowIDIndex[rowID]
-
-		// Write rowID (int64)
-		rowIDBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(rowIDBytes, uint64(rowID))
-		a.indexBuffer.Write(rowIDBytes)
-
-		// Write offset (uint64)
-		offsetBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(offsetBytes, offset)
-		a.indexBuffer.Write(offsetBytes)
-	}
-
-	// Write index to file
-	indexBytes := a.indexBuffer.Bytes()
-	if _, err := a.file.WriteAt(indexBytes, int64(indexOffset)); err != nil {
-		return err
-	}
-
-	// Prepare TxnIDs data - write transaction IDs and their commit timestamps
-	txnIDsOffset := indexOffset + uint64(len(indexBytes))
-	txnIDsBuffer := bytes.NewBuffer(make([]byte, 0, len(a.committedTxnIDs)*16)) // Each entry is 16 bytes (TxnID + Timestamp)
-
-	for txnID, timestamp := range a.committedTxnIDs {
-		// Write TxnID (int64)
-		txnIDBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(txnIDBytes, uint64(txnID))
-		txnIDsBuffer.Write(txnIDBytes)
-
-		// Write commit timestamp (int64)
-		timestampBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(timestampBytes, uint64(timestamp))
-		txnIDsBuffer.Write(timestampBytes)
-	}
-
-	// Write transaction IDs to file
-	txnIDsBytes := txnIDsBuffer.Bytes()
-	if _, err := a.file.WriteAt(txnIDsBytes, int64(txnIDsOffset)); err != nil {
-		return err
-	}
-
-	// Prepare footer
-	footer := Footer{
-		IndexOffset:  indexOffset,
-		IndexSize:    uint64(len(indexBytes)),
-		RowCount:     a.rowCount,
-		TxnIDsOffset: txnIDsOffset,
-		TxnIDsCount:  uint64(len(a.committedTxnIDs)),
-		Magic:        MagicBytes,
-	}
-
-	// Write footer
-	footerOffset := txnIDsOffset + uint64(len(txnIDsBytes))
-	footerBytes := make([]byte, 48) // Updated footer size with TxnIDs fields
-	binary.LittleEndian.PutUint64(footerBytes[0:8], footer.IndexOffset)
-	binary.LittleEndian.PutUint64(footerBytes[8:16], footer.IndexSize)
-	binary.LittleEndian.PutUint64(footerBytes[16:24], footer.RowCount)
-	binary.LittleEndian.PutUint64(footerBytes[24:32], footer.TxnIDsOffset)
-	binary.LittleEndian.PutUint64(footerBytes[32:40], footer.TxnIDsCount)
-	binary.LittleEndian.PutUint64(footerBytes[40:48], footer.Magic)
-
-	if _, err := a.file.WriteAt(footerBytes, int64(footerOffset)); err != nil {
-		return err
-	}
-
-	// Force sync to ensure data is on disk
-	return a.file.Sync()
-}
-
-// DiskReader handles reading row versions from disk
-type DiskReader struct {
-	mu       sync.RWMutex
-	file     *os.File
-	filePath string
-
-	// File components
-	fileSize int64
-	header   FileHeader
-	footer   Footer
-	schema   *storage.Schema
-
-	// Row access using optimized B-Tree index
-	index *btree.Int64BTree[int64] // B-Tree index for fast lookups
-
-	// Committed transactions tracking
-	committedTxnIDs map[int64]int64 // Maps committed TxnIDs to timestamps
-
-	// Read buffers to reduce allocations in hot paths
-	lenBuffer []byte // Buffer for reading length prefix
-}
-
-// NewDiskReader creates a new disk reader
-func NewDiskReader(filePath string) (*DiskReader, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get file size
-	stat, err := file.Stat()
-	if err != nil {
-		file.Close()
-		return nil, err
-	}
-
-	reader := &DiskReader{
-		file:            file,
-		filePath:        filePath,
-		fileSize:        stat.Size(),
-		lenBuffer:       make([]byte, 4),       // Pre-allocate buffer for length prefix
-		committedTxnIDs: make(map[int64]int64), // Initialize transaction map
-	}
-
-	// Read header
-	headerBytes := make([]byte, FileHeaderSize)
-	if _, err := file.ReadAt(headerBytes, 0); err != nil {
-		file.Close()
-		return nil, err
-	}
-
-	reader.header.Magic = binary.LittleEndian.Uint64(headerBytes[0:8])
-	reader.header.Version = binary.LittleEndian.Uint32(headerBytes[8:12])
-	reader.header.Flags = binary.LittleEndian.Uint32(headerBytes[12:16])
-
-	// Validate magic bytes
-	if reader.header.Magic != MagicBytes {
-		file.Close()
-		return nil, fmt.Errorf("invalid file format: magic mismatch")
-	}
-
-	// Read footer
-	footerBytes := make([]byte, FooterSize)
-	if _, err := file.ReadAt(footerBytes, stat.Size()-FooterSize); err != nil {
-		file.Close()
-		return nil, err
-	}
-
-	reader.footer.IndexOffset = binary.LittleEndian.Uint64(footerBytes[0:8])
-	reader.footer.IndexSize = binary.LittleEndian.Uint64(footerBytes[8:16])
-	reader.footer.RowCount = binary.LittleEndian.Uint64(footerBytes[16:24])
-	reader.footer.TxnIDsOffset = binary.LittleEndian.Uint64(footerBytes[24:32])
-	reader.footer.TxnIDsCount = binary.LittleEndian.Uint64(footerBytes[32:40])
-	reader.footer.Magic = binary.LittleEndian.Uint64(footerBytes[40:48])
-
-	// Validate footer magic
-	if reader.footer.Magic != MagicBytes {
-		file.Close()
-		return nil, fmt.Errorf("invalid file format: footer magic mismatch")
-	}
-
-	// Load the index for fast access
-	if err := reader.loadIndex(); err != nil {
-		file.Close()
-		return nil, err
-	}
-
-	// Read schema
-	if err := reader.readSchema(); err != nil {
-		file.Close()
-		return nil, err
-	}
-
-	// Load committed transaction IDs if available
-	if reader.footer.TxnIDsCount > 0 && reader.footer.TxnIDsOffset > 0 {
-		if err := reader.loadCommittedTransactions(); err != nil {
-			// Just log the error but continue - this is not critical for functioning
-			fmt.Printf("Warning: Failed to load committed transactions: %v\n", err)
-		}
-	}
-
-	return reader, nil
-}
-
-// Close closes the reader
-func (r *DiskReader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.file != nil {
-		return r.file.Close()
-	}
-	return nil
-}
-
-// loadIndex loads the index from the file
-func (r *DiskReader) loadIndex() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Calculate the number of index entries
-	numEntries := r.footer.IndexSize / IndexEntrySize
-
-	// Allocate buffer for the index
-	indexBytes := make([]byte, r.footer.IndexSize)
-
-	// Read the index
-	if _, err := r.file.ReadAt(indexBytes, int64(r.footer.IndexOffset)); err != nil {
-		return err
-	}
-
-	// Create optimized B-Tree index
-	r.index = btree.NewInt64BTree[int64]()
-
-	// Parse index entries and prepare for batch insertion
-	keys := make([]int64, numEntries)
-	values := make([]int64, numEntries)
-
-	for i := uint64(0); i < numEntries; i++ {
-		offset := i * IndexEntrySize
-		keys[i] = int64(binary.LittleEndian.Uint64(indexBytes[offset : offset+8]))
-		values[i] = int64(binary.LittleEndian.Uint64(indexBytes[offset+8 : offset+16]))
-	}
-
-	// Use optimized batch insertion
-	r.index.BatchInsert(keys, values)
-
-	return nil
-}
-
-// loadCommittedTransactions loads the committed transaction IDs from the file
-func (r *DiskReader) loadCommittedTransactions() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Calculate the number of transactions and total bytes
-	numTxns := r.footer.TxnIDsCount
-	txnIDsBytes := make([]byte, numTxns*16) // Each entry is 16 bytes (TxnID + Timestamp)
-
-	// Read transaction IDs
-	if _, err := r.file.ReadAt(txnIDsBytes, int64(r.footer.TxnIDsOffset)); err != nil {
-		return fmt.Errorf("failed to read transaction IDs: %w", err)
-	}
-
-	// Process each transaction ID and its timestamp
-	for i := uint64(0); i < numTxns; i++ {
-		offset := i * 16
-		txnID := int64(binary.LittleEndian.Uint64(txnIDsBytes[offset : offset+8]))
-		timestamp := int64(binary.LittleEndian.Uint64(txnIDsBytes[offset+8 : offset+16]))
-
-		r.committedTxnIDs[txnID] = timestamp
-	}
-
-	return nil
-}
-
-// readSchema reads the schema from the file
-func (r *DiskReader) readSchema() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Skip header
-	offset := int64(FileHeaderSize)
-
-	// Read schema length
-	lenBytes := make([]byte, 4)
-	if _, err := r.file.ReadAt(lenBytes, offset); err != nil {
-		return err
-	}
-	schemaLen := binary.LittleEndian.Uint32(lenBytes)
-	offset += 4
-
-	// Read schema data
-	schemaBytes := make([]byte, schemaLen)
-	if _, err := r.file.ReadAt(schemaBytes, offset); err != nil {
-		return err
-	}
-
-	// Deserialize schema
-	schema, err := deserializeSchema(schemaBytes)
-	if err != nil {
-		return err
-	}
-
-	r.schema = schema
-	return nil
-}
-
-// GetRow retrieves a row version by rowID
-func (r *DiskReader) GetRow(rowID int64) (RowVersion, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Using B-Tree for faster lookup
-	offset, found := r.index.Search(rowID)
-
-	if !found {
-		return RowVersion{}, false
-	}
-
-	// Read length prefix using pre-allocated buffer
-	if _, err := r.file.ReadAt(r.lenBuffer, offset); err != nil {
-		return RowVersion{}, false
-	}
-	rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
-
-	// Read row data
-	rowBytes := make([]byte, rowLen)
-	if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
-		return RowVersion{}, false
-	}
-
-	// Deserialize row version
-	version, err := deserializeRowVersion(rowBytes)
-	if err != nil {
-		return RowVersion{}, false
-	}
-
-	return version, true
-}
-
-// GetRowBatch retrieves multiple row versions by rowIDs
-func (r *DiskReader) GetRowBatch(rowIDs []int64) map[int64]RowVersion {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if len(rowIDs) == 0 {
-		return nil
-	}
-
-	result := make(map[int64]RowVersion, len(rowIDs))
-
-	for _, rowID := range rowIDs {
-		// Using B-Tree for faster lookup
-		offset, found := r.index.Search(rowID)
-		if !found {
-			continue
-		}
-
-		// Read length prefix
-		if _, err := r.file.ReadAt(r.lenBuffer, offset); err != nil {
-			continue
-		}
-		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
-
-		// Read row data
-		rowBytes := make([]byte, rowLen)
-		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
-			continue
-		}
-
-		// Deserialize row version
-		version, err := deserializeRowVersion(rowBytes)
-		if err != nil {
-			continue
-		}
-
-		result[rowID] = version
-	}
-
-	return result
-}
-
-// GetAllRows retrieves all rows in the file
-// This is used for full table scans from disk
-func (r *DiskReader) GetAllRows() map[int64]RowVersion {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Estimate initial capacity based on row count
-	result := make(map[int64]RowVersion, r.footer.RowCount)
-
-	// Iterate through all entries in the index
-	r.index.ForEach(func(rowID int64, offset int64) bool {
-		// Read length prefix using pre-allocated buffer
-		if _, err := r.file.ReadAt(r.lenBuffer, offset); err != nil {
-			return true // Continue on error
-		}
-		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
-
-		// Read row data
-		rowBytes := make([]byte, rowLen)
-		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
-			return true // Continue on error
-		}
-
-		// Deserialize row version
-		version, err := deserializeRowVersion(rowBytes)
-		if err != nil {
-			return true // Continue on error
-		}
-
-		// Add to result
-		result[rowID] = version
-		return true
-	})
-
-	return result
-}
-
-// GetSchema returns the schema
-func (r *DiskReader) GetSchema() *storage.Schema {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.schema
-}
-
-// GetCommittedTransactions returns the map of committed transaction IDs and their timestamps
-func (r *DiskReader) GetCommittedTransactions() map[int64]int64 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Create a copy to avoid concurrent map access issues
-	result := make(map[int64]int64, len(r.committedTxnIDs))
-	for txnID, timestamp := range r.committedTxnIDs {
-		result[txnID] = timestamp
-	}
-
-	return result
 }
 
 // Helper functions for serialization

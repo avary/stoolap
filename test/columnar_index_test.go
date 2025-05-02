@@ -4,9 +4,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
-	"github.com/semihalev/stoolap/internal/storage/mvcc"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
+	"github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 func TestColumnarIndex(t *testing.T) {

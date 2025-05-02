@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/sql/executor/vectorized"
+	"github.com/stoolap/stoolap/internal/sql/executor/vectorized"
 )
 
 // Benchmark sizes

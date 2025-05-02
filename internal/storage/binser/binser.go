@@ -35,6 +35,11 @@ const (
 	TypeIdxMeta   byte = 22
 )
 
+// BytesToUint32 is a utility function to convert a 4-byte slice to uint32
+var BytesToUint32 = func(b []byte) uint32 {
+	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
 var (
 	// ErrInvalidType is returned when an unsupported type is encountered
 	ErrInvalidType = errors.New("binser: invalid type")
@@ -286,6 +291,23 @@ func (r *Reader) UnreadByte() error {
 	return nil
 }
 
+// PeekByte returns the next byte without advancing the position
+func (r *Reader) PeekByte() (byte, error) {
+	if r.pos >= len(r.buf) {
+		return 0, ErrBufferTooSmall
+	}
+	return r.buf[r.pos], nil
+}
+
+// PeekUint8 peeks at the next uint8 value without advancing the position
+// Unlike ReadUint8, this does not check the type marker
+func (r *Reader) PeekUint8() (uint8, error) {
+	if r.pos >= len(r.buf) {
+		return 0, ErrBufferTooSmall
+	}
+	return r.buf[r.pos], nil
+}
+
 // NewReader creates a new binary reader
 func NewReader(buf []byte) *Reader {
 	return &Reader{
@@ -298,6 +320,11 @@ func NewReader(buf []byte) *Reader {
 func (r *Reader) Reset(buf []byte) {
 	r.buf = buf
 	r.pos = 0
+}
+
+// RemainingBytes returns the number of unread bytes in the buffer
+func (r *Reader) RemainingBytes() int {
+	return len(r.buf) - r.pos
 }
 
 // ReadType reads the type of the next value

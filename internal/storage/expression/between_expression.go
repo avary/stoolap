@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // BetweenExpression represents an expression that checks if a column value is between a lower and upper bound

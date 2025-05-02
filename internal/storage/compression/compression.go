@@ -3,7 +3,7 @@ package compression
 import (
 	"errors"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Common errors

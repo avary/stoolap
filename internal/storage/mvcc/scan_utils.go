@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // String handling system

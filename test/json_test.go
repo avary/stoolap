@@ -3,7 +3,7 @@ package test
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 func TestJSONParsing(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"database/sql/driver"
 	"testing"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // Helper function to convert interface slice to driver.NamedValue slice

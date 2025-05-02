@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 func TestColumnarIndex_Drop(t *testing.T) {

@@ -3,7 +3,7 @@ package sql
 import (
 	"database/sql/driver"
 
-	"github.com/semihalev/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/parser"
 )
 
 // parameter provides parameter substitution without modifying AST

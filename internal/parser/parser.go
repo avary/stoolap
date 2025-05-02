@@ -7,12 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/functions/registry"
-	"github.com/semihalev/stoolap/internal/parser/funcregistry"
+	"github.com/stoolap/stoolap/internal/functions/registry"
+	"github.com/stoolap/stoolap/internal/parser/funcregistry"
 
-	_ "github.com/semihalev/stoolap/internal/functions/aggregate"
-	_ "github.com/semihalev/stoolap/internal/functions/scalar"
-	_ "github.com/semihalev/stoolap/internal/functions/window"
+	_ "github.com/stoolap/stoolap/internal/functions/aggregate"
+	_ "github.com/stoolap/stoolap/internal/functions/scalar"
+	_ "github.com/stoolap/stoolap/internal/functions/window"
 )
 
 // Precedence levels for operators

@@ -3,7 +3,7 @@ package expression
 import (
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // JSONPathExpression is a concrete implementation of IndexableExpression

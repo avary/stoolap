@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/parser"
 )
 
 // CachedQueryPlan represents a parsed and prepared statement that can be reused

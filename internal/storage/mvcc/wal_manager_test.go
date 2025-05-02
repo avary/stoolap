@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Helper functions for creating and manipulating WAL entries for testing

@@ -3,7 +3,7 @@ package expression
 import (
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // FastSimpleExpression is a highly optimized version of SimpleExpression

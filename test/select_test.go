@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 // TestSelectWithComplexWhere tests SELECT queries with complex WHERE clauses

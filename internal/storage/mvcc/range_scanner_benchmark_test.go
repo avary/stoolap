@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
 // BenchmarkRangeScanner benchmarks the performance of our optimized RangeScanner implementation

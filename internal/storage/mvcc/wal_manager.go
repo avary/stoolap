@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/fastmap"
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/binser"
+	"github.com/stoolap/stoolap/internal/fastmap"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/binser"
 )
 
 // SyncMode represents the WAL sync strategy

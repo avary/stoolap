@@ -7,11 +7,11 @@ import (
 	"errors"
 	"net/url"
 
-	sqlexecutor "github.com/semihalev/stoolap/internal/sql"
-	"github.com/semihalev/stoolap/internal/storage"
+	sqlexecutor "github.com/stoolap/stoolap/internal/sql"
+	"github.com/stoolap/stoolap/internal/storage"
 
 	// Import the storage engine
-	_ "github.com/semihalev/stoolap/internal/storage/mvcc"
+	_ "github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 // DB represents a stoolap database

@@ -3,7 +3,7 @@ package mvcc
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // TestColumnarIndexIterator tests the actual ColumnarIndexIterator implementation

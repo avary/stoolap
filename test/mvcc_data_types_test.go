@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/mvcc"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 func TestMVCCTableDataTypeValidation(t *testing.T) {

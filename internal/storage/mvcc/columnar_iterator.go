@@ -1,8 +1,8 @@
 package mvcc
 
 import (
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/expression"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
 // ColumnarIndexIterator provides direct and efficient iteration over columnar index matches

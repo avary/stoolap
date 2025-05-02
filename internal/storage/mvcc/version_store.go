@@ -3,12 +3,11 @@ package mvcc
 import (
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"sync/atomic"
 
-	"github.com/semihalev/stoolap/internal/fastmap"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/fastmap"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // RowVersion represents a specific version of a row with complete data
@@ -148,48 +147,6 @@ func (vs *VersionStore) AddVersion(rowID int64, version RowVersion) {
 	}
 }
 
-// HasRowIDWithQuickCheck is a fast check to see if row might exist
-// Returns false if row definitely doesn't exist, avoiding expensive visibility checks
-func (vs *VersionStore) HasRowIDWithQuickCheck(rowID int64, txnID int64) bool {
-	// Check if the version store is closed
-	if vs.closed.Load() {
-		return false
-	}
-
-	// First check if engine registry is available, needed for visibility check
-	if vs.engine == nil || vs.engine.registry == nil {
-		return false
-	}
-
-	// Checking the in-memory store first is almost free
-	versionPtr, exists := vs.versions.Get(rowID)
-	if exists {
-		// If it exists in memory, check visibility
-		return vs.engine.registry.IsVisible(versionPtr.TxnID, txnID) && !versionPtr.IsDeleted
-	}
-
-	// If not in memory and persistence is enabled, check disk store
-	if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
-		// Get the disk store for this table
-		if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists {
-			// Use quick index check to avoid reading the actual row data
-			if diskStore.QuickCheckRowExists(rowID) {
-				// If row exists on disk, we need a full visibility check with the actual data
-				if version, found := diskStore.GetVersionFromDisk(rowID); found {
-					// Check visibility and whether the version is a deletion marker
-					if vs.engine.registry.IsVisible(version.TxnID, txnID) && !version.IsDeleted {
-						// Cache the version in memory for future quick access
-						vs.AddVersion(rowID, version)
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	return false
-}
-
 // QuickCheckRowExistence is a fast check if a row might exist
 // This is optimized for the critical path in Insert operation
 // Returns false if the row definitely doesn't exist
@@ -206,8 +163,7 @@ func (vs *VersionStore) QuickCheckRowExistence(rowID int64) bool {
 	}
 
 	// If not in memory and persistence is enabled, check disk store
-	if vs.engine != nil && vs.engine.persistence != nil &&
-		vs.engine.persistence.IsEnabled() {
+	if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 		// Get the disk store for this table
 		if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists {
 			// Quick index-only check in disk store
@@ -239,18 +195,14 @@ func (vs *VersionStore) GetVisibleVersion(rowID int64, txnID int64) (RowVersion,
 	}
 
 	// If not in memory and persistence is enabled, check disk store
-	if vs.engine != nil && vs.engine.persistence != nil &&
-		vs.engine.persistence.IsEnabled() {
+	if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 		// Get the disk store for this table
 		if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists {
 			// Check if the row exists in disk store
 			if version, found := diskStore.GetVersionFromDisk(rowID); found {
-				// Check visibility based on transaction rules
-				if vs.engine.registry.IsVisible(version.TxnID, txnID) {
-					// Cache the version in memory for future access
-					vs.AddVersion(rowID, version)
-					return version, true
-				}
+				// Cache the version in memory for future access
+				vs.AddVersion(rowID, version)
+				return version, true
 			}
 		}
 	}
@@ -301,8 +253,7 @@ func (vs *VersionStore) IterateVisibleVersions(rowIDs []int64, txnID int64,
 	}
 
 	// If there are IDs not found in memory and persistence is enabled, check disk store
-	if len(notFoundIDs) > 0 && vs.engine != nil &&
-		vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
+	if len(notFoundIDs) > 0 && vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 		// Get the disk store for this table
 		if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists {
 			// Process each rowID not found in memory
@@ -314,16 +265,13 @@ func (vs *VersionStore) IterateVisibleVersions(rowIDs []int64, txnID int64,
 
 				// Check if the row exists in disk store
 				if version, found := diskStore.GetVersionFromDisk(rowID); found {
-					// Check visibility based on transaction rules
-					if vs.engine.registry.IsVisible(version.TxnID, txnID) {
-						// Cache the version in memory for future access
-						vs.AddVersion(rowID, version)
+					// Cache the version in memory for future access
+					vs.AddVersion(rowID, version)
 
-						// Call the callback
-						if !callback(rowID, version) {
-							// Stop iteration if callback returns false
-							return
-						}
+					// Call the callback
+					if !callback(rowID, version) {
+						// Stop iteration if callback returns false
+						return
 					}
 				}
 			}
@@ -332,7 +280,7 @@ func (vs *VersionStore) IterateVisibleVersions(rowIDs []int64, txnID int64,
 }
 
 // GetVisibleVersionsByIDs retrieves visible versions for the given rowIDs
-// This is an optimized batch version of GetVisibleVersion using haxmap for high performance
+// This is an optimized batch version of GetVisibleVersion using fastmap for high performance
 func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map[int64]*RowVersion {
 	// Check if the version store is closed
 	if vs.closed.Load() || vs.versions == nil {
@@ -385,8 +333,7 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 
 	// If persistence is enabled and we have IDs not found in memory,
 	// check the disk store for those IDs
-	if len(notFoundIDs) > 0 && vs.engine != nil &&
-		vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
+	if len(notFoundIDs) > 0 && vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 		// Get the disk store for this table
 		if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists {
 			// Check if closed again
@@ -402,16 +349,13 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 
 				// Process each disk version
 				for rowID, version := range diskVersions {
-					// Check visibility
-					if vs.engine.registry.IsVisible(version.TxnID, txnID) {
-						if !version.IsDeleted {
-							// Cache the version in memory for future access
-							vs.AddVersion(rowID, version)
+					if !version.IsDeleted {
+						// Cache the version in memory for future access
+						vs.AddVersion(rowID, version)
 
-							// Get the cached version pointer from memory to ensure consistency with the pool
-							if versionPtr, exists := vs.versions.Get(rowID); exists {
-								result[rowID] = versionPtr
-							}
+						// Get the cached version pointer from memory to ensure consistency with the pool
+						if versionPtr, exists := vs.versions.Get(rowID); exists {
+							result[rowID] = versionPtr
 						}
 					}
 				}
@@ -420,8 +364,7 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 				for _, rowID := range notFoundIDs {
 					// Check if the row exists in disk store
 					if version, found := diskStore.GetVersionFromDisk(rowID); found {
-						// Check visibility
-						if vs.engine.registry.IsVisible(version.TxnID, txnID) && !version.IsDeleted {
+						if !version.IsDeleted {
 							// Cache the version in memory for future access
 							vs.AddVersion(rowID, version)
 
@@ -490,12 +433,6 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 		return make(map[int64]*RowVersion)
 	}
 
-	// We need to be careful about returning empty results for benchmarks
-	// because it can affect the ability to count affected rows correctly.
-	// The optimization that was here has been removed since it prevented
-	// correct row counting in batch operations.
-
-	// Fast path for DELETE WHERE id > 0 benchmark
 	// If we detect we're in the middle of a bulk delete, and in READ COMMITTED mode (the default),
 	// we can safely return an empty map since none of the versions matter for the operation
 	isBulkDeleteOp := false
@@ -534,89 +471,6 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 	// Get preallocated map from pool with a better initial capacity estimate
 	estimatedSize := vs.versions.Len() / 2 // Most operations only need half the versions
 	result := GetVisibleVersionMap(estimatedSize)
-
-	// Get transaction begin timestamp directly from registry for snapshot isolation
-	var txBeginTS int64
-	if vs.engine.registry.GetIsolationLevel() == SnapshotIsolation {
-		// Get transaction begin timestamp from registry
-		beginTS, active := vs.engine.registry.activeTransactions.Get(txnID)
-		if active {
-			txBeginTS = beginTS
-		} else {
-			// If not active, check if committed
-			commitTS, committed := vs.engine.registry.committedTransactions.Get(txnID)
-			if committed {
-				// Use commit time as an approximation
-				txBeginTS = commitTS
-			}
-		}
-	}
-
-	// Fast path optimized for the benchmark pattern - bulk operations
-	if vs.versions.Len() > 100 && hasSpecificTxnVersions {
-		// Use optimized path for bulk operations
-		return vs.fastBulkGetVisibleVersions(txnID, result)
-	}
-
-	// Check again if closed before starting the main iteration
-	if vs.closed.Load() {
-		// Return the empty map if we were closed during processing
-		ReturnVisibleVersionMap(result)
-		return make(map[int64]*RowVersion)
-	}
-
-	// Standard path for single-version-per-row operations using haxmap's ForEach
-	vs.versions.ForEach(func(rowID int64, versionPtr *RowVersion) bool {
-		// Check if closed during iteration
-		if vs.closed.Load() {
-			return false // Stop iteration
-		}
-
-		// Check if the version is deleted
-		if versionPtr.IsDeleted {
-			// For snapshot isolation, additional checks for delete markers
-			if vs.engine.registry.GetIsolationLevel() == SnapshotIsolation &&
-				versionPtr.TxnID != txnID { // Not our own delete
-				// Get version's transaction commit timestamp
-				// Lock-free check with haxmap
-				commitTS, committed := vs.engine.registry.committedTransactions.Get(versionPtr.TxnID)
-
-				// Only consider committed transactions
-				if committed {
-					// If delete was committed after our transaction started, we shouldn't see it
-					if commitTS > txBeginTS {
-						// Skip this delete marker
-						return true // Continue iteration
-					}
-				}
-			}
-			// Skip deleted rows
-			return true // Continue iteration
-		}
-
-		// Check visibility of the version
-		if vs.engine.registry.IsVisible(versionPtr.TxnID, txnID) {
-			// Add a copy of the visible version to result
-			result[rowID] = versionPtr
-		}
-		return true // Continue iteration
-	})
-
-	// Do a final check if we were closed during the iteration
-	if vs.closed.Load() {
-		// Return the empty map if we were closed during processing
-		ReturnVisibleVersionMap(result)
-		return make(map[int64]*RowVersion)
-	}
-
-	return result
-}
-
-// fastBulkGetVisibleVersions is a specialized version for bulk operations
-// Simplified for single-version-per-row model
-func (vs *VersionStore) fastBulkGetVisibleVersions(
-	txnID int64,
-	result map[int64]*RowVersion) map[int64]*RowVersion {
 
 	// Check if the version store is closed
 	if vs.closed.Load() {
@@ -660,74 +514,30 @@ func (vs *VersionStore) fastBulkGetVisibleVersions(
 		}
 
 		// Only check disk if persistence is enabled
-		if vs.engine != nil && vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
+		if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 			// Get the disk store for this table
 			if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists && len(diskStore.readers) > 0 {
-				// For bulk operations, process the most recent snapshot efficiently
+				// For bulk operations, process the most recent snapshot efficiently using ForEach
+				// to avoid unnecessary allocations of the entire map
 				newestReader := diskStore.readers[len(diskStore.readers)-1]
 
-				// For very large operations, use range scanning by chunks rather than full scan
-				if vs.versions.Len() > 10000 {
-					// Process in chunks to avoid excessive memory usage
-					const batchSize = 5000
-					maxRowID := int64(1000000) // Adjust based on actual data distribution
-
-					for startID := int64(0); startID < maxRowID; startID += int64(batchSize) {
-						// Check if closed during processing
-						if vs.closed.Load() {
-							ReturnVisibleVersionMap(result)
-							return make(map[int64]*RowVersion)
-						}
-
-						endID := startID + int64(batchSize)
-						diskVersions := diskStore.GetVersionsInRange(startID, endID)
-
-						for _, diskVersion := range diskVersions {
-							rowID := diskVersion.RowID
-
-							// Skip if already in result (we already have it in memory)
-							if _, alreadyInResult := result[rowID]; alreadyInResult {
-								continue
-							}
-
-							// For READ COMMITTED, same visibility rules as memory versions
-							if diskVersion.TxnID != txnID && // Skip if owned by current txn
-								!diskVersion.IsDeleted && // Skip if deleted
-								vs.engine.registry.IsDirectlyVisible(diskVersion.TxnID) { // Must be committed
-								// Cache in memory for future use
-								vs.AddVersion(rowID, diskVersion)
-
-								// Get the newly cached version for consistency
-								if versionPtr, exists := vs.versions.Get(rowID); exists {
-									result[rowID] = versionPtr
-								}
-							}
-						}
+				newestReader.ForEach(func(rowID int64, diskVersion RowVersion) bool {
+					// Skip deleted rows
+					if diskVersion.IsDeleted {
+						return true // Continue iteration
 					}
-				} else {
-					// For smaller operations, full scan may be more efficient
-					diskRows := newestReader.GetAllRows()
 
-					for rowID, diskVersion := range diskRows {
-						// Skip if already processed from memory (check result map directly)
-						if _, alreadyInResult := result[rowID]; alreadyInResult {
-							continue
-						}
+					// All rows from disk snapshots have TxnID = -1 and are always visible
+					// Cache in memory for future use
+					vs.AddVersion(rowID, diskVersion)
 
-						// For READ COMMITTED, same visibility rules as memory versions
-						if diskVersion.TxnID != txnID && // Skip if owned by current txn
-							!diskVersion.IsDeleted && // Skip if deleted
-							vs.engine.registry.IsDirectlyVisible(diskVersion.TxnID) { // Must be committed
-							// Cache in memory for future use
-							vs.AddVersion(rowID, diskVersion)
-
-							// Get the newly cached version for consistency
-							if versionPtr, exists := vs.versions.Get(rowID); exists {
-								result[rowID] = versionPtr
-							}
-						}
+					// Get the newly cached version for consistency
+					if versionPtr, exists := vs.versions.Get(rowID); exists {
+						result[rowID] = versionPtr
 					}
-				}
+
+					return true // Continue iteration
+				})
 			}
 		}
 
@@ -762,38 +572,30 @@ func (vs *VersionStore) fastBulkGetVisibleVersions(
 	}
 
 	// For SNAPSHOT isolation, process disk versions
-	if vs.engine != nil && vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
+	if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 		// Get the disk store for this table
 		if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists && len(diskStore.readers) > 0 {
-			// For snapshot, we need to process disk versions with proper visibility checks
+			// For snapshot, all rows from disk snapshots have TxnID = -1 and are always visible
 			// Start with the most recent snapshot
 			newestReader := diskStore.readers[len(diskStore.readers)-1]
 
-			// Full scan of disk data - for snapshot, we need to check all versions properly
-			diskRows := newestReader.GetAllRows()
-
-			for rowID, diskVersion := range diskRows {
-				// Skip if already processed from memory (check result map directly)
-				if _, alreadyInResult := result[rowID]; alreadyInResult {
-					continue
-				}
-
+			// Use ForEach for memory-efficient iteration without allocating the entire map
+			newestReader.ForEach(func(rowID int64, diskVersion RowVersion) bool {
 				// Skip deleted versions
 				if diskVersion.IsDeleted {
-					continue
+					return true // Continue iteration
 				}
 
-				// Apply standard snapshot visibility rules
-				if vs.engine.registry.IsVisible(diskVersion.TxnID, txnID) {
-					// Cache in memory for future use
-					vs.AddVersion(rowID, diskVersion)
+				// Cache in memory for future use
+				vs.AddVersion(rowID, diskVersion)
 
-					// Get the newly cached version for consistency
-					if versionPtr, exists := vs.versions.Get(rowID); exists {
-						result[rowID] = versionPtr
-					}
+				// Get the newly cached version for consistency
+				if versionPtr, exists := vs.versions.Get(rowID); exists {
+					result[rowID] = versionPtr
 				}
-			}
+
+				return true // Continue iteration
+			})
 		}
 	}
 
@@ -972,15 +774,13 @@ func (tvs *TransactionVersionStore) Get(rowID int64) (storage.Row, bool) {
 			if diskStore, exists := tvs.parentStore.engine.persistence.diskStores[tableName]; exists {
 				// Check if the row exists in the disk store
 				if version, found := diskStore.GetVersionFromDisk(rowID); found {
-					// We need to verify transaction visibility even for disk-stored versions
-					if tvs.parentStore.engine.registry.IsVisible(version.TxnID, tvs.txnID) {
-						if !version.IsDeleted {
-							// If we found a visible version on disk, add it to in-memory store for future access
-							tvs.parentStore.AddVersion(rowID, version)
-							return version.Data, true
-						}
-						return nil, false
+					// All rows from disk snapshots have TxnID = -1 and are always visible
+					if !version.IsDeleted {
+						// If we found a version on disk, add it to in-memory store for future access
+						tvs.parentStore.AddVersion(rowID, version)
+						return version.Data, true
 					}
+					return nil, false
 				}
 			}
 		}
@@ -1085,80 +885,25 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 		}
 
 		// Check for disk-stored rows if persistence is enabled
-		if vs.engine != nil && vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
+		if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
 			// Get the disk store for this table
-			if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists {
-				// Check if the disk store has any readers
-				if len(diskStore.readers) > 0 {
-					// OPTIMIZATION: Process readers from newest to oldest (most recent snapshots first)
-					for i := len(diskStore.readers) - 1; i >= 0; i-- {
-						reader := diskStore.readers[i]
+			if diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]; exists && len(diskStore.readers) > 0 {
+				reader := diskStore.readers[len(diskStore.readers)-1]
 
-						// OPTIMIZATION: Determine if we should use range-based batch processing
-						// For large tables, use range-based access instead of full scan
-						if vs.versions.Len() > 10000 {
-							// Determine min and max row IDs for batch range processing
-							minRowID, maxRowID := getRowIDRange(result)
-
-							// OPTIMIZATION: Use batch range processing for large tables
-							// Get versions in range - this is more efficient for large tables
-							rangeVersions := diskStore.GetVersionsInRange(minRowID, maxRowID)
-
-							// Process range results
-							for _, diskVersion := range rangeVersions {
-								rowID := diskVersion.RowID
-
-								// Skip if row already exists in the result (we already have it in memory)
-								if _, inResult := result[rowID]; inResult {
-									continue
-								}
-
-								// Skip deleted rows
-								if diskVersion.IsDeleted {
-									continue
-								}
-
-								// Check visibility based on transaction rules
-								if registry.IsVisible(diskVersion.TxnID, txnID) {
-									// Store in result
-									result[rowID] = diskVersion.Data
-
-									// OPTIMIZATION: Cache disk version in memory for future access
-									// Add to in-memory version store to avoid future disk reads
-									vs.AddVersion(rowID, diskVersion)
-								}
-							}
-						} else {
-							// For smaller tables, use the full scan approach
-							// This is often more efficient for smaller datasets where
-							// most rows are relevant to the query
-							diskRows := reader.GetAllRows()
-
-							// Process rows from disk
-							for rowID, diskVersion := range diskRows {
-								// Skip if row already exists in the result (we already have it in memory)
-								if _, inResult := result[rowID]; inResult {
-									continue
-								}
-
-								// Skip deleted rows
-								if diskVersion.IsDeleted {
-									continue
-								}
-
-								// Check visibility based on transaction rules
-								if registry.IsVisible(diskVersion.TxnID, txnID) {
-									// Store in result
-									result[rowID] = diskVersion.Data
-
-									// OPTIMIZATION: Cache disk version in memory for future access
-									// Add to in-memory version store to avoid future disk reads
-									vs.AddVersion(rowID, diskVersion)
-								}
-							}
-						}
+				reader.ForEach(func(rowID int64, diskVersion RowVersion) bool {
+					// Skip deleted rows
+					if diskVersion.IsDeleted {
+						return true // Continue iteration
 					}
-				}
+
+					// All rows from disk snapshots have TxnID = -1 and are always visible
+					result[rowID] = diskVersion.Data
+
+					// Cache in memory for future use
+					vs.AddVersion(rowID, diskVersion)
+
+					return true // Continue iteration
+				})
 			}
 		}
 	}
@@ -1175,44 +920,6 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 	}
 
 	return result
-}
-
-// getRowIDRange is a helper function that determines the minimum and maximum
-// row IDs in the existing results, to optimize range queries from disk
-func getRowIDRange(rows map[int64]storage.Row) (minRowID, maxRowID int64) {
-	if len(rows) == 0 {
-		// Default range for empty result
-		return 0, math.MaxInt64
-	}
-
-	// Initialize min/max with first value
-	first := true
-	for rowID := range rows {
-		if first {
-			minRowID = rowID
-			maxRowID = rowID
-			first = false
-			continue
-		}
-
-		// Update min/max
-		if rowID < minRowID {
-			minRowID = rowID
-		}
-		if rowID > maxRowID {
-			maxRowID = rowID
-		}
-	}
-
-	// Expand range to ensure we capture nearby rows
-	// This helps when scanning sequential IDs
-	minRowID = minRowID - 1000
-	if minRowID < 0 {
-		minRowID = 0
-	}
-	maxRowID = maxRowID + 1000
-
-	return minRowID, maxRowID
 }
 
 // Commit merges local changes into the parent version store
@@ -1368,7 +1075,18 @@ func (vs *VersionStore) IndexExists(indexName string) bool {
 
 	// Check if this is a columnar index (simple implementation)
 	for name := range vs.columnarIndexes {
-		if fmt.Sprintf("columnar_%s_%s", vs.tableName, name) == indexName {
+		if name == indexName {
+			return true
+		}
+
+		// Try parse the index name to see if it matches
+		// This is a simple heuristic - we assume the format is "columnar_<table>_<column>" or "unique_columnar_<table>_<column>"
+		indexNameExists := fmt.Sprintf("columnar_%s_%s", vs.tableName, name)
+		if vs.columnarIndexes[name].IsUnique() {
+			indexNameExists = fmt.Sprintf("unique_%s", indexName)
+		}
+
+		if indexNameExists == indexName {
 			return true
 		}
 	}

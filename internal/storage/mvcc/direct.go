@@ -3,7 +3,7 @@ package mvcc
 import (
 	"sync"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Pool for MVCCDirectScanner instances to reduce allocations

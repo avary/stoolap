@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 // TestSQLExpressionCapabilities tests various SQL expressions to determine their support

@@ -3,9 +3,9 @@ package test
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/bitmap"
-	"github.com/semihalev/stoolap/internal/storage/btree"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/bitmap"
+	"github.com/stoolap/stoolap/internal/storage/btree"
 )
 
 // TestNullIndexLookup directly tests the NULL handling in both index types

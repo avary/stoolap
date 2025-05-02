@@ -1,7 +1,7 @@
 package expression
 
 import (
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // AndExpression represents a logical AND of multiple expressions

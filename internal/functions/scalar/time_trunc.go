@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/functions/contract"
-	"github.com/semihalev/stoolap/internal/functions/registry"
-	"github.com/semihalev/stoolap/internal/parser/funcregistry"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/functions/contract"
+	"github.com/stoolap/stoolap/internal/functions/registry"
+	"github.com/stoolap/stoolap/internal/parser/funcregistry"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // TimeTruncFunction implements the TIME_TRUNC function for scalar operations

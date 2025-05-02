@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // TestCastWhereClause tests CAST expressions in WHERE clauses

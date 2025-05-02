@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 func TestCountAggregation(t *testing.T) {

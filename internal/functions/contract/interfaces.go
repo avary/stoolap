@@ -1,7 +1,7 @@
 package contract
 
 import (
-	"github.com/semihalev/stoolap/internal/parser/funcregistry"
+	"github.com/stoolap/stoolap/internal/parser/funcregistry"
 )
 
 // Function is the interface that all SQL functions must implement

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	internalsql "github.com/semihalev/stoolap/internal/sql"
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/internal/storage/mvcc"
+	internalsql "github.com/stoolap/stoolap/internal/sql"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 // TestScanWithWhereClause verifies that scanning works correctly

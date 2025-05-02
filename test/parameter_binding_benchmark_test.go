@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 func BenchmarkParameterBinding(b *testing.B) {

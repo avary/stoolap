@@ -5,8 +5,8 @@ import (
 	"context"
 	"database/sql/driver"
 
-	sql "github.com/semihalev/stoolap/internal/sql/executor"
-	"github.com/semihalev/stoolap/internal/storage"
+	sql "github.com/stoolap/stoolap/internal/sql/executor"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // NewExecutor creates a new SQL executor

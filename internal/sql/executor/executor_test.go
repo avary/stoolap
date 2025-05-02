@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // This is a minimal test to verify that the executor can be created

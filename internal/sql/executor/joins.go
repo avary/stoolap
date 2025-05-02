@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // ExecuteJoin executes a JOIN operation between two table sources

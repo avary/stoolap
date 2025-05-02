@@ -3,7 +3,7 @@ package compression
 import (
 	"encoding/json"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // JSONCompressor is a specialized compressor for JSON data

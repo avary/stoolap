@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Make sure FunctionExpression implements IndexableExpression interface

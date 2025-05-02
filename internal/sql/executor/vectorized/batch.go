@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Batch represents a columnar batch of data for vectorized processing

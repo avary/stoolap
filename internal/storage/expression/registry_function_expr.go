@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/functions/registry"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/functions/registry"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // RegistryFunctionExpression is an expression type that uses the function registry

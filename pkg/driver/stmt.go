@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Stmt represents a prepared statement with concurrency optimizations

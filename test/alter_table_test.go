@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/sql"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/sql"
+	"github.com/stoolap/stoolap/internal/storage"
 
 	// Import necessary packages to register factory functions
-	_ "github.com/semihalev/stoolap/internal/storage/mvcc"
+	_ "github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 // TestAlterTableOperations tests ALTER TABLE operations

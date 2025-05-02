@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/functions/registry"
-	"github.com/semihalev/stoolap/internal/parser"
-	sql "github.com/semihalev/stoolap/internal/sql/executor"
+	"github.com/stoolap/stoolap/internal/functions/registry"
+	"github.com/stoolap/stoolap/internal/parser"
+	sql "github.com/stoolap/stoolap/internal/sql/executor"
 )
 
 func TestCastEvaluator(t *testing.T) {

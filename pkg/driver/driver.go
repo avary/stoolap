@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/pkg"
 
 	// Import database storage engine
-	_ "github.com/semihalev/stoolap/internal/storage/mvcc"
+	_ "github.com/stoolap/stoolap/internal/storage/mvcc"
 )
 
 // StmtKey is the key used for statement cache lookups

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // MVCCFactory creates mvcc storage engines

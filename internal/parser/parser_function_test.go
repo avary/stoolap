@@ -3,7 +3,7 @@ package parser
 import (
 	"testing"
 
-	"github.com/semihalev/stoolap/internal/parser/funcregistry"
+	"github.com/stoolap/stoolap/internal/parser/funcregistry"
 )
 
 func TestFunctionCallParsing(t *testing.T) {

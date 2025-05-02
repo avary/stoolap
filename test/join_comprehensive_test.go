@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 // TestComprehensiveJoins tests various JOIN operations with different tables

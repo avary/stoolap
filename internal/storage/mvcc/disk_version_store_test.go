@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 func TestDiskVersionStore(t *testing.T) {
@@ -547,9 +547,9 @@ func TestDiskVersionStoreEdgeCases(t *testing.T) {
 			t.Fatalf("Failed to load multiple snapshots: %v", err)
 		}
 
-		// Should have loaded multiple readers
-		if len(dvs2.readers) < 2 {
-			t.Errorf("Expected at least 2 readers, got %d", len(dvs2.readers))
+		// Should have loaded newest reader
+		if len(dvs2.readers) < 1 {
+			t.Errorf("Expected at least 1 reader, got %d", len(dvs2.readers))
 		}
 
 		// Both rows should be accessible

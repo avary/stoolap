@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/semihalev/stoolap/internal/parser"
-	"github.com/semihalev/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/internal/parser"
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // Object pool for distinct value maps used in aggregations

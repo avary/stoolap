@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/semihalev/stoolap/internal/storage"
-	"github.com/semihalev/stoolap/pkg"
+	"github.com/stoolap/stoolap/internal/storage"
+	"github.com/stoolap/stoolap/pkg"
 )
 
 // testColumnValue is a simple implementation of storage.ColumnValue for testing

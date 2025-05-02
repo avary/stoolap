@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/semihalev/stoolap/pkg/driver"
+	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
 func TestDateFormatting(t *testing.T) {
