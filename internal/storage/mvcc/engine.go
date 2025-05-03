@@ -807,6 +807,45 @@ func (e *MVCCEngine) ListTableIndexes(tableName string) (map[string]string, erro
 		return map[string]string{}, nil
 	}
 
-	// Return all indexes from the version store
 	return vs.ListIndexes(), nil
+}
+
+// GetIndex returns an index by name for a specific table
+func (e *MVCCEngine) GetIndex(tableName, indexName string) (storage.Index, error) {
+	if !e.open.Load() {
+		return nil, errors.New("engine is not open")
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Check if the table exists
+	_, exists := e.schemas[tableName]
+	if !exists {
+		return nil, storage.ErrTableNotFound
+	}
+
+	// Get the version store
+	vs, exists := e.versionStores[tableName]
+	if !exists {
+		return nil, fmt.Errorf("version store for table %s not found", tableName)
+	}
+
+	// Get all indexes
+	vs.columnarMutex.RLock()
+	defer vs.columnarMutex.RUnlock()
+
+	// First try to find by exact index name
+	for _, index := range vs.columnarIndexes {
+		if index.Name() == indexName {
+			return index, nil
+		}
+	}
+
+	// If not found, try looking for the column name as the index name
+	if index, ok := vs.columnarIndexes[indexName]; ok {
+		return index, nil
+	}
+
+	return nil, fmt.Errorf("index %s not found on table %s", indexName, tableName)
 }

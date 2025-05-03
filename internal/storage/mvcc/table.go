@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -1362,29 +1361,141 @@ func (mt *MVCCTable) DropColumn(name string) error {
 }
 
 // CreateIndex creates an index on the table
+// This method maintains the custom indexName provided by the user when creating the index
 func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bool) error {
 	// For now, we only support columnar indexes
 	if len(columns) != 1 {
 		return errors.New("only single-column indexes are supported")
 	}
 
-	// Create a columnar index for the column
-	return mt.CreateColumnarIndex(columns[0], isUnique)
+	// Get column name
+	columnName := columns[0]
+
+	// Check if an index already exists for this column
+	if mt.versionStore == nil {
+		return fmt.Errorf("invalid table: version store is nil")
+	}
+
+	// First check if we've already got a matching index - either by column name or by index name
+	mt.versionStore.columnarMutex.RLock()
+	_, columnExists := mt.versionStore.columnarIndexes[columnName]
+
+	// Check if there's an index with this name already
+	indexExists := false
+	if !columnExists {
+		for _, idx := range mt.versionStore.columnarIndexes {
+			if idx.Name() == indexName {
+				indexExists = true
+				break
+			}
+		}
+	}
+	mt.versionStore.columnarMutex.RUnlock()
+
+	// If the index already exists, just return (IF NOT EXISTS case)
+	if columnExists || indexExists {
+		return nil
+	}
+
+	// Get schema information for the column
+	schema, err := mt.versionStore.GetTableSchema()
+	if err != nil {
+		return fmt.Errorf("failed to get schema: %w", err)
+	}
+
+	// Find column ID and data type
+	columnID := -1
+	var dataType storage.DataType
+
+	for i, col := range schema.Columns {
+		if col.Name == columnName {
+			columnID = i
+			dataType = col.Type
+			break
+		}
+	}
+
+	if columnID == -1 {
+		return fmt.Errorf("column %s not found in schema", columnName)
+	}
+
+	// Create a columnar index with the specified name
+	index := NewColumnarIndex(indexName, mt.versionStore.tableName,
+		columnName, columnID, dataType, mt.versionStore, isUnique)
+
+	// Build the index from existing data
+	if err := index.Build(); err != nil {
+		index.Close()
+		return err
+	}
+
+	// Register the index in the version store
+	mt.versionStore.columnarMutex.Lock()
+	mt.versionStore.columnarIndexes[columnName] = index
+	mt.versionStore.columnarMutex.Unlock()
+
+	// Record this operation in the WAL if the engine has persistence enabled
+	if mt.engine != nil && mt.engine.persistence != nil && mt.engine.persistence.IsEnabled() {
+		// Convert to bytes for WAL
+		indexData, err := SerializeIndexMetadata(&ColumnarIndex{
+			name:         indexName,
+			tableName:    mt.versionStore.tableName,
+			columnName:   columnName,
+			columnID:     columnID,
+			dataType:     dataType,
+			versionStore: mt.versionStore,
+			isUnique:     isUnique,
+		})
+
+		if err != nil {
+			fmt.Printf("Warning: Failed to serialize index metadata for WAL: %v\n", err)
+		} else {
+			// Record the index creation in WAL
+			err = mt.engine.persistence.RecordIndexOperation(mt.versionStore.tableName, WALCreateIndex, indexData)
+			if err != nil {
+				fmt.Printf("Warning: Failed to record index creation in WAL: %v\n", err)
+			}
+		}
+	}
+
+	// Persistence is handled automatically via the engine
+
+	return nil
 }
 
 // DropIndex removes an index from the table
 func (mt *MVCCTable) DropIndex(indexName string) error {
-	// Extract column name from index name (columnar_tablename_columnname)
-	parts := strings.Split(indexName, "_")
-	if len(parts) < 3 || parts[0] != "columnar" {
-		return fmt.Errorf("invalid index name format: %s", indexName)
+	if mt.versionStore == nil {
+		return fmt.Errorf("invalid table: version store is nil")
 	}
 
-	// Get the column name from the index name
-	columnName := parts[len(parts)-1]
+	// First try a direct lookup by column name
+	mt.versionStore.columnarMutex.RLock()
+	_, exists := mt.versionStore.columnarIndexes[indexName]
 
-	// Drop the columnar index
-	return mt.DropColumnarIndex(columnName)
+	// If not found by column name, look for a match by index name
+	if !exists {
+		var columnName string
+		for colName, idx := range mt.versionStore.columnarIndexes {
+			if idx.Name() == indexName {
+				exists = true
+				columnName = colName
+				break
+			}
+		}
+		mt.versionStore.columnarMutex.RUnlock()
+
+		if exists {
+			// Drop the columnar index by column name
+			return mt.DropColumnarIndex(columnName)
+		}
+	} else {
+		mt.versionStore.columnarMutex.RUnlock()
+		// Drop the index by column name
+		return mt.DropColumnarIndex(indexName)
+	}
+
+	return fmt.Errorf("index %s not found", indexName)
 }
 
 // Close closes the table
@@ -1720,7 +1831,8 @@ func (mt *MVCCTable) Rollback() error {
 // CreateColumnarIndex creates a columnar index for a column
 // This provides HTAP capabilities by maintaining column-oriented indexes
 // CreateColumnarIndex creates a columnar index for a column with optional uniqueness constraint
-func (mt *MVCCTable) CreateColumnarIndex(columnName string, isUnique bool) error {
+// If a custom name is provided, it will be used instead of the default generated name.
+func (mt *MVCCTable) CreateColumnarIndex(columnName string, isUnique bool, customName ...string) error {
 	// Check if version store is valid
 	if mt.versionStore == nil {
 		return fmt.Errorf("version store not available")
@@ -1751,8 +1863,14 @@ func (mt *MVCCTable) CreateColumnarIndex(columnName string, isUnique bool) error
 		return fmt.Errorf("columnar indexes cannot be created on primary key columns. Use standard indexes instead")
 	}
 
+	// Extract custom name if provided
+	var indexName string
+	if len(customName) > 0 && customName[0] != "" {
+		indexName = customName[0]
+	}
+
 	// The version store's CreateColumnarIndex method already handles locking properly
-	index, err := mt.versionStore.CreateColumnarIndex(mt.versionStore.tableName, columnName, columnID, dataType, isUnique)
+	index, err := mt.versionStore.CreateColumnarIndex(mt.versionStore.tableName, columnName, columnID, dataType, isUnique, indexName)
 	if err != nil {
 		return err
 	}

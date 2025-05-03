@@ -370,6 +370,8 @@ func truncateString(s string, maxLen int) string {
 
 // formatValue formats a value for display, based on its type
 func formatValue(value interface{}, colType *sql.ColumnType) string {
+	_ = colType // This is a placeholder for the actual column type, which can be used for more specific formatting
+
 	if value == nil {
 		return "NULL"
 	}

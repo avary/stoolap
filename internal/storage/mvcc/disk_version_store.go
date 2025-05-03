@@ -415,6 +415,49 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 		dvs.mu.Lock()
 		dvs.readers = append(dvs.readers, reader)
 		dvs.mu.Unlock()
+
+		// After loading the snapshot, build indexes directly with data from the reader
+		// This is critical to ensure that unique constraints are enforced properly
+		// but we do it in a memory-efficient way by not loading all rows to memory first
+		dvs.versionStore.columnarMutex.RLock()
+		hasIndexes := len(dvs.versionStore.columnarIndexes) > 0
+		dvs.versionStore.columnarMutex.RUnlock()
+
+		if len(dvs.readers) > 0 && hasIndexes {
+			// Get all rows from the newest reader without loading to memory
+			newestReader := dvs.readers[len(dvs.readers)-1]
+			// GetAllRows returns a map of rowID -> RowVersion without marking them as loaded in memory
+			allRows := newestReader.GetAllRows()
+
+			rowCount := 0
+
+			// Build indexes with data directly from disk
+			dvs.versionStore.columnarMutex.RLock()
+			for _, index := range dvs.versionStore.columnarIndexes {
+				if colIndex, ok := index.(*ColumnarIndex); ok {
+					// Get column ID for this index
+					columnID := colIndex.ColumnID()
+
+					// Add each row's value to the index
+					for rowID, version := range allRows {
+						if !version.IsDeleted {
+							// Get the value for this column
+							if int(columnID) < len(version.Data) {
+								value := version.Data[columnID]
+								// Add to index directly - this enforces uniqueness constraints
+								colIndex.Add(value, rowID, 0)
+							} else {
+								// Column doesn't exist, treat as NULL
+								colIndex.Add(nil, rowID, 0)
+							}
+							rowCount++
+						}
+					}
+				}
+			}
+			dvs.versionStore.columnarMutex.RUnlock()
+		}
+
 		return nil
 	}
 
@@ -544,14 +587,27 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	}
 
 	// Now process each index metadata and create only non-existing indexes
-	for i, indexMeta := range indexMetaList {
+	for _, indexMeta := range indexMetaList {
 		// Check if this index already exists
 		exists := false
 		dvs.versionStore.columnarMutex.RLock()
-		if _, ok := dvs.versionStore.columnarIndexes[indexMeta.Name]; ok {
-			exists = true
-			fmt.Printf("Index %d (%s) already exists, skipping creation\n", i, indexMeta.Name)
+
+		// First check if an index with this name already exists
+		// This is critical for custom-named indexes
+		for _, idx := range dvs.versionStore.columnarIndexes {
+			if idx.Name() == indexMeta.Name {
+				exists = true
+				break
+			}
 		}
+
+		// Only if not found by name, check if the column already has an index
+		if !exists && indexMeta.ColumnName != "" {
+			if _, ok := dvs.versionStore.columnarIndexes[indexMeta.ColumnName]; ok {
+				exists = true
+			}
+		}
+
 		dvs.versionStore.columnarMutex.RUnlock()
 
 		// Skip if the index already exists
@@ -566,6 +622,7 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 			indexMeta.ColumnID,
 			indexMeta.DataType,
 			indexMeta.IsUnique,
+			indexMeta.Name,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create columnar index: %w", err)
@@ -590,11 +647,22 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	if len(createdIndexes) > 0 {
 		// Use the index's Build method which is optimized for bulk loading
 		for _, colIndex := range createdIndexes {
-			// Build the index from the version store
-			// This automatically scans rows from both memory and disk
-			if err := colIndex.Build(); err != nil {
-				// Log error but continue with other indexes
-				fmt.Printf("Warning: Failed to build index %s: %v\n", colIndex.name, err)
+			// Verify the index was added to the columnar indexes map
+			dvs.versionStore.columnarMutex.RLock()
+			var found bool
+			for _, idx := range dvs.versionStore.columnarIndexes {
+				if idx.Name() == colIndex.name {
+					found = true
+					break
+				}
+			}
+			dvs.versionStore.columnarMutex.RUnlock()
+
+			if !found {
+				// This is a crucial fix: manually add the index to the columnar indexes map if it's missing
+				dvs.versionStore.columnarMutex.Lock()
+				dvs.versionStore.columnarIndexes[colIndex.columnName] = colIndex
+				dvs.versionStore.columnarMutex.Unlock()
 			}
 		}
 	}

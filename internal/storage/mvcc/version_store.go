@@ -942,7 +942,7 @@ func (tvs *TransactionVersionStore) Commit() {
 
 // CreateColumnarIndex creates a columnar index for a specific column
 func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string, columnID int,
-	dataType storage.DataType, isUnique bool) (storage.Index, error) {
+	dataType storage.DataType, isUnique bool, customName string) (storage.Index, error) {
 
 	// Check if the version store is closed using atomic operation
 	if vs.closed.Load() {
@@ -958,11 +958,15 @@ func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string,
 		return nil, fmt.Errorf("columnar index for column %s already exists", columnName)
 	}
 
-	// Create index name
-	indexName := fmt.Sprintf("columnar_%s_%s", tableName, columnName)
-
-	if isUnique {
-		indexName = fmt.Sprintf("unique_columnar_%s_%s", tableName, columnName)
+	// Create index name, using customName if provided
+	indexName := customName
+	if indexName == "" {
+		// Generate default name if custom name is not provided
+		if isUnique {
+			indexName = fmt.Sprintf("unique_columnar_%s_%s", tableName, columnName)
+		} else {
+			indexName = fmt.Sprintf("columnar_%s_%s", tableName, columnName)
+		}
 	}
 
 	// Use the btree implementation with the isUnique parameter
@@ -1073,20 +1077,14 @@ func (vs *VersionStore) IndexExists(indexName string) bool {
 	vs.columnarMutex.RLock()
 	defer vs.columnarMutex.RUnlock()
 
-	// Check if this is a columnar index (simple implementation)
-	for name := range vs.columnarIndexes {
-		if name == indexName {
-			return true
-		}
+	// First, check if the name directly matches a column with an index
+	if _, exists := vs.columnarIndexes[indexName]; exists {
+		return true
+	}
 
-		// Try parse the index name to see if it matches
-		// This is a simple heuristic - we assume the format is "columnar_<table>_<column>" or "unique_columnar_<table>_<column>"
-		indexNameExists := fmt.Sprintf("columnar_%s_%s", vs.tableName, name)
-		if vs.columnarIndexes[name].IsUnique() {
-			indexNameExists = fmt.Sprintf("unique_%s", indexName)
-		}
-
-		if indexNameExists == indexName {
+	// Second, check if any index has the given name
+	for _, index := range vs.columnarIndexes {
+		if index.Name() == indexName {
 			return true
 		}
 	}
@@ -1095,6 +1093,8 @@ func (vs *VersionStore) IndexExists(indexName string) bool {
 }
 
 // ListIndexes returns all indexes for this table
+// The returned map has the index name as the key and the column name as the value
+// This ensures that custom index names are preserved and can be used for lookup
 func (vs *VersionStore) ListIndexes() map[string]string {
 	// If the store is closed, return empty list
 	if vs.closed.Load() {
@@ -1106,11 +1106,10 @@ func (vs *VersionStore) ListIndexes() map[string]string {
 
 	indexes := make(map[string]string, len(vs.columnarIndexes))
 	for colName, index := range vs.columnarIndexes {
-		indexName := fmt.Sprintf("columnar_%s_%s", vs.tableName, colName)
-		if index.IsUnique() {
-			indexName = fmt.Sprintf("unique_%s", indexName)
-		}
-		indexes[colName] = indexName
+		// Use the actual index name as the key, not the column name
+		// This ensures custom index names are preserved and can be used as keys
+		indexName := index.Name()
+		indexes[indexName] = colName
 	}
 
 	return indexes
@@ -1190,6 +1189,7 @@ func (vs *VersionStore) RemoveIndex(indexName string) error {
 
 			// Remove from the map
 			delete(vs.columnarIndexes, columnName)
+
 			return nil
 		}
 	}

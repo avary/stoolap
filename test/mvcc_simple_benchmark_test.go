@@ -20,8 +20,6 @@ func BenchmarkMVCCInsertPersistent(b *testing.B) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	b.Logf("Using temp directory: %s\n", tempDir)
-
 	// Open a connection to the database
 	db, err := sql.Open("stoolap", "file:///"+tempDir+"?sync_mode=normal")
 	if err != nil {

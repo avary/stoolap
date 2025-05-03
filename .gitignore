@@ -2,6 +2,7 @@ test/var
 var
 works
 CLAUDE.md
+TODO.md
 cmd/stoolap/stoolap
 cmd/stoolap/stoolap.db
 

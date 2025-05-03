@@ -333,6 +333,40 @@ func (r *DiskReader) ForEach(callback func(rowID int64, version RowVersion) bool
 	}
 }
 
+// GetAllRows retrieves all rows in the file
+// This is used for full table scans from disk
+func (r *DiskReader) GetAllRows() map[int64]RowVersion {
+	// Estimate initial capacity based on row count
+	result := make(map[int64]RowVersion, r.footer.RowCount)
+
+	// Iterate through all entries in the index
+	r.index.ForEach(func(rowID int64, offset int64) bool {
+		// Read length prefix using pre-allocated buffer
+		if _, err := r.file.ReadAt(r.lenBuffer, offset); err != nil {
+			return true // Continue on error
+		}
+		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
+
+		// Read row data
+		rowBytes := make([]byte, rowLen)
+		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+			return true // Continue on error
+		}
+
+		// Deserialize row version
+		version, err := deserializeRowVersion(rowBytes)
+		if err != nil {
+			return true // Continue on error
+		}
+
+		result[rowID] = version
+
+		return true
+	})
+
+	return result
+}
+
 // GetSchema returns the schema
 func (r *DiskReader) GetSchema() *storage.Schema {
 	r.mu.RLock()

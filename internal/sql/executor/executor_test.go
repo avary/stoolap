@@ -60,6 +60,10 @@ func (m *mockEngine) ListTables() ([]string, error) {
 	return nil, nil
 }
 
+func (m *mockEngine) GetIndex(tableName string, indexName string) (storage.Index, error) {
+	return nil, nil
+}
+
 func (m *mockEngine) IndexExists(indexName, tableName string) (bool, error) {
 	return false, nil
 }
@@ -103,7 +107,7 @@ func (m *mockTransaction) CreateTableIndex(tableName, indexName string, columns 
 	return nil
 }
 
-func (m *mockTransaction) CreateTableColumnarIndex(tableName string, columnName string, isUnique bool) error {
+func (m *mockTransaction) CreateTableColumnarIndex(tableName string, columnName string, isUnique bool, indexName ...string) error {
 	return nil
 }
 

@@ -197,31 +197,32 @@ func (e *Executor) executeShowIndexes(ctx context.Context, tx storage.Transactio
 
 	// Process the index names to extract more information
 	rows := make([][]interface{}, 0, len(indexes))
-	for colName, indexName := range indexes {
+	for indexName, colName := range indexes {
 		// Extract information from the index name
 		// This is a temporary solution until we have proper index metadata
 
-		// Try to determine index type and column from the name
+		// Get more accurate index information from storage layer
 		indexType := "BTREE" // Default type
 		columnName := colName
 		isUnique := false
 
-		// Check for columnar indexes - they are usually prefixed with "columnar_"
-		if strings.HasPrefix(indexName, "columnar_") {
-			indexType = "COLUMNAR"
-
-			// Try to extract column name from columnar indexes which often follow the pattern:
-			// columnar_<table>_<column>
-			parts := strings.Split(indexName, "_")
-			if len(parts) >= 3 {
-				// The last part should be the column name
-				columnName = parts[len(parts)-1]
-			}
-		} else if strings.HasPrefix(indexName, "unique_") {
-			// Unique indexes often have a "unique_" prefix
-			isUnique = true
-			if strings.HasPrefix(indexName, "unique_columnar_") {
+		// Try to get the index from storage to get its real properties
+		index, err := e.engine.GetIndex(tableName, indexName)
+		if err == nil && index != nil {
+			// Use the real index properties instead of guessing from the name
+			indexType = string(index.IndexType())
+			isUnique = index.IsUnique()
+		} else {
+			// Fallback to name-based heuristics if we can't get the actual index
+			// Check for columnar indexes - they are usually prefixed with "columnar_"
+			if strings.HasPrefix(indexName, "columnar_") {
 				indexType = "COLUMNAR"
+			} else if strings.HasPrefix(indexName, "unique_") {
+				// Unique indexes often have a "unique_" prefix
+				isUnique = true
+				if strings.HasPrefix(indexName, "unique_columnar_") {
+					indexType = "COLUMNAR"
+				}
 			}
 		}
 

@@ -909,7 +909,10 @@ func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*s
 			}
 
 			// Add the index to the version store
-			vs.AddIndex(idx)
+			err = vs.AddIndex(idx)
+			if err != nil {
+				return fmt.Errorf("failed to add index to version store: %w", err)
+			}
 
 			// Build the index (populates it with data)
 			err = idx.Build()
@@ -937,7 +940,11 @@ func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*s
 			}
 
 			// Remove the index
-			vs.RemoveIndex(indexName)
+			err := vs.RemoveIndex(indexName)
+			if err != nil {
+				fmt.Printf("Warning: WAL replay - failed to remove index '%s': %v\n", indexName, err)
+				// Continue despite the error since this is just a warning
+			}
 
 			return nil
 		}

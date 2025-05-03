@@ -278,6 +278,9 @@ type Index interface {
 	// Name returns the name of the index
 	Name() string
 
+	// Build builds the index
+	Build() error
+
 	// Add adds a value to the index with the given row IDs
 	Add(value ColumnValue, rowID int64, refID int64) error
 
@@ -331,7 +334,7 @@ type Transaction interface {
 	CreateTableIndex(tableName string, indexName string, columns []string, isUnique bool) error
 	DropTableIndex(tableName string, indexName string) error
 	// Columnar index operations
-	CreateTableColumnarIndex(tableName string, columnName string, isUnique bool) error
+	CreateTableColumnarIndex(tableName string, columnName string, isUnique bool, customName ...string) error
 	DropTableColumnarIndex(tableName string, columnName string) error
 	// Column operations for ALTER TABLE
 	AddTableColumn(tableName string, column SchemaColumn) error
@@ -361,6 +364,7 @@ type Engine interface {
 	Path() string
 	TableExists(tableName string) (bool, error)
 	IndexExists(indexName string, tableName string) (bool, error)
+	GetIndex(tableName string, indexName string) (Index, error)
 	// GetTableSchema retrieves a table's schema
 	GetTableSchema(tableName string) (Schema, error)
 	// ListTableIndexes retrieves all indexes for a table

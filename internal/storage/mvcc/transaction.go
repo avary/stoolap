@@ -860,7 +860,8 @@ func (t *MVCCTransaction) DropTableIndex(tableName string, indexName string) err
 
 // CreateTableColumnarIndex creates a columnar index on a table column
 // These indexes provide HTAP (Hybrid Transactional/Analytical Processing) capabilities
-func (t *MVCCTransaction) CreateTableColumnarIndex(tableName string, columnName string, isUnique bool) error {
+// If customName is provided, it will be used as the index name instead of the auto-generated one
+func (t *MVCCTransaction) CreateTableColumnarIndex(tableName string, columnName string, isUnique bool, customName ...string) error {
 	if !t.active {
 		return ErrTransactionClosed
 	}
@@ -877,7 +878,12 @@ func (t *MVCCTransaction) CreateTableColumnarIndex(tableName string, columnName 
 		return errors.New("table does not support columnar indexing")
 	}
 
-	// Create the columnar index
+	// Create the columnar index, passing the custom name if provided
+	if len(customName) > 0 && customName[0] != "" {
+		return mvccTable.CreateColumnarIndex(columnName, isUnique, customName[0])
+	}
+
+	// Create with default name
 	return mvccTable.CreateColumnarIndex(columnName, isUnique)
 }
 
