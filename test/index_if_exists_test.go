@@ -22,7 +22,7 @@ func TestIndexIfExistsOperations(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	dbPath := filepath.Join(tempDir, "test.db")
-	connString := fmt.Sprintf("file:///%s", dbPath)
+	connString := fmt.Sprintf("file://%s", dbPath)
 
 	// First database connection
 	db, err := sql.Open("stoolap", connString)

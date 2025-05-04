@@ -6,14 +6,12 @@ import (
 	"math"
 	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
-// Static counter to ensure uniqueness of row IDs
-var autoIncrementCounter int64
+// Per-table auto-increment counters are now implemented in the VersionStore
 
 // MVCCTable is a wrapper that provides MVCC isolation for tables
 type MVCCTable struct {
@@ -26,6 +24,14 @@ type MVCCTable struct {
 // Name returns the table name
 func (mt *MVCCTable) Name() string {
 	return mt.versionStore.tableName
+}
+
+// GetCurrentAutoIncrementValue returns the current auto-increment value directly
+func (mt *MVCCTable) GetCurrentAutoIncrementValue() int64 {
+	if mt.versionStore != nil {
+		return mt.versionStore.GetCurrentAutoIncrementValue()
+	}
+	return 0
 }
 
 // Schema returns the table schema
@@ -69,8 +75,33 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 		return fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Extract row ID using the primary key
-	rowID := extractRowPK(schema, row)
+	// Check if we have a primary key column and it's NULL or unset
+	pkInfo := getOrCreatePKInfo(schema)
+	var explicitPKValue int64
+
+	// Check if we need to generate a primary key value
+	if pkInfo.hasPK && pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
+		colVal := row[pkInfo.singlePKIndex]
+		if colVal != nil && !colVal.IsNull() {
+			// Check if we have an explicit primary key value
+			if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
+				explicitPKValue = intVal
+
+				// Update the auto-increment counter if needed
+				if mt.versionStore != nil && explicitPKValue > mt.versionStore.GetCurrentAutoIncrementValue() {
+					mt.versionStore.SetAutoIncrementCounter(explicitPKValue)
+				}
+			}
+		} else if pkInfo.singleIntPK && mt.versionStore != nil {
+			// If we have a single INTEGER primary key but no value provided,
+			// we need to generate one and set it in the row
+			nextID := mt.versionStore.GetNextAutoIncrementID()
+			row[pkInfo.singlePKIndex] = storage.NewIntegerValue(nextID)
+		}
+	}
+
+	// Extract or generate the row ID
+	rowID := mt.extractRowPK(schema, row)
 
 	// Fast path: Check if this rowID has been seen in this transaction
 	// This avoids the expensive full Get operation
@@ -258,18 +289,45 @@ func (mt *MVCCTable) InsertBatch(rows []storage.Row) error {
 		nullableFlags[i] = col.Nullable
 	}
 
+	// Check if we have a primary key column to handle auto-increment
+	pkInfo := getOrCreatePKInfo(schema)
+	var maxExplicitPK int64
+
 	// Validate all rows using cached schema info
 	for i, row := range rows {
 		// Perform fast validation with cached schema info
 		if err := validateRowFast(row, columnTypes, nullableFlags); err != nil {
 			return fmt.Errorf("validation error in row %d: %w", i, err)
 		}
+
+		// Check for explicit primary key values to update auto-increment counter
+		if pkInfo.hasPK && pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
+			colVal := row[pkInfo.singlePKIndex]
+			if colVal != nil && !colVal.IsNull() {
+				if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
+					// Keep track of the maximum explicit PK value
+					if intVal > maxExplicitPK {
+						maxExplicitPK = intVal
+					}
+				}
+			} else if pkInfo.singleIntPK && mt.versionStore != nil {
+				// If we have a single INTEGER primary key but no value provided,
+				// we need to generate one and set it in the row
+				nextID := mt.versionStore.GetNextAutoIncrementID()
+				row[pkInfo.singlePKIndex] = storage.NewIntegerValue(nextID)
+			}
+		}
+	}
+
+	// Update the auto-increment counter if we found explicit PK values
+	if maxExplicitPK > 0 && mt.versionStore != nil && maxExplicitPK > mt.versionStore.GetCurrentAutoIncrementValue() {
+		mt.versionStore.SetAutoIncrementCounter(maxExplicitPK)
 	}
 
 	// Extract all row IDs first - reuse the schema we already fetched
 	rowIDs := make([]int64, len(rows))
 	for i, row := range rows {
-		rowIDs[i] = extractRowPK(schema, row)
+		rowIDs[i] = mt.extractRowPK(schema, row)
 	}
 
 	// Check if any row already exists (optimized to avoid allocations)
@@ -1169,80 +1227,33 @@ func getOrCreatePKInfo(schema storage.Schema) *schemaPKInfo {
 }
 
 // extractRowPK extracts the primary key from a row, optimized for performance
-func extractRowPK(schema storage.Schema, row storage.Row) int64 {
+func (mt *MVCCTable) extractRowPK(schema storage.Schema, row storage.Row) int64 {
 	// Get or create cached PK info
 	pkInfo := getOrCreatePKInfo(schema)
 
-	// Fast path: Single integer primary key (most common case)
-	if pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
-		colVal := row[pkInfo.singlePKIndex]
-		if colVal != nil && !colVal.IsNull() {
-			// Direct fast access for integer PKs
-			if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
-				return intVal
-			}
-		}
-	}
-
-	// For non-integer or composite keys, compute hash
-	var hash uint64 = fnvOffset
-
-	// Use pre-computed access functions for better performance
-	for i, idx := range pkInfo.pkIndices {
-		if idx < len(row) && row[idx] != nil && !row[idx].IsNull() {
-			// Add separator between values
-			hash ^= 0xFF
-			hash *= fnvPrime
-
-			// Use optimized type-specific hash function
-			if i < len(pkInfo.fastAccessFuncs) {
-				if accessFunc := pkInfo.fastAccessFuncs[i]; accessFunc != nil {
-					if val, ok := accessFunc(row[idx]); ok {
-						hash ^= val
-						hash *= fnvPrime
-						continue
-					}
+	// If the table has a primary key, extract it
+	if pkInfo.hasPK {
+		// Fast path: Single integer primary key
+		if pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
+			colVal := row[pkInfo.singlePKIndex]
+			if colVal != nil && !colVal.IsNull() {
+				if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
+					return intVal
 				}
 			}
 		}
 	}
 
-	// First ensure non-zero hash value
-	if hash == 0 {
-		hash = fnvOffset
+	// If we reach here, we need to generate a synthetic row ID
+	// This happens when:
+	// 1. The table has no primary key
+	// 2. The primary key is not a single integer column
+	// 3. The primary key is NULL or not provided
+	if mt.versionStore != nil {
+		return mt.versionStore.GetNextAutoIncrementID()
+	} else {
+		panic("Error: VersionStore not initialized properly when generating row ID")
 	}
-
-	// Apply initial masking to ensure we have room to add uniqueness
-	// Use only 48 bits from the hash, leaving 15 bits for uniqueness factors
-	hash = hash & 0x0000FFFFFFFFFFFF
-
-	// Add uniqueness for tables without explicit PKs or with weak hashes
-	if !pkInfo.hasPK || hash < 1000 {
-		// Get a unique counter value bounded to avoid overflow
-		autoIncrement := atomic.AddInt64(&autoIncrementCounter, 1) % 32767 // Use 15 bits max (0x7FFF)
-
-		// Mix in timestamp bits for better distribution
-		// GetFastTimestamp is assumed to be a fast timestamp function in the codebase
-		timestamp := GetFastTimestamp() % 32767 // Use 15 bits max (0x7FFF)
-
-		// Combine values in separate bit ranges to avoid collisions and overflow
-		// Store autoIncrement in bits 48-62 (15 bits)
-		// Store timestamp in bits 32-47 (15 bits)
-		// Original hash remains in bits 0-47 (48 bits)
-		hash = hash | (uint64(autoIncrement) << 48) | (uint64(timestamp) << 32)
-	}
-
-	// Final conversion to int64 with safety mask to ensure positive value
-	rowHash := int64(hash & 0x7FFFFFFFFFFFFFFF)
-
-	// Final safety check - this should never happen with the above logic,
-	// but provides a last line of defense against negative IDs
-	if rowHash <= 0 {
-		// Generate a simple positive ID as fallback
-		rowHash = 1 + (atomic.AddInt64(&autoIncrementCounter, 1) % 1000000)
-	}
-
-	return rowHash
 }
 
 // Scan returns a scanner for rows in the table

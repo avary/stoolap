@@ -27,7 +27,7 @@ func TestSnapshotIndexPersistence(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test.db")
 
 	// Use a very short snapshot interval (2 seconds) for testing
-	connString := fmt.Sprintf("file:///%s?snapshot_interval=2", dbPath)
+	connString := fmt.Sprintf("file://%s?snapshot_interval=2", dbPath)
 	t.Logf("Using connection string: %s", connString)
 
 	// First database connection
@@ -171,7 +171,7 @@ func TestSnapshotIndexPersistence(t *testing.T) {
 	t.Log("Closing and reopening the database to test snapshot persistence")
 
 	// Use a different connection string to force WAL replay for debugging
-	reopenConnString := fmt.Sprintf("file:///%s", dbPath)
+	reopenConnString := fmt.Sprintf("file://%s", dbPath)
 	t.Logf("Reopening with connection string: %s", reopenConnString)
 
 	db, err = sql.Open("stoolap", reopenConnString)

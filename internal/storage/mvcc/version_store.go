@@ -32,6 +32,10 @@ type VersionStore struct {
 
 	closed atomic.Bool // Whether this store has been closed - using atomic for better performance
 
+	// Auto-increment counter for tables without explicit PK
+	// Start at 1 for better interoperability with other databases
+	autoIncrementCounter atomic.Int64
+
 	// Reference to the engine that owns this version store
 	engine *MVCCEngine // Engine that owns this version store
 }
@@ -46,7 +50,51 @@ func NewVersionStore(tableName string, engine *MVCCEngine) *VersionStore {
 	}
 	// Initialize atomic.Bool to false (not closed)
 	vs.closed.Store(false)
+
+	// Initialize auto-increment counter to 0
+	// We'll use 1 as the first ID (incrementing before use)
+	vs.autoIncrementCounter.Store(0)
+
 	return vs
+}
+
+// GetNextAutoIncrementID returns the next available auto-increment ID
+// This is used both for primary key columns with auto-increment and
+// for generating synthetic keys for tables without a primary key
+func (vs *VersionStore) GetNextAutoIncrementID() int64 {
+	return vs.autoIncrementCounter.Add(1)
+}
+
+// SetAutoIncrementCounter sets the auto-increment counter to a specific value
+// but only if the current value is lower, to prevent assigning duplicate IDs
+// Returns true if the value was updated, false if no update was needed
+// This is used during recovery from snapshots or WAL
+func (vs *VersionStore) SetAutoIncrementCounter(value int64) bool {
+	// We need to ensure the counter only goes forward, never backward
+	// Keep trying to update until either we succeed or determine our stored
+	// value is already higher than the requested value
+	for {
+		current := vs.autoIncrementCounter.Load()
+		if current >= value {
+			// Current value is already higher or equal, no need to update
+			return false
+		}
+
+		// Try to update - will only succeed if no other thread modified it
+		if vs.autoIncrementCounter.CompareAndSwap(current, value) {
+			// Successfully updated
+			return true
+		}
+
+		// If we get here, another thread updated the counter between our load and CAS
+		// Loop and try again with the new current value
+	}
+}
+
+// GetCurrentAutoIncrementValue returns the current auto-increment value
+// without incrementing it
+func (vs *VersionStore) GetCurrentAutoIncrementValue() int64 {
+	return vs.autoIncrementCounter.Load()
 }
 
 // AddVersion adds or replaces the version for a row

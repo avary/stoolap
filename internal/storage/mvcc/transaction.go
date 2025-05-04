@@ -102,7 +102,28 @@ func (t *MVCCTransaction) Commit() error {
 		// Use the isReadOnly flag we computed BEFORE committing tables
 		// At this point, most table.txnVersions will be nil because Commit() cleared them
 		if !isReadOnly {
-			err := t.engine.persistence.RecordCommit(t.id)
+			// Collect auto-increment values from tables that have been modified in this transaction
+			var autoIncrementInfo []struct {
+				TableName string
+				Value     int64
+			}
+
+			// Check for any version stores that may have had their auto-increment counters updated
+			for tableName, vs := range t.engine.versionStores {
+				autoIncValue := vs.GetCurrentAutoIncrementValue()
+				if autoIncValue > 0 {
+					autoIncrementInfo = append(autoIncrementInfo, struct {
+						TableName string
+						Value     int64
+					}{
+						TableName: tableName,
+						Value:     autoIncValue,
+					})
+				}
+			}
+
+			// Record commit with auto-increment information
+			err := t.engine.persistence.RecordCommit(t.id, autoIncrementInfo...)
 			if err != nil {
 				fmt.Printf("Warning: Failed to record commit in WAL: %v\n", err)
 			}

@@ -256,6 +256,9 @@ func (dvs *DiskVersionStore) writeMetadata(path string, schema *storage.Schema) 
 	}
 	writer.WriteBytes(schemaBytes)
 
+	// Write auto-increment counter value
+	writer.WriteInt64(dvs.versionStore.GetCurrentAutoIncrementValue())
+
 	// Save columnar indexes metadata
 	// First collect all index data under the read lock to minimize lock time
 	var indexDataList [][]byte
@@ -517,6 +520,16 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	}
 	if len(schemaBytes) == 0 {
 		return fmt.Errorf("empty schema bytes")
+	}
+
+	// Read auto-increment counter value
+	autoIncValue, err := reader.ReadInt64()
+	if err != nil {
+		// For backward compatibility with older snapshots
+		fmt.Printf("Info: Auto-increment value not found in snapshot, using default\n")
+	} else if autoIncValue > 0 {
+		// Update the version store's auto-increment counter if the snapshot value is higher
+		dvs.versionStore.SetAutoIncrementCounter(autoIncValue)
 	}
 
 	// Read index count

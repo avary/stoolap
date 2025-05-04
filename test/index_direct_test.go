@@ -20,7 +20,7 @@ func TestIndexDirectCreate(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Use file:// to test persistence
-	connString := "file:///" + tempDir
+	connString := "file://" + tempDir
 
 	// Open a standard database/sql connection
 	db, err := sql.Open("stoolap", connString)

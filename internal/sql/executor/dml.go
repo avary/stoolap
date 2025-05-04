@@ -31,7 +31,8 @@ var (
 )
 
 // executeInsertWithContext executes an INSERT statement
-func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Transaction, stmt *parser.InsertStatement) (int64, error) {
+// Returns the number of rows affected and the last insert ID (for auto-increment columns)
+func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Transaction, stmt *parser.InsertStatement) (int64, int64, error) {
 	// Extract table name from the table expression
 	var tableName string
 
@@ -39,23 +40,23 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 	if stmt.TableName != nil {
 		tableName = stmt.TableName.Value
 	} else {
-		return 0, fmt.Errorf("missing table name in INSERT statement")
+		return 0, 0, fmt.Errorf("missing table name in INSERT statement")
 	}
 
 	// Check if the table exists
 	exists, err := e.engine.TableExists(tableName)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if !exists {
-		return 0, storage.ErrTableNotFound
+		return 0, 0, storage.ErrTableNotFound
 	}
 
 	// Get the table schema
 	schema, err := e.engine.GetTableSchema(tableName)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	cp := stringSlicePool.Get().(*[]string)
@@ -101,13 +102,13 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 	// Process the values - support multi-row insert
 	if len(stmt.Values) == 0 {
-		return 0, fmt.Errorf("no values provided for INSERT")
+		return 0, 0, fmt.Errorf("no values provided for INSERT")
 	}
 
 	// Get the table to insert rows
 	table, err := tx.GetTable(tableName)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	// Extract parameter object once outside the loop
@@ -128,12 +129,12 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 			// Process each row of values
 			for rowIndex, rowExprs := range stmt.Values {
 				if len(rowExprs) == 0 {
-					return int64(rowIndex), fmt.Errorf("empty values in row %d", rowIndex+1)
+					return int64(rowIndex), 0, fmt.Errorf("empty values in row %d", rowIndex+1)
 				}
 
 				// Check if column count matches value count
 				if len(columnNames) != len(rowExprs) {
-					return int64(rowIndex), fmt.Errorf("column count (%d) does not match value count (%d) in row %d",
+					return int64(rowIndex), 0, fmt.Errorf("column count (%d) does not match value count (%d) in row %d",
 						len(columnNames), len(rowExprs), rowIndex+1)
 				}
 
@@ -171,7 +172,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 					case *parser.NullLiteral:
 						columnValues[i] = nil
 					default:
-						return int64(rowIndex), fmt.Errorf("unsupported value type in row %d: %T", rowIndex+1, expr)
+						return int64(rowIndex), 0, fmt.Errorf("unsupported value type in row %d: %T", rowIndex+1, expr)
 					}
 				}
 
@@ -194,7 +195,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 						// Try lowercase version for case-insensitive match
 						colIndex, exists = columnMap[strings.ToLower(colName)]
 						if !exists {
-							return int64(rowIndex), fmt.Errorf("column not found: %s", colName)
+							return int64(rowIndex), 0, fmt.Errorf("column not found: %s", colName)
 						}
 					}
 					// Convert value to proper column value
@@ -208,10 +209,13 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 			// Insert all rows in a single batch operation
 			if err := mvccTable.InsertBatch(rows); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 
-			return int64(len(rows)), nil
+			// Get the current auto-increment value after the batch insert
+			lastInsertID := mvccTable.GetCurrentAutoIncrementValue()
+
+			return int64(len(rows)), lastInsertID, nil
 		}
 	}
 
@@ -220,7 +224,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 	for rowIndex, rowExprs := range stmt.Values {
 		if len(rowExprs) == 0 {
-			return totalRowsInserted, fmt.Errorf("empty values in row %d", rowIndex+1)
+			return totalRowsInserted, 0, fmt.Errorf("empty values in row %d", rowIndex+1)
 		}
 
 		cp := interfaceSlicePool.Get().(*[]interface{})
@@ -256,13 +260,13 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 			case *parser.NullLiteral:
 				columnValues[i] = nil
 			default:
-				return totalRowsInserted, fmt.Errorf("unsupported value type: %T", expr)
+				return totalRowsInserted, 0, fmt.Errorf("unsupported value type: %T", expr)
 			}
 		}
 
 		// Check if the number of columns match the number of values
 		if len(columnNames) != len(columnValues) {
-			return totalRowsInserted, fmt.Errorf("column count (%d) does not match value count (%d)",
+			return totalRowsInserted, 0, fmt.Errorf("column count (%d) does not match value count (%d)",
 				len(columnNames), len(columnValues))
 		}
 
@@ -285,7 +289,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 				// Try lowercase version for case-insensitive match
 				colIndex, exists = columnMap[strings.ToLower(colName)]
 				if !exists {
-					return totalRowsInserted, fmt.Errorf("column not found: %s", colName)
+					return totalRowsInserted, 0, fmt.Errorf("column not found: %s", colName)
 				}
 			}
 			// Convert raw value to proper column value
@@ -295,12 +299,20 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 		// Insert the row
 		if err := table.Insert(row); err != nil {
-			return totalRowsInserted, err
+			return totalRowsInserted, 0, err
 		}
 		totalRowsInserted++
 	}
 
-	return totalRowsInserted, nil
+	// Get the current auto-increment value after all inserts
+	var lastInsertID int64 = 0
+	if len(stmt.Values) > 0 {
+		if mvccTable, ok := table.(*mvcc.MVCCTable); ok {
+			lastInsertID = mvccTable.GetCurrentAutoIncrementValue()
+		}
+	}
+
+	return totalRowsInserted, lastInsertID, nil
 }
 
 // executeUpdate executes an UPDATE statement

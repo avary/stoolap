@@ -25,7 +25,7 @@ func TestUniqueIndexBug(t *testing.T) {
 
 	dbPath := filepath.Join(tempDir, "test.db")
 	// Use a short snapshot interval to force snapshot creation
-	connString := fmt.Sprintf("file:///%s?snapshot_interval=2", dbPath)
+	connString := fmt.Sprintf("file://%s?snapshot_interval=2", dbPath)
 	t.Logf("Using connection string: %s", connString)
 
 	// First database connection

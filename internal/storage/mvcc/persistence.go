@@ -801,7 +801,38 @@ func (pm *PersistenceManager) loadSnapshots() (map[string]*storage.Schema, error
 func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*storage.Schema) error {
 	// Optimize for commit entries
 	if entry.Operation == WALCommit {
+		// Register the committed transaction in the registry
 		pm.engine.registry.RecoverCommittedTransaction(entry.TxnID, entry.Timestamp)
+
+		// Check if this commit contains auto-increment values
+		if len(entry.Data) > 0 {
+			reader := binser.NewReader(entry.Data)
+
+			// Read number of tables with auto-increment info
+			count, err := reader.ReadUint32()
+			if err == nil && count > 0 {
+				// Process each table's auto-increment value
+				for i := uint32(0); i < count; i++ {
+					tableName, err := reader.ReadString()
+					if err != nil {
+						fmt.Printf("Warning: Error reading table name from commit record: %v\n", err)
+						continue
+					}
+
+					value, err := reader.ReadInt64()
+					if err != nil {
+						fmt.Printf("Warning: Error reading auto-increment value from commit record: %v\n", err)
+						continue
+					}
+
+					// Find the version store for this table and update its counter
+					if vs, exists := pm.engine.versionStores[tableName]; exists {
+						vs.SetAutoIncrementCounter(value)
+					}
+				}
+			}
+		}
+
 		return nil
 	}
 
@@ -1192,7 +1223,11 @@ func (pm *PersistenceManager) RecordDMLOperation(txnID int64, tableName string, 
 }
 
 // RecordCommit records a transaction commit in the WAL
-func (pm *PersistenceManager) RecordCommit(txnID int64) error {
+// If autoIncrementInfo is provided, it records the table's auto-increment value in the commit
+func (pm *PersistenceManager) RecordCommit(txnID int64, autoIncrementInfo ...struct {
+	TableName string
+	Value     int64
+}) error {
 	if !pm.enabled || pm.wal == nil {
 		return nil
 	}
@@ -1212,15 +1247,33 @@ func (pm *PersistenceManager) RecordCommit(txnID int64) error {
 		return fmt.Errorf("WAL manager is not running")
 	}
 
-	// Create WAL entry - keep minimal data for commit to reduce I/O
+	// Create WAL entry for commit
 	entry := WALEntry{
 		TxnID:     txnID,
 		Operation: WALCommit,
 		Timestamp: time.Now().UnixNano(),
-		// Explicitly set empty fields to minimize data size
 		TableName: "",
 		RowID:     0,
 		Data:      nil,
+	}
+
+	// If we have auto-increment info, serialize it into the commit data
+	if len(autoIncrementInfo) > 0 {
+		// Use binser for serialization
+		writer := binser.NewWriter()
+		defer writer.Release()
+
+		// Serialize number of tables with auto-increment info
+		writer.WriteUint32(uint32(len(autoIncrementInfo)))
+
+		// Serialize each table's auto-increment info
+		for _, info := range autoIncrementInfo {
+			writer.WriteString(info.TableName)
+			writer.WriteInt64(info.Value)
+		}
+
+		// Set the serialized data in the commit entry
+		entry.Data = writer.Bytes()
 	}
 
 	// Append the entry with lock already held

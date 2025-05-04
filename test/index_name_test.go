@@ -23,7 +23,7 @@ func TestIndexNamePersistence(t *testing.T) {
 
 	dbPath := filepath.Join(tempDir, "test.db")
 	// Use file:// protocol to ensure persistence
-	connString := "file:///" + dbPath
+	connString := "file://" + dbPath
 
 	// Create and set up the database
 	db, err := pkg.Open(connString)
@@ -94,7 +94,7 @@ func TestIndexNamePersistence(t *testing.T) {
 	} else {
 		for rows.Next() {
 			var colData interface{}
-			err = rows.Scan(&colData)
+			rows.Scan(&colData)
 			t.Logf("Column data: %v", colData)
 		}
 		rows.Close()
@@ -108,7 +108,7 @@ func TestIndexNamePersistence(t *testing.T) {
 	} else {
 		for rows.Next() {
 			var idxData interface{}
-			err = rows.Scan(&idxData)
+			rows.Scan(&idxData)
 			t.Logf("Index data: %v", idxData)
 		}
 		rows.Close()

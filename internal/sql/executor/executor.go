@@ -588,12 +588,12 @@ func (e *Executor) ExecuteWithParams(ctx context.Context, tx storage.Transaction
 			}
 		}
 	case *parser.InsertStatement:
-		var rowsAffected int64
-		rowsAffected, err = e.executeInsertWithContext(ctx, tx, s)
+		var rowsAffected, lastInsertID int64
+		rowsAffected, lastInsertID, err = e.executeInsertWithContext(ctx, tx, s)
 		if err == nil {
 			result = &ExecResult{
 				rowsAffected: rowsAffected,
-				lastInsertID: 0, // TODO: Support last insert ID
+				lastInsertID: lastInsertID,
 				ctx:          ctx,
 			}
 		}

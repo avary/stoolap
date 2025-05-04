@@ -40,37 +40,35 @@ func (f *MVCCFactory) Create(urlStr string) (storage.Engine, error) {
 		// File mode - always persistent
 		persistenceEnabled = true
 
-		// Handle path extraction from URL
-		// For URLs like file://db/anotherfolder, we need to combine host and path
-		path = parsedURL.Path
+		// Handle three specific scenarios:
+		// 1. file:///var/folders/... - Absolute path (empty host, path starts with /)
+		// 2. file://stoolap.db - Relative path in current folder (host is the filename)
+		// 3. file://data/stoolap.db - Relative path with subfolder (host is the folder)
 
-		// Path validation and normalization
-		if path == "" || path == "/" {
-			// Extract the host part if it exists - this covers file://db style URLs
-			if parsedURL.Host != "" {
+		// Case 1: Absolute path (file:///)
+		if parsedURL.Host == "" && strings.HasPrefix(parsedURL.Path, "/") {
+			// Absolute path - remove the leading slash
+			path = "/" + parsedURL.Path[1:]
+
+			// Special case for Windows paths like /C:/data/db.file
+			if len(path) > 2 && path[1] == ':' && (path[2] == '/' || path[2] == '\\') {
+				// Windows path with drive letter - keep it as is
+			}
+		} else if parsedURL.Host != "" {
+			// If host is present, it's a relative path
+			if parsedURL.Path == "" || parsedURL.Path == "/" {
+				// Just the host (case 2)
 				path = parsedURL.Host
 			} else {
-				return nil, errors.New("file:// scheme requires a non-empty path")
+				// Host and path (case 3)
+				// Remove the leading slash from path if present
+				pathPart := parsedURL.Path
+				pathPart = strings.TrimPrefix(pathPart, "/")
+				path = filepath.Join(parsedURL.Host, pathPart)
 			}
 		} else {
-			// For URLs like file://db/folder where db is the host and /folder is the path
-			if parsedURL.Host != "" {
-				// Combine host and path, removing the leading slash from path
-				if strings.HasPrefix(path, "/") {
-					path = filepath.Join(parsedURL.Host, path[1:])
-				} else {
-					path = filepath.Join(parsedURL.Host, path)
-				}
-			} else if strings.HasPrefix(path, "/") {
-				// Handle normal absolute paths like file:///absolute/path
-				// Just remove the leading slash
-				path = path[1:]
-
-				// Special case for Windows paths like /C:/data/db.file
-				if len(path) > 2 && path[1] == ':' && (path[2] == '/' || path[2] == '\\') {
-					// Windows path with drive letter - keep it as is
-				}
-			}
+			// Invalid format
+			return nil, errors.New("file:// scheme requires a non-empty path")
 		}
 
 		// Final check to ensure we have a path
