@@ -63,7 +63,8 @@ type Parser struct {
 	curToken  Token
 	peekToken Token
 
-	errors []string
+	errors []*ParseError // Using our new ParseError type
+	query  string        // Store the original query for error context
 
 	// Map of functions for parsing prefix expressions
 	prefixParseFns map[TokenType]prefixParseFn
@@ -99,7 +100,8 @@ func NewParserWithRegistry(lexer *Lexer, registry funcregistry.Registry) *Parser
 	// Create a new parser first
 	p := &Parser{
 		lexer:                     lexer,
-		errors:                    []string{},
+		errors:                    []*ParseError{},
+		query:                     lexer.input, // Store the original query for context
 		funcRegistry:              registry,
 		funcValidator:             funcregistry.NewValidator(registry),
 		currentStatementID:        1,         // Start with statement ID 1
@@ -144,21 +146,47 @@ func (p *Parser) registerInfix(tokenType TokenType, fn infixParseFn) {
 
 // Errors returns the list of errors that occurred during parsing
 func (p *Parser) Errors() []string {
-	errors := p.errors
-	slices.Reverse(errors)
-	return errors
+	// Convert ParseError objects to strings for backward compatibility
+	result := make([]string, len(p.errors))
+	for i, err := range p.errors {
+		result[i] = err.Error()
+	}
+	slices.Reverse(result)
+	return result
+}
+
+// ErrorsWithContext returns detailed errors with SQL context
+func (p *Parser) ErrorsWithContext() []*ParseError {
+	return p.errors
+}
+
+// FormatErrors returns a user-friendly formatted error message
+func (p *Parser) FormatErrors() string {
+	return FormatErrors(p.query, p.errors)
 }
 
 // peekError adds an error when the next token isn't the expected one
 func (p *Parser) peekError(expected string) {
-	msg := fmt.Sprintf("expected next token to be %s, got %s at %s",
-		expected, p.peekToken.Type, p.peekToken.Position)
-	p.errors = append(p.errors, msg)
+	msg := fmt.Sprintf("expected next token to be %s, got %s",
+		expected, p.peekToken.Type)
+
+	parseErr := &ParseError{
+		Message:  msg,
+		Position: p.peekToken.Position,
+		Context:  p.query,
+	}
+	p.errors = append(p.errors, parseErr)
 }
 
 // addError adds a generic error
 func (p *Parser) addError(msg string) {
-	p.errors = append(p.errors, msg)
+	// Use current token position for context
+	parseErr := &ParseError{
+		Message:  msg,
+		Position: p.curToken.Position,
+		Context:  p.query,
+	}
+	p.errors = append(p.errors, parseErr)
 }
 
 // tokenDebug returns a debug representation of a token
@@ -846,6 +874,8 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseSavepointStatement()
 	case p.curTokenIsKeyword("SET"):
 		return p.parseSetStatement()
+	case p.curTokenIsKeyword("PRAGMA"):
+		return p.parsePragmaStatement()
 	case p.curTokenIsKeyword("SHOW"):
 		return p.parseShowStatement()
 	case p.curTokenIs(TokenEOF):
@@ -2529,6 +2559,61 @@ func (p *Parser) parseInsertStatement() Statement {
 
 	// Parse value lists
 	stmt.Values = p.parseValueLists()
+
+	// Check for ON DUPLICATE KEY UPDATE clause
+	if p.peekTokenIsKeyword("ON") {
+		p.nextToken() // consume ON
+
+		if !p.expectKeyword("DUPLICATE") {
+			return nil
+		}
+
+		if !p.expectKeyword("KEY") {
+			return nil
+		}
+
+		if !p.expectKeyword("UPDATE") {
+			return nil
+		}
+
+		// Parse the update assignments
+		stmt.OnDuplicate = true
+		stmt.UpdateColumns = []*Identifier{}
+		stmt.UpdateExpressions = []Expression{}
+
+		for {
+			// Parse column to update
+			if !p.expectPeek(TokenIdentifier) {
+				return nil
+			}
+
+			column := &Identifier{
+				Token: p.curToken,
+				Value: p.curToken.Literal,
+			}
+			stmt.UpdateColumns = append(stmt.UpdateColumns, column)
+
+			// Expect =
+			if !p.expectPeek(TokenOperator) || p.curToken.Literal != "=" {
+				p.addError(fmt.Sprintf("expected '=', got %s at %s", p.curToken.Literal, p.curToken.Position))
+				return nil
+			}
+
+			// Parse expression
+			p.nextToken() // consume =
+			expr := p.parseExpression(LOWEST)
+			if expr == nil {
+				return nil
+			}
+			stmt.UpdateExpressions = append(stmt.UpdateExpressions, expr)
+
+			// Check for comma (more assignments) or end
+			if !p.peekTokenIsPunctuator(",") {
+				break
+			}
+			p.nextToken() // consume ,
+		}
+	}
 
 	return stmt
 }

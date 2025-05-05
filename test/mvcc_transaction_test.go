@@ -479,6 +479,8 @@ func TestTransactionConcurrency(t *testing.T) {
 
 	rowCount := 0
 	threadCounts := make([]int, numThreads)
+	rowsFound := make(map[int64]bool)
+
 	for scanner.Next() {
 		row := scanner.Row()
 
@@ -486,6 +488,14 @@ func TestTransactionConcurrency(t *testing.T) {
 		if !ok {
 			t.Errorf("Failed to get thread ID for row %d", rowCount)
 		}
+
+		rowID, ok := row[0].AsInt64()
+		if !ok {
+			t.Errorf("Failed to get row ID for row %d", rowCount)
+		}
+
+		// Mark this row ID as found
+		rowsFound[rowID] = true
 
 		if threadID < 0 || threadID >= int64(numThreads) {
 			t.Errorf("Invalid thread ID %d for row %d", threadID, rowCount)
@@ -502,11 +512,29 @@ func TestTransactionConcurrency(t *testing.T) {
 
 	if rowCount != numThreads*rowsPerThread {
 		t.Errorf("Expected %d total rows, got %d", numThreads*rowsPerThread, rowCount)
+
+		// Find which rows are missing
+		for thread := 0; thread < numThreads; thread++ {
+			for i := 0; i < rowsPerThread; i++ {
+				rowID := int64(thread*rowsPerThread + i)
+				if !rowsFound[rowID] {
+					t.Logf("Missing row ID: %d (thread %d, row %d)", rowID, thread, i)
+				}
+			}
+		}
 	}
 
 	for thread, count := range threadCounts {
 		if count != rowsPerThread {
 			t.Errorf("Thread %d: Expected %d rows, got %d", thread, rowsPerThread, count)
+
+			// Find which rows are missing for this thread
+			for i := 0; i < rowsPerThread; i++ {
+				rowID := int64(thread*rowsPerThread + i)
+				if !rowsFound[rowID] {
+					t.Logf("Thread %d: Missing row ID: %d (row %d)", thread, rowID, i)
+				}
+			}
 		}
 	}
 

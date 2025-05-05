@@ -236,7 +236,7 @@ func TestV3CRUDOperations(t *testing.T) {
 
 	t.Logf("Updating Alice's record (ID = 1)...")
 	// Update function for Alice's record
-	updateCount1, err := table.Update(updateAlice, func(row storage.Row) storage.Row {
+	updateCount1, err := table.Update(updateAlice, func(row storage.Row) (storage.Row, bool) {
 		// Create updated row
 		updated := make(storage.Row, len(row))
 		copy(updated, row)
@@ -247,7 +247,7 @@ func TestV3CRUDOperations(t *testing.T) {
 		// Update balance (column 3) to 1600.00
 		updated[3] = storage.NewFloatValue(1600.00)
 
-		return updated
+		return updated, true
 	})
 
 	if err != nil {
@@ -265,7 +265,7 @@ func TestV3CRUDOperations(t *testing.T) {
 	})
 
 	// Update inactive users
-	updateCount2, err := table.Update(updateInactive, func(row storage.Row) storage.Row {
+	updateCount2, err := table.Update(updateInactive, func(row storage.Row) (storage.Row, bool) {
 		// Create updated row
 		updated := make(storage.Row, len(row))
 		copy(updated, row)
@@ -276,7 +276,7 @@ func TestV3CRUDOperations(t *testing.T) {
 		// Update balance (column 3) to 1000.00
 		updated[3] = storage.NewFloatValue(1000.00)
 
-		return updated
+		return updated, true
 	})
 
 	if err != nil {

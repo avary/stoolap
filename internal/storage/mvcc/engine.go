@@ -74,9 +74,6 @@ func NewMVCCEngine(config *storage.Config) *MVCCEngine {
 			// This is a critical error for file:// URLs where persistence is required
 			fmt.Printf("Error: Failed to initialize required persistence for path %s: %v\n", config.Path, err)
 			// Return the persistence manager anyway, but Open() will fail later
-		} else {
-			// For memory:// URLs, this is just a warning
-			fmt.Printf("Warning: Failed to initialize persistence: %v. Running in memory-only mode.\n", err)
 		}
 	}
 
@@ -306,6 +303,40 @@ func (e *MVCCEngine) BeginTx(ctx context.Context) (storage.Transaction, error) {
 // Path returns the database path
 func (e *MVCCEngine) Path() string {
 	return e.path
+}
+
+// GetConfig returns a copy of the current engine configuration
+func (e *MVCCEngine) GetConfig() storage.Config {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Return a copy of the configuration to avoid race conditions
+	configCopy := *e.config
+	return configCopy
+}
+
+// UpdateConfig updates the engine configuration
+func (e *MVCCEngine) UpdateConfig(config storage.Config) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Validate that the path hasn't changed (can't change paths for an open engine)
+	if config.Path != e.config.Path {
+		return fmt.Errorf("cannot change database path after opening")
+	}
+
+	// Update our configuration copy
+	e.config = &config
+
+	// Apply changes to the persistence manager if it exists
+	if e.persistence != nil {
+		err := e.persistence.UpdateConfig(config.Persistence)
+		if err != nil {
+			return fmt.Errorf("failed to update persistence configuration: %v", err)
+		}
+	}
+
+	return nil
 }
 
 // TableExists checks if a table exists

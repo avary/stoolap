@@ -137,15 +137,15 @@ func TestMVCCTable(t *testing.T) {
 	}
 
 	// Test 6: Update row
-	updater := func(row storage.Row) storage.Row {
+	updater := func(row storage.Row) (storage.Row, bool) {
 		// Update Alice's age to 31
 		if id, ok := row[0].AsInt64(); ok && id == 1 {
 			updated := make(storage.Row, len(row))
 			copy(updated, row)
 			updated[2] = storage.NewIntegerValue(31)
-			return updated
+			return updated, true
 		}
-		return row
+		return row, true
 	}
 
 	updateCount, err := mvccTable.Update(nil, updater)

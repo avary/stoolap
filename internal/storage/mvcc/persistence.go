@@ -1362,3 +1362,48 @@ func (pm *PersistenceManager) RecordRollback(txnID int64) error {
 	pm.meta.lastWALLSN.Store(lsn)
 	return nil
 }
+
+// UpdateConfig updates the persistence configuration settings
+func (pm *PersistenceManager) UpdateConfig(config storage.PersistenceConfig) error {
+	if !pm.enabled {
+		// No-op for memory-only mode
+		return nil
+	}
+
+	// Update snapshot interval
+	if config.SnapshotInterval > 0 {
+		pm.snapshotInterval = time.Duration(config.SnapshotInterval) * time.Second
+	}
+
+	// Update keep count
+	if config.KeepSnapshots > 0 {
+		pm.keepCount = config.KeepSnapshots
+	}
+
+	// Update WAL settings if the WAL manager exists
+	if pm.wal != nil {
+		// Update sync mode
+		if config.SyncMode >= 0 && config.SyncMode <= 2 {
+			pm.wal.syncMode = SyncMode(config.SyncMode)
+		}
+
+		// Update WAL flush trigger
+		if config.WALFlushTrigger > 0 {
+			// Update WAL flush trigger (not an atomic value in the struct)
+			pm.wal.flushTrigger = uint64(config.WALFlushTrigger)
+		}
+
+		// Update commit batch size
+		if config.CommitBatchSize > 0 {
+			pm.wal.commitBatchSize = int32(config.CommitBatchSize)
+		}
+
+		// Update sync interval
+		if config.SyncIntervalMs > 0 {
+			// Convert milliseconds to nanoseconds for the internal field
+			pm.wal.syncIntervalNano = int64(config.SyncIntervalMs) * 1_000_000
+		}
+	}
+
+	return nil
+}

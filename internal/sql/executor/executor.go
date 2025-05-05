@@ -392,6 +392,206 @@ func isMathExpression(expr parser.Expression) bool {
 	return false
 }
 
+// executePragma handles PRAGMA statements for database configuration
+func (e *Executor) executePragma(stmt *parser.PragmaStatement) (storage.Result, error) {
+	// Get the pragma name
+	pragmaName := strings.ToUpper(stmt.Name.Value)
+
+	// Get the current configuration
+	config := e.engine.GetConfig()
+
+	// Structure to hold the result
+	var result *ExecResult
+
+	// Handle different PRAGMA settings
+	switch pragmaName {
+	case "SNAPSHOT_INTERVAL":
+		// Handle snapshot_interval setting
+		if stmt.Value == nil {
+			// This is a read operation, return current value
+			result = &ExecResult{
+				columns:    []string{"snapshot_interval"},
+				rows:       [][]interface{}{{config.Persistence.SnapshotInterval}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		} else {
+			// This is a write operation, set new value
+			var newInterval int
+			switch value := stmt.Value.(type) {
+			case *parser.IntegerLiteral:
+				newInterval = int(value.Value)
+			case *parser.FloatLiteral:
+				newInterval = int(value.Value)
+			default:
+				return nil, fmt.Errorf("snapshot_interval value must be an integer")
+			}
+
+			// Validate the value
+			if newInterval <= 0 {
+				return nil, fmt.Errorf("snapshot_interval must be positive")
+			}
+
+			// Update the config
+			config.Persistence.SnapshotInterval = newInterval
+
+			// Apply the configuration change
+			if err := e.engine.UpdateConfig(config); err != nil {
+				return nil, fmt.Errorf("failed to update snapshot_interval: %v", err)
+			}
+
+			// Return the new value
+			result = &ExecResult{
+				columns:    []string{"snapshot_interval"},
+				rows:       [][]interface{}{{newInterval}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		}
+	case "KEEP_SNAPSHOTS":
+		// Handle keep_snapshots setting
+		if stmt.Value == nil {
+			// This is a read operation, return current value
+			result = &ExecResult{
+				columns:    []string{"keep_snapshots"},
+				rows:       [][]interface{}{{config.Persistence.KeepSnapshots}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		} else {
+			// This is a write operation, set new value
+			var newValue int
+			switch value := stmt.Value.(type) {
+			case *parser.IntegerLiteral:
+				newValue = int(value.Value)
+			case *parser.FloatLiteral:
+				newValue = int(value.Value)
+			default:
+				return nil, fmt.Errorf("keep_snapshots value must be an integer")
+			}
+
+			// Validate the value
+			if newValue <= 0 {
+				return nil, fmt.Errorf("keep_snapshots must be positive")
+			}
+
+			// Update the config
+			config.Persistence.KeepSnapshots = newValue
+
+			// Apply the configuration change
+			if err := e.engine.UpdateConfig(config); err != nil {
+				return nil, fmt.Errorf("failed to update keep_snapshots: %v", err)
+			}
+
+			// Return the new value
+			result = &ExecResult{
+				columns:    []string{"keep_snapshots"},
+				rows:       [][]interface{}{{newValue}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		}
+	case "SYNC_MODE":
+		// Handle sync_mode setting
+		if stmt.Value == nil {
+			// This is a read operation, return current value
+			result = &ExecResult{
+				columns:    []string{"sync_mode"},
+				rows:       [][]interface{}{{config.Persistence.SyncMode}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		} else {
+			// This is a write operation, set new value
+			var newValue int
+			switch value := stmt.Value.(type) {
+			case *parser.IntegerLiteral:
+				newValue = int(value.Value)
+			case *parser.FloatLiteral:
+				newValue = int(value.Value)
+			default:
+				return nil, fmt.Errorf("sync_mode value must be an integer (0=None, 1=Normal, 2=Full)")
+			}
+
+			// Validate the value
+			if newValue < 0 || newValue > 2 {
+				return nil, fmt.Errorf("sync_mode must be 0 (None), 1 (Normal), or 2 (Full)")
+			}
+
+			// Update the config
+			config.Persistence.SyncMode = newValue
+
+			// Apply the configuration change
+			if err := e.engine.UpdateConfig(config); err != nil {
+				return nil, fmt.Errorf("failed to update sync_mode: %v", err)
+			}
+
+			// Return the new value
+			result = &ExecResult{
+				columns:    []string{"sync_mode"},
+				rows:       [][]interface{}{{newValue}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		}
+	case "WAL_FLUSH_TRIGGER":
+		// Handle wal_flush_trigger setting
+		if stmt.Value == nil {
+			// This is a read operation, return current value
+			result = &ExecResult{
+				columns:    []string{"wal_flush_trigger"},
+				rows:       [][]interface{}{{config.Persistence.WALFlushTrigger}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		} else {
+			// This is a write operation, set new value
+			var newValue int
+			switch value := stmt.Value.(type) {
+			case *parser.IntegerLiteral:
+				newValue = int(value.Value)
+			case *parser.FloatLiteral:
+				newValue = int(value.Value)
+			default:
+				return nil, fmt.Errorf("wal_flush_trigger value must be an integer")
+			}
+
+			// Validate the value
+			if newValue <= 0 {
+				return nil, fmt.Errorf("wal_flush_trigger must be positive")
+			}
+
+			// Update the config
+			config.Persistence.WALFlushTrigger = newValue
+
+			// Apply the configuration change
+			if err := e.engine.UpdateConfig(config); err != nil {
+				return nil, fmt.Errorf("failed to update wal_flush_trigger: %v", err)
+			}
+
+			// Return the new value
+			result = &ExecResult{
+				columns:    []string{"wal_flush_trigger"},
+				rows:       [][]interface{}{{newValue}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unknown PRAGMA setting: %s", pragmaName)
+	}
+
+	return result, nil
+}
+
 // Execute executes a SQL statement
 func (e *Executor) Execute(ctx context.Context, tx storage.Transaction, query string) (storage.Result, error) {
 	// Execute without parameters
@@ -451,7 +651,8 @@ func (e *Executor) getStatementFromCache(query string, params []driver.NamedValu
 	program := p.ParseProgram()
 
 	if len(p.Errors()) > 0 {
-		return nil, errors.New(strings.Join(p.Errors(), ", "))
+		// Use the new formatted error message for better readability
+		return nil, errors.New(p.FormatErrors())
 	}
 
 	if len(program.Statements) == 0 {
@@ -656,6 +857,14 @@ func (e *Executor) ExecuteWithParams(ctx context.Context, tx storage.Transaction
 				lastInsertID: 0,
 				ctx:          ctx,
 			}
+		}
+	case *parser.PragmaStatement:
+		// PRAGMA statements are handled differently as they're related to database settings
+		// rather than data operations, and they don't need a transaction
+		result, err = e.executePragma(s)
+		if err == nil {
+			// We've handled the PRAGMA command, no transaction-specific operations needed
+			shouldAutoCommit = true
 		}
 	case *parser.ShowTablesStatement:
 		// Execute SHOW TABLES statement

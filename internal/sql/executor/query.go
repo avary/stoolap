@@ -507,6 +507,11 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 		}
 	}
 
+	// Apply DISTINCT if specified - must be after filtering but before ordering
+	if stmt.Distinct {
+		result = NewDistinctResult(result)
+	}
+
 	// Apply ORDER BY, LIMIT, OFFSET if specified
 	if stmt.OrderBy != nil || stmt.Limit != nil || stmt.Offset != nil {
 		result, err = applyOrderByLimitOffset(ctx, result, stmt)

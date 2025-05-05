@@ -39,8 +39,6 @@ var (
 	ErrIndexAlreadyExists = errors.New("index already exists")
 	// ErrIndexColumnNotFound is returned when a column specified for an index is not found
 	ErrIndexColumnNotFound = errors.New("index column not found")
-	// ErrUniqueConstraintViolation is returned when a unique constraint is violated
-	ErrUniqueConstraintViolation = errors.New("unique constraint violation")
 
 	// Value comparison errors
 	// ErrNullComparison is returned when trying to compare NULL values
@@ -81,27 +79,33 @@ func (e ErrNotNullConstraint) Error() string {
 
 // ErrPrimaryKeyConstraint is returned when a primary key constraint is violated
 type ErrPrimaryKeyConstraint struct {
-	Column string
-	Value  interface{}
+	RowID int64
 }
 
 func (e ErrPrimaryKeyConstraint) Error() string {
-	return fmt.Sprintf("primary key constraint failed for column %s with value %v", e.Column, e.Value)
+	return fmt.Sprintf("primary key constraint failed with %d already exists in this table", e.RowID)
+}
+
+// NewPrimaryKeyConstraintError creates a new primary key error
+func NewPrimaryKeyConstraintError(rowID int64) error {
+	return &ErrPrimaryKeyConstraint{
+		RowID: rowID,
+	}
 }
 
 // ErrUniqueConstraint is returned when a unique constraint is violated
 type ErrUniqueConstraint struct {
 	Index  string
 	Column string
-	Value  interface{}
+	Value  ColumnValue
 }
 
 func (e ErrUniqueConstraint) Error() string {
-	return fmt.Sprintf("unique constraint failed for index %s on column %s with value %v", e.Index, e.Column, e.Value)
+	return fmt.Sprintf("unique constraint failed for index %s on column %s with value %v", e.Index, e.Column, e.Value.AsInterface())
 }
 
 // NewUniqueConstraintError creates a new unique constraint error
-func NewUniqueConstraintError(indexName, column string, value interface{}) error {
+func NewUniqueConstraintError(indexName, column string, value ColumnValue) error {
 	return &ErrUniqueConstraint{
 		Index:  indexName,
 		Column: column,

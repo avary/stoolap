@@ -909,10 +909,13 @@ func (dts *DropTableStatement) String() string {
 
 // InsertStatement represents an INSERT statement
 type InsertStatement struct {
-	Token     Token // The INSERT token
-	TableName *Identifier
-	Columns   []*Identifier
-	Values    [][]Expression
+	Token             Token // The INSERT token
+	TableName         *Identifier
+	Columns           []*Identifier
+	Values            [][]Expression
+	OnDuplicate       bool          // Whether there is an ON DUPLICATE KEY UPDATE clause
+	UpdateColumns     []*Identifier // Columns to update on duplicate key
+	UpdateExpressions []Expression  // Expressions for the values to update
 }
 
 func (is *InsertStatement) statementNode()       {}
@@ -946,6 +949,16 @@ func (is *InsertStatement) String() string {
 			result += expr.String()
 		}
 		result += ")"
+	}
+
+	if is.OnDuplicate {
+		result += " ON DUPLICATE KEY UPDATE "
+		for i := range is.UpdateColumns {
+			if i > 0 {
+				result += ", "
+			}
+			result += is.UpdateColumns[i].String() + " = " + is.UpdateExpressions[i].String()
+		}
 	}
 
 	return result
@@ -1297,6 +1310,23 @@ func (ss *SetStatement) TokenLiteral() string { return ss.Token.Literal }
 func (ss *SetStatement) Position() Position   { return ss.Token.Position }
 func (ss *SetStatement) String() string {
 	return fmt.Sprintf("SET %s = %s", ss.Name.String(), ss.Value.String())
+}
+
+// PragmaStatement represents a PRAGMA statement for database settings
+type PragmaStatement struct {
+	Token Token       // The PRAGMA token
+	Name  *Identifier // The setting name to get or set
+	Value Expression  // The value to set it to (nil for read-only pragma)
+}
+
+func (ps *PragmaStatement) statementNode()       {}
+func (ps *PragmaStatement) TokenLiteral() string { return ps.Token.Literal }
+func (ps *PragmaStatement) Position() Position   { return ps.Token.Position }
+func (ps *PragmaStatement) String() string {
+	if ps.Value != nil {
+		return fmt.Sprintf("PRAGMA %s = %s", ps.Name.String(), ps.Value.String())
+	}
+	return fmt.Sprintf("PRAGMA %s", ps.Name.String())
 }
 
 // ExpressionStatement represents a standalone expression used as a statement

@@ -306,12 +306,12 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	}
 	updateSchemaExpr := expression.NewSchemaAwareExpression(updateExpr, schema)
 
-	updatedCount, err := table2.Update(updateSchemaExpr, func(row storage.Row) storage.Row {
+	updatedCount, err := table2.Update(updateSchemaExpr, func(row storage.Row) (storage.Row, bool) {
 		// Change category from "cat_1" to "cat_updated"
 		updatedRow := make(storage.Row, len(row))
 		copy(updatedRow, row)
 		updatedRow[1] = storage.NewStringValue("cat_updated")
-		return updatedRow
+		return updatedRow, true
 	})
 
 	if err != nil {

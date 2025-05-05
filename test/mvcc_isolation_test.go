@@ -168,10 +168,10 @@ func TestMVCCTransactionIsolation(t *testing.T) {
 		return id == 1, nil
 	})
 
-	updateCount, err := table4.Update(expr, func(row storage.Row) storage.Row {
+	updateCount, err := table4.Update(expr, func(row storage.Row) (storage.Row, bool) {
 		// Change value
 		row[1] = storage.NewStringValue("Transaction 4 update")
-		return row
+		return row, true
 	})
 
 	if err != nil {

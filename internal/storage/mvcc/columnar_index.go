@@ -497,7 +497,7 @@ func (idx *ColumnarIndex) Add(value storage.ColumnValue, rowID int64, refID int6
 	count := idx.valueTree.ValueCount(value)
 	if count > 0 {
 		// Return unique constraint violation
-		return storage.ErrUniqueConstraintViolation
+		return storage.NewUniqueConstraintError(idx.name, idx.columnName, value)
 	}
 
 	// If we get here, the value is unique, so insert it

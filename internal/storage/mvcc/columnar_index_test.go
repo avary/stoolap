@@ -2,6 +2,7 @@ package mvcc
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -275,11 +276,13 @@ func TestColumnarIndex_UniqueConstraint(t *testing.T) {
 		storage.NewTimestampValue(now.Add(time.Hour)), // ts_val
 	}
 
+	var uniqueErr *storage.ErrUniqueConstraint
+
 	err = table.Insert(row2)
 	if err == nil {
 		t.Errorf("Expected unique constraint violation for integer column, but insertion succeeded")
-	} else if err != storage.ErrUniqueConstraintViolation {
-		t.Errorf("Expected ErrUniqueConstraintViolation, got: %v", err)
+	} else if !errors.As(err, &uniqueErr) {
+		t.Errorf("Expected ErrUniqueConstraint, got: %v", err)
 	}
 
 	// Test unique constraint for FLOAT
@@ -295,8 +298,8 @@ func TestColumnarIndex_UniqueConstraint(t *testing.T) {
 	err = table.Insert(row3)
 	if err == nil {
 		t.Errorf("Expected unique constraint violation for float column, but insertion succeeded")
-	} else if err != storage.ErrUniqueConstraintViolation {
-		t.Errorf("Expected ErrUniqueConstraintViolation, got: %v", err)
+	} else if !errors.As(err, &uniqueErr) {
+		t.Errorf("Expected ErrUniqueConstraint, got: %v", err)
 	}
 
 	// Test unique constraint for TEXT
@@ -312,8 +315,8 @@ func TestColumnarIndex_UniqueConstraint(t *testing.T) {
 	err = table.Insert(row4)
 	if err == nil {
 		t.Errorf("Expected unique constraint violation for text column, but insertion succeeded")
-	} else if err != storage.ErrUniqueConstraintViolation {
-		t.Errorf("Expected ErrUniqueConstraintViolation, got: %v", err)
+	} else if !errors.As(err, &uniqueErr) {
+		t.Errorf("Expected ErrUniqueConstraint, got: %v", err)
 	}
 
 	// Test unique constraint for TIMESTAMP
@@ -329,8 +332,8 @@ func TestColumnarIndex_UniqueConstraint(t *testing.T) {
 	err = table.Insert(row5)
 	if err == nil {
 		t.Errorf("Expected unique constraint violation for timestamp column, but insertion succeeded")
-	} else if err != storage.ErrUniqueConstraintViolation {
-		t.Errorf("Expected ErrUniqueConstraintViolation, got: %v", err)
+	} else if !errors.As(err, &uniqueErr) {
+		t.Errorf("Expected ErrUniqueConstraint, got: %v", err)
 	}
 
 	// Test that NULL values are allowed in unique columns (multiple NULLs should be allowed)

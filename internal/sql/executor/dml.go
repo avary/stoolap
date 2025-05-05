@@ -2,6 +2,7 @@ package sql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -297,10 +298,129 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 			row[colIndex] = storage.ValueToColumnValue(columnValues[i], colType)
 		}
 
-		// Insert the row
-		if err := table.Insert(row); err != nil {
+		// Try to insert the row
+		err = table.Insert(row)
+		if err != nil {
+			// If we have ON DUPLICATE KEY UPDATE clause and we get a unique constraint violation
+			if stmt.OnDuplicate {
+				var pkErr *storage.ErrPrimaryKeyConstraint
+				var uniqueErr *storage.ErrUniqueConstraint
+
+				if errors.As(err, &pkErr) || errors.As(err, &uniqueErr) {
+					// Create a search expression to find the duplicate row
+					var searchExpr storage.Expression
+
+					// Case 1: Primary key constraint violation - we know exactly which row ID to find
+					if errors.As(err, &pkErr) {
+						// Find primary key column to create the search expression
+						for _, col := range schema.Columns {
+							if col.PrimaryKey {
+								searchExpr = &expression.SimpleExpression{
+									Column:   col.Name,
+									Operator: storage.EQ,
+									Value:    pkErr.RowID,
+								}
+								searchExpr = expression.NewSchemaAwareExpression(searchExpr, schema)
+								break
+							}
+						}
+					}
+
+					// Case 2: Unique constraint violation - we have column name and value
+					if searchExpr == nil && errors.As(err, &uniqueErr) {
+						searchExpr = &expression.SimpleExpression{
+							Column:   uniqueErr.Column,
+							Operator: storage.EQ,
+							Value:    uniqueErr.Value.AsInterface(),
+						}
+						searchExpr = expression.NewSchemaAwareExpression(searchExpr, schema)
+					}
+
+					// If we found a valid search expression, find and update the row
+					if searchExpr != nil {
+						// Get column indices for all columns
+						colIndices := make([]int, len(schema.Columns))
+						for i := range colIndices {
+							colIndices[i] = i
+						}
+
+						// Scan for the duplicate row
+						scanner, scanErr := table.Scan(colIndices, searchExpr)
+						if scanErr == nil {
+							defer scanner.Close()
+
+							// If we found a row
+							if scanner.Next() {
+								// Create updater function for applying the ON DUPLICATE KEY UPDATE
+								updaterFn := func(oldRow storage.Row) (storage.Row, bool) {
+									// Create a new row as a copy of the old row
+									newRow := make(storage.Row, len(oldRow))
+									copy(newRow, oldRow)
+
+									// Apply the updates
+									for i, updateColumn := range stmt.UpdateColumns {
+										colName := updateColumn.Value
+										expr := stmt.UpdateExpressions[i]
+
+										// Find the column index
+										colIndex := -1
+										for j, col := range schema.Columns {
+											if col.Name == colName {
+												colIndex = j
+												break
+											}
+										}
+
+										if colIndex != -1 {
+											var updateValue interface{}
+
+											// Evaluate the expression for the update
+											switch e := expr.(type) {
+											case *parser.Parameter:
+												if ps != nil {
+													nm := ps.GetValue(e)
+													updateValue = nm.Value
+												}
+											case *parser.IntegerLiteral:
+												updateValue = e.Value
+											case *parser.FloatLiteral:
+												updateValue = e.Value
+											case *parser.StringLiteral:
+												updateValue = e.Value
+											case *parser.BooleanLiteral:
+												updateValue = e.Value
+											case *parser.NullLiteral:
+												updateValue = nil
+											}
+
+											// Set the new value
+											colType := schema.Columns[colIndex].Type
+											newRow[colIndex] = storage.ValueToColumnValue(updateValue, colType)
+										}
+									}
+
+									return newRow, false
+								}
+
+								// Update the row using the Update API
+								_, updateErr := table.Update(searchExpr, updaterFn)
+								if updateErr == nil {
+									totalRowsInserted++
+									continue
+								}
+							}
+						}
+					}
+
+					// If we couldn't handle the duplicate key properly, return the original error
+					return totalRowsInserted, 0, err
+				}
+			}
+			// For any other error, return it without ON DUPLICATE KEY handling
 			return totalRowsInserted, 0, err
 		}
+
+		// Normal insert success
 		totalRowsInserted++
 	}
 
@@ -379,7 +499,7 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 	}
 
 	// Create a setter function that updates the values
-	setter := func(row storage.Row) storage.Row {
+	setter := func(row storage.Row) (storage.Row, bool) {
 		// Apply updates
 		for colName, expr := range stmt.Updates {
 			// Find the column using O(1) map lookup instead of O(n) scan
@@ -422,7 +542,7 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 			row[colIndex] = storage.ValueToColumnValue(value, colType)
 		}
 
-		return row
+		return row, true
 	}
 
 	// IMPROVED IMPLEMENTATION: Use the enhanced Update method directly with WHERE expression

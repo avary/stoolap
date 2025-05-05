@@ -235,3 +235,46 @@ func (p *Parser) parseSetStatement() *SetStatement {
 
 	return stmt
 }
+
+// parsePragmaStatement parses a PRAGMA statement for database settings
+func (p *Parser) parsePragmaStatement() *PragmaStatement {
+	// Create a new PRAGMA statement with the PRAGMA token
+	stmt := &PragmaStatement{
+		Token: p.curToken,
+	}
+
+	// Move past the PRAGMA token
+	p.nextToken()
+
+	// Parse the setting name
+	if !p.curTokenIs(TokenIdentifier) {
+		p.addError(fmt.Sprintf("expected identifier for pragma name at %s", p.curToken.Position))
+		return nil
+	}
+
+	stmt.Name = &Identifier{
+		Token: p.curToken,
+		Value: p.curToken.Literal,
+	}
+
+	// Move past the setting name
+	p.nextToken()
+
+	// Check if there's a value to set (optional)
+	// PRAGMA can be used in two forms:
+	// 1. PRAGMA setting_name (to get the current value)
+	// 2. PRAGMA setting_name = value (to set a new value)
+	if p.curTokenIs(TokenOperator) && p.curToken.Literal == "=" {
+		// This is a PRAGMA assignment
+		p.nextToken() // Move past the '='
+
+		// Parse the value
+		stmt.Value = p.parseExpression(LOWEST)
+		if stmt.Value == nil {
+			p.addError(fmt.Sprintf("expected value for PRAGMA statement at %s", p.curToken.Position))
+			return nil
+		}
+	}
+
+	return stmt
+}

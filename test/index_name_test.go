@@ -86,34 +86,6 @@ func TestIndexNamePersistence(t *testing.T) {
 		rows.Close()
 	}
 
-	// Let's try a direct query to show the table structure
-	t.Log("--- Examining Table Structure ---")
-	rows, err = sqlDB.Query("PRAGMA table_info(users)")
-	if err != nil {
-		t.Logf("PRAGMA table_info error: %v", err)
-	} else {
-		for rows.Next() {
-			var colData interface{}
-			rows.Scan(&colData)
-			t.Logf("Column data: %v", colData)
-		}
-		rows.Close()
-	}
-
-	// Let's also check if we can see indexes directly via SQLite PRAGMA
-	t.Log("--- Examining Table Indexes via PRAGMA ---")
-	rows, err = sqlDB.Query("PRAGMA index_list(users)")
-	if err != nil {
-		t.Logf("PRAGMA index_list error: %v", err)
-	} else {
-		for rows.Next() {
-			var idxData interface{}
-			rows.Scan(&idxData)
-			t.Logf("Index data: %v", idxData)
-		}
-		rows.Close()
-	}
-
 	// Using a direct SQL query to check all available tables
 	rows, err = sqlDB.Query("SHOW TABLES")
 	if err != nil {

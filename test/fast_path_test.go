@@ -87,11 +87,11 @@ func TestPrimaryKeyFastPath(t *testing.T) {
 	}
 
 	// TEST 2: Update with fast path
-	updater := func(row storage.Row) storage.Row {
+	updater := func(row storage.Row) (storage.Row, bool) {
 		newRow := make(storage.Row, len(row))
 		copy(newRow, row)
 		newRow[1] = storage.NewStringValue("updated")
-		return newRow
+		return newRow, true
 	}
 
 	count, err := mvccTable.Update(expr, updater)

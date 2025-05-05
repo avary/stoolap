@@ -78,19 +78,17 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 	// Check if we have a primary key column and it's NULL or unset
 	pkInfo := getOrCreatePKInfo(schema)
 	var explicitPKValue int64
+	var hasExplicitPK bool = false
 
 	// Check if we need to generate a primary key value
 	if pkInfo.hasPK && pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
 		colVal := row[pkInfo.singlePKIndex]
 		if colVal != nil && !colVal.IsNull() {
 			// Check if we have an explicit primary key value
-			if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
+			if intVal, ok := colVal.AsInt64(); ok {
 				explicitPKValue = intVal
-
-				// Update the auto-increment counter if needed
-				if mt.versionStore != nil && explicitPKValue > mt.versionStore.GetCurrentAutoIncrementValue() {
-					mt.versionStore.SetAutoIncrementCounter(explicitPKValue)
-				}
+				hasExplicitPK = true
+				// We'll update the auto-increment counter AFTER we ensure the row doesn't exist
 			}
 		} else if pkInfo.singleIntPK && mt.versionStore != nil {
 			// If we have a single INTEGER primary key but no value provided,
@@ -108,7 +106,7 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 	if mt.txnVersions.HasLocallySeen(rowID) {
 		// Need to do full check to handle deleted rows properly
 		if _, exists := mt.txnVersions.Get(rowID); exists {
-			return fmt.Errorf("primary key with %d already exists in this transaction", rowID)
+			return storage.NewPrimaryKeyConstraintError(rowID)
 		}
 	}
 
@@ -120,8 +118,13 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 	} else {
 		// Row might exist, do the full visibility check
 		if _, exists := mt.versionStore.GetVisibleVersion(rowID, mt.txnID); exists {
-			return fmt.Errorf("primary key with %d already exists in this table", rowID)
+			return storage.NewPrimaryKeyConstraintError(rowID)
 		}
+	}
+
+	// NOW update the auto-increment counter if needed - AFTER all existence checks
+	if hasExplicitPK && mt.versionStore != nil && explicitPKValue > mt.versionStore.GetCurrentAutoIncrementValue() {
+		mt.versionStore.SetAutoIncrementCounter(explicitPKValue)
 	}
 
 	// Check unique columnar index constraints
@@ -136,7 +139,7 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 }
 
 // CheckUniqueConstraints checks if a row violates any unique columnar index constraints
-// It returns ErrUniqueConstraintViolation if any constraints are violated
+// It returns ErrUniqueConstraint if any constraints are violated
 func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 	schema, err := mt.versionStore.GetTableSchema()
 	if err != nil {
@@ -146,6 +149,7 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 	uniqueColumns := make(map[string]struct {
 		index    *ColumnarIndex
 		position int
+		name     string
 	})
 
 	// Get unique columnar indexes
@@ -158,7 +162,8 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 					uniqueColumns[colName] = struct {
 						index    *ColumnarIndex
 						position int
-					}{colIdx, i}
+						name     string
+					}{colIdx, i, colName}
 					break
 				}
 			}
@@ -199,12 +204,12 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 			// Check if this row has the same value
 			localValue := localRow.Data[col.position]
 			if localValue != nil && !localValue.IsNull() && localValue.Equals(value) {
-				return storage.ErrUniqueConstraintViolation
+				return storage.NewUniqueConstraintError(col.index.Name(), col.name, value)
 			}
 		}
 
 		if col.index.HasUniqueValue(value) {
-			return storage.ErrUniqueConstraintViolation
+			return storage.NewUniqueConstraintError(col.index.Name(), col.name, value)
 		}
 	}
 
@@ -304,7 +309,7 @@ func (mt *MVCCTable) InsertBatch(rows []storage.Row) error {
 		if pkInfo.hasPK && pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
 			colVal := row[pkInfo.singlePKIndex]
 			if colVal != nil && !colVal.IsNull() {
-				if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
+				if intVal, ok := colVal.AsInt64(); ok {
 					// Keep track of the maximum explicit PK value
 					if intVal > maxExplicitPK {
 						maxExplicitPK = intVal
@@ -319,10 +324,7 @@ func (mt *MVCCTable) InsertBatch(rows []storage.Row) error {
 		}
 	}
 
-	// Update the auto-increment counter if we found explicit PK values
-	if maxExplicitPK > 0 && mt.versionStore != nil && maxExplicitPK > mt.versionStore.GetCurrentAutoIncrementValue() {
-		mt.versionStore.SetAutoIncrementCounter(maxExplicitPK)
-	}
+	// Note: We'll update the auto-increment counter AFTER checking row existence
 
 	// Extract all row IDs first - reuse the schema we already fetched
 	rowIDs := make([]int64, len(rows))
@@ -332,7 +334,12 @@ func (mt *MVCCTable) InsertBatch(rows []storage.Row) error {
 
 	// Check if any row already exists (optimized to avoid allocations)
 	if existingRowID, exists := mt.CheckIfAnyRowExists(rowIDs); exists {
-		return fmt.Errorf("primary key with ID %d already exists", existingRowID)
+		return storage.NewPrimaryKeyConstraintError(existingRowID)
+	}
+
+	// NOW update the auto-increment counter if needed - AFTER checking existence
+	if maxExplicitPK > 0 && mt.versionStore != nil && maxExplicitPK > mt.versionStore.GetCurrentAutoIncrementValue() {
+		mt.versionStore.SetAutoIncrementCounter(maxExplicitPK)
 	}
 
 	// If we got here, none of the rows exist, so insert them all
@@ -466,7 +473,7 @@ func validateRowFast(row storage.Row, columnTypes []storage.DataType, nullableFl
 }
 
 // Update updates rows that match the expression
-func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) storage.Row) (int, error) {
+func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (storage.Row, bool)) (int, error) {
 	// Get schema directly from the version store
 	schema, err := mt.versionStore.GetTableSchema()
 	if err != nil {
@@ -495,13 +502,14 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 			}
 
 			// Apply the setter function
-			updatedRow := setter(row)
+			updatedRow, uniqueCheck := setter(row)
 
 			// Check unique columnar index constraints
-			if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-				return 0, err
+			if uniqueCheck {
+				if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+					return 0, err
+				}
 			}
-
 			// Store the updated row
 			mt.txnVersions.Put(pkInfo.ID, updatedRow, false)
 
@@ -559,11 +567,13 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 				// Update local rows
 				for id, row := range localRows {
 					// Apply the setter function
-					updatedRow := setter(row)
+					updatedRow, uniqueCheck := setter(row)
 
 					// Check unique columnar index constraints
-					if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-						return 0, err
+					if uniqueCheck {
+						if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+							return 0, err
+						}
 					}
 
 					// Store the updated row
@@ -575,11 +585,13 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 				for id, version := range globalRows {
 					if _, isLocal := localRows[id]; !isLocal && !version.IsDeleted {
 						// Apply the setter function
-						updatedRow := setter(version.Data)
+						updatedRow, uniqueCheck := setter(version.Data)
 
 						// Check unique columnar index constraints
-						if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-							return 0, err
+						if uniqueCheck {
+							if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+								return 0, err
+							}
 						}
 
 						// Store the updated row
@@ -642,11 +654,13 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 				for rowID, version := range versions {
 					if !version.IsDeleted {
 						// Apply the setter function
-						updatedRow := setter(version.Data)
+						updatedRow, uniqueCheck := setter(version.Data)
 
 						// Check unique columnar index constraints
-						if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-							return 0, err
+						if uniqueCheck {
+							if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+								return 0, err
+							}
 						}
 
 						// Store the updated row
@@ -673,11 +687,13 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 	// PART 2: Process global versions with batch limiting
 	processCount, err := mt.processGlobalVersions(filterExpr, processedKeys, func(rowID int64, row storage.Row) error {
 		// Apply the setter function
-		updatedRow := setter(row)
+		updatedRow, uniqueCheck := setter(row)
 
 		// Check unique columnar index constraints
-		if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-			return err
+		if uniqueCheck {
+			if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+				return err
+			}
 		}
 
 		// Store the updated row
@@ -712,11 +728,13 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) s
 			}
 
 			// Apply the setter function
-			updatedRow := setter(row)
+			updatedRow, uniqueCheck := setter(row)
 
 			// Check unique columnar index constraints
-			if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-				return 0, err
+			if uniqueCheck {
+				if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+					return 0, err
+				}
 			}
 
 			// Store the updated row
@@ -1237,7 +1255,7 @@ func (mt *MVCCTable) extractRowPK(schema storage.Schema, row storage.Row) int64 
 		if pkInfo.singleIntPK && pkInfo.singlePKIndex >= 0 && pkInfo.singlePKIndex < len(row) {
 			colVal := row[pkInfo.singlePKIndex]
 			if colVal != nil && !colVal.IsNull() {
-				if intVal, ok := colVal.AsInt64(); ok && intVal > 0 {
+				if intVal, ok := colVal.AsInt64(); ok {
 					return intVal
 				}
 			}

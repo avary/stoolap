@@ -3,7 +3,6 @@ package expression
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/stoolap/stoolap/internal/storage"
@@ -93,36 +92,15 @@ type SimpleExpression struct {
 func (e *SimpleExpression) Evaluate(row storage.Row) (bool, error) {
 	// Find the column index
 	colIdx := -1
+
 	for i, val := range row {
 		if val != nil {
-			// Check if the column implements the Name() method
-			if colVal, ok := val.(interface{ Name() string }); ok {
-				colName := colVal.Name()
-				// Match by column name - check both original and alias names
-				if colName == e.Column || strings.EqualFold(colName, e.Column) {
-					colIdx = i
-					break
-				}
-
-				// Also check if we're looking for an alias but the row has original names
-				if e.originalColumn != "" && (colName == e.originalColumn || strings.EqualFold(colName, e.originalColumn)) {
-					colIdx = i
-					break
-				}
-			}
-		}
-	}
-
-	// If not found, try a simpler approach
-	if colIdx == -1 {
-		for i, val := range row {
-			if val != nil {
-				// We don't have a way to know the column name directly from some row implementations
-				// so we'd need to pass in the schema or do lookup elsewhere
-				// For now, we'll just use the first non-nil column as a fallback
-				colIdx = i
-				break
-			}
+			// FIXME: This is a workaround for the fact that we don't have a schema
+			// We don't have a way to know the column name directly from some row implementations
+			// so we'd need to pass in the schema or do lookup elsewhere
+			// For now, we'll just use the first non-nil column as a fallback
+			colIdx = i
+			break
 		}
 	}
 

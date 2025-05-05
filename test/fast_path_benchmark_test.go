@@ -99,11 +99,11 @@ func BenchmarkPrimaryKeyUpdate(b *testing.B) {
 	}
 
 	// Simple updater function
-	updater := func(row storage.Row) storage.Row {
+	updater := func(row storage.Row) (storage.Row, bool) {
 		newRow := make(storage.Row, len(row))
 		copy(newRow, row)
 		newRow[1] = storage.NewStringValue("updated")
-		return newRow
+		return newRow, true
 	}
 
 	// Reset the timer to exclude setup time

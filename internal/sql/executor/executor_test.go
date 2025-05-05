@@ -60,6 +60,14 @@ func (m *mockEngine) ListTables() ([]string, error) {
 	return nil, nil
 }
 
+func (m *mockEngine) GetConfig() storage.Config {
+	return storage.Config{}
+}
+
+func (m *mockEngine) UpdateConfig(config storage.Config) error {
+	return nil
+}
+
 func (m *mockEngine) GetIndex(tableName string, indexName string) (storage.Index, error) {
 	return nil, nil
 }

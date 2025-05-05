@@ -214,7 +214,7 @@ type Table interface {
 	DropColumn(name string) error
 	Insert(row Row) error
 	InsertBatch(rows []Row) error
-	Update(where Expression, setter func(Row) Row) (int, error)
+	Update(where Expression, setter func(Row) (Row, bool)) (int, error)
 	Delete(where Expression) (int, error)
 	Scan(columnIndices []int, where Expression) (Scanner, error)
 	Close() error
@@ -369,6 +369,10 @@ type Engine interface {
 	GetTableSchema(tableName string) (Schema, error)
 	// ListTableIndexes retrieves all indexes for a table
 	ListTableIndexes(tableName string) (map[string]string, error)
+	// GetConfig returns the current storage engine configuration
+	GetConfig() Config
+	// UpdateConfig updates the storage engine configuration
+	UpdateConfig(config Config) error
 }
 
 // PersistenceConfig represents configuration options for the persistence layer
