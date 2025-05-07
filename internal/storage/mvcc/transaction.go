@@ -84,7 +84,7 @@ func (t *MVCCTransaction) Commit() error {
 
 	// Check if any tables have modifications
 	for _, table := range t.tables {
-		if table.txnVersions != nil && len(table.txnVersions.localVersions) > 0 {
+		if table.txnVersions != nil && table.txnVersions.localVersions.Len() > 0 {
 			isReadOnly = false
 			break
 		}
@@ -155,7 +155,7 @@ func (t *MVCCTransaction) Rollback() error {
 
 	// Check if any tables have modifications
 	for _, table := range t.tables {
-		if table.txnVersions != nil && len(table.txnVersions.localVersions) > 0 {
+		if table.txnVersions != nil && table.txnVersions.localVersions.Len() > 0 {
 			isReadOnly = false
 			break
 		}

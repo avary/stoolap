@@ -6,27 +6,27 @@ import (
 	"unsafe"
 )
 
-// FastInt64Map is a highly optimized map for int64 keys
+// SyncInt64Map is a highly optimized map for int64 keys
 // This is the production version incorporating all performance optimizations
-type FastInt64Map[V any] struct {
-	buckets []fastBucket[V]
+type SyncInt64Map[V any] struct {
+	buckets []bucket[V]
 	mask    uint64
 	count   atomic.Int64
 }
 
-type fastBucket[V any] struct {
-	head unsafe.Pointer // *fastNode[V]
+type bucket[V any] struct {
+	head unsafe.Pointer // *fnode[V]
 }
 
-type fastNode[V any] struct {
+type fnode[V any] struct {
 	key     int64
 	value   atomic.Pointer[V]
-	next    unsafe.Pointer // *fastNode[V]
+	next    unsafe.Pointer // *fnode[V]
 	deleted uint32
 }
 
-// NewFastInt64Map creates a new optimized map for int64 keys
-func NewFastInt64Map[V any](sizePower uint) *FastInt64Map[V] {
+// NewSyncInt64Map creates a new optimized map for int64 keys
+func NewSyncInt64Map[V any](sizePower uint) *SyncInt64Map[V] {
 	if sizePower < 2 {
 		sizePower = 2 // Minimum 4 buckets
 	}
@@ -35,9 +35,9 @@ func NewFastInt64Map[V any](sizePower uint) *FastInt64Map[V] {
 	mask := size - 1
 
 	// Create buckets
-	buckets := make([]fastBucket[V], size)
+	buckets := make([]bucket[V], size)
 
-	return &FastInt64Map[V]{
+	return &SyncInt64Map[V]{
 		buckets: buckets,
 		mask:    mask,
 	}
@@ -57,12 +57,12 @@ func hashFast(x int64) uint64 {
 }
 
 // Get retrieves a value by key
-func (m *FastInt64Map[V]) Get(key int64) (V, bool) {
+func (m *SyncInt64Map[V]) Get(key int64) (V, bool) {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
 
 	// Search in the linked list
-	for node := (*fastNode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fastNode[V])(atomic.LoadPointer(&node.next)) {
+	for node := (*fnode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fnode[V])(atomic.LoadPointer(&node.next)) {
 
 		if node.key == key && atomic.LoadUint32(&node.deleted) == 0 {
 			value := node.value.Load()
@@ -78,16 +78,16 @@ func (m *FastInt64Map[V]) Get(key int64) (V, bool) {
 }
 
 // Set adds or updates a key-value pair
-func (m *FastInt64Map[V]) Set(key int64, value V) {
+func (m *SyncInt64Map[V]) Set(key int64, value V) {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
 
 	// First check if the key already exists
-	var predecessor *fastNode[V]
-	var current *fastNode[V]
+	var predecessor *fnode[V]
+	var current *fnode[V]
 
 	// Load the head of the list
-	head := (*fastNode[V])(atomic.LoadPointer(&bucket.head))
+	head := (*fnode[V])(atomic.LoadPointer(&bucket.head))
 
 	// Check if the key exists or find insertion point
 	for current = head; current != nil; {
@@ -106,18 +106,18 @@ func (m *FastInt64Map[V]) Set(key int64, value V) {
 				}
 				// If CAS failed, another thread modified it, retry
 				atomic.CompareAndSwapUint32(&current.deleted, 0, 0) // Memory barrier
-				current = (*fastNode[V])(atomic.LoadPointer(&bucket.head))
+				current = (*fnode[V])(atomic.LoadPointer(&bucket.head))
 				predecessor = nil
 				continue
 			}
 		}
 
 		predecessor = current
-		current = (*fastNode[V])(atomic.LoadPointer(&current.next))
+		current = (*fnode[V])(atomic.LoadPointer(&current.next))
 	}
 
 	// Key doesn't exist, create a new node
-	newNode := &fastNode[V]{
+	newNode := &fnode[V]{
 		key: key,
 	}
 	newNode.value.Store(&value)
@@ -126,7 +126,7 @@ func (m *FastInt64Map[V]) Set(key int64, value V) {
 	if head == nil || predecessor == nil {
 		for {
 			// Load the current head
-			currentHead := (*fastNode[V])(atomic.LoadPointer(&bucket.head))
+			currentHead := (*fnode[V])(atomic.LoadPointer(&bucket.head))
 
 			// Set the new node's next pointer to the current head
 			atomic.StorePointer(&newNode.next, unsafe.Pointer(currentHead))
@@ -140,7 +140,7 @@ func (m *FastInt64Map[V]) Set(key int64, value V) {
 		// Insert after predecessor
 		for {
 			// Load predecessor's next
-			next := (*fastNode[V])(atomic.LoadPointer(&predecessor.next))
+			next := (*fnode[V])(atomic.LoadPointer(&predecessor.next))
 
 			// Set new node's next
 			atomic.StorePointer(&newNode.next, unsafe.Pointer(next))
@@ -151,12 +151,12 @@ func (m *FastInt64Map[V]) Set(key int64, value V) {
 			}
 
 			// If CAS failed, retry the entire operation
-			current = (*fastNode[V])(atomic.LoadPointer(&bucket.head))
+			current = (*fnode[V])(atomic.LoadPointer(&bucket.head))
 			predecessor = nil
 
 			for current != nil && current.key != key {
 				predecessor = current
-				current = (*fastNode[V])(atomic.LoadPointer(&current.next))
+				current = (*fnode[V])(atomic.LoadPointer(&current.next))
 			}
 
 			if current != nil && current.key == key {
@@ -181,12 +181,12 @@ func (m *FastInt64Map[V]) Set(key int64, value V) {
 }
 
 // Del removes a key from the map
-func (m *FastInt64Map[V]) Del(key int64) bool {
+func (m *SyncInt64Map[V]) Del(key int64) bool {
 	hash := hashFast(key)
 	bucket := &m.buckets[hash&m.mask]
 
 	// Search for the key
-	for node := (*fastNode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fastNode[V])(atomic.LoadPointer(&node.next)) {
+	for node := (*fnode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fnode[V])(atomic.LoadPointer(&node.next)) {
 
 		if node.key == key && atomic.LoadUint32(&node.deleted) == 0 {
 			// Found non-deleted node with matching key
@@ -205,19 +205,19 @@ func (m *FastInt64Map[V]) Del(key int64) bool {
 }
 
 // Len returns the number of elements in the map
-func (m *FastInt64Map[V]) Len() int64 {
+func (m *SyncInt64Map[V]) Len() int64 {
 	return m.count.Load()
 }
 
 // ForEach iterates through all key-value pairs
-func (m *FastInt64Map[V]) ForEach(f func(int64, V) bool) {
+func (m *SyncInt64Map[V]) ForEach(f func(int64, V) bool) {
 	// For each bucket
 	for i := range m.buckets {
 		// Get the bucket
 		bucket := &m.buckets[i]
 
 		// Iterate through the linked list
-		for node := (*fastNode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fastNode[V])(atomic.LoadPointer(&node.next)) {
+		for node := (*fnode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fnode[V])(atomic.LoadPointer(&node.next)) {
 
 			// Skip deleted nodes
 			if atomic.LoadUint32(&node.deleted) != 0 {
@@ -241,8 +241,8 @@ func (m *FastInt64Map[V]) ForEach(f func(int64, V) bool) {
 // GetUnderlyingMap returns the underlying map if it's directly backed by a map
 // This is used for identity comparison in the scanner to detect if a row map
 // is a version store map. Returns (nil, false) if not available/applicable.
-func (m *FastInt64Map[V]) GetUnderlyingMap() (map[int64]V, bool) {
-	// This is not a real implementation since FastInt64Map doesn't use a map internally
+func (m *SyncInt64Map[V]) GetUnderlyingMap() (map[int64]V, bool) {
+	// This is not a real implementation since SyncInt64Map doesn't use a map internally
 	// It's just a utility method to support the scanner's optimization checks
 	return nil, false
 }

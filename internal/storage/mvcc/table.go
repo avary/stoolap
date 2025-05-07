@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 )
@@ -191,7 +192,7 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 		}
 
 		// Check all rows in the local transaction
-		for _, localRow := range mt.txnVersions.localVersions {
+		for localRow := range mt.txnVersions.localVersions.Values() {
 			if localRow.IsDeleted || localRow.Data == nil {
 				continue // Skip deleted rows
 			}
@@ -582,7 +583,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 				}
 
 				// Process global rows that weren't in local cache
-				for id, version := range globalRows {
+				for id, version := range globalRows.All() {
 					if _, isLocal := localRows[id]; !isLocal && !version.IsDeleted {
 						// Apply the setter function
 						updatedRow, uniqueCheck := setter(version.Data)
@@ -651,7 +652,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 				versions := mt.versionStore.GetVisibleVersionsByIDs(batchIDs, mt.txnID)
 
 				// Process each visible row in this batch
-				for rowID, version := range versions {
+				for rowID, version := range versions.All() {
 					if !version.IsDeleted {
 						// Apply the setter function
 						updatedRow, uniqueCheck := setter(version.Data)
@@ -678,7 +679,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 	}
 
 	// Fall back to the general case if columnar index optimization didn't work
-	processedKeys := GetProcessedKeysMap(100)
+	processedKeys := GetProcessedKeysMap()
 	defer PutProcessedKeysMap(processedKeys)
 
 	// Count of rows updated
@@ -711,14 +712,14 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 	if updateCount < 100 {
 		// Skip this step for large updates to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
-		for rowID, row := range allRows {
+		for rowID, row := range allRows.All() {
 			// Skip already processed rows
-			if processedKeys[rowID] {
+			if processedKeys.Has(rowID) {
 				continue
 			}
 
 			// Skip if already marked as deleted locally
-			if localVersion, exists := mt.txnVersions.localVersions[rowID]; exists && localVersion.IsDeleted {
+			if localVersion, exists := mt.txnVersions.localVersions.Get(rowID); exists && localVersion.IsDeleted {
 				continue
 			}
 
@@ -753,31 +754,25 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 // ProcessedKeysPool is a pool for bool maps to reduce allocations
 var processedKeysPool = sync.Pool{
 	New: func() interface{} {
-		return make(map[int64]bool, 100) // Default to 100 capacity
+		return fastmap.NewInt64Map[struct{}](1000) // Default to 1000 capacity
 	},
 }
 
 // GetProcessedKeysMap gets a map from the pool
-func GetProcessedKeysMap(capacity int) map[int64]bool {
-	mapInterface := processedKeysPool.Get()
-	m, ok := mapInterface.(map[int64]bool)
-	if !ok || m == nil {
-		return make(map[int64]bool, capacity)
-	}
+func GetProcessedKeysMap() *fastmap.Int64Map[struct{}] {
+	m := processedKeysPool.Get().(*fastmap.Int64Map[struct{}])
 
-	// Clear the map using Go 1.21+ built-in function
-	clear(m)
 	return m
 }
 
 // PutProcessedKeysMap returns a map to the pool
-func PutProcessedKeysMap(m map[int64]bool) {
+func PutProcessedKeysMap(m *fastmap.Int64Map[struct{}]) {
 	if m == nil {
 		return
 	}
 
 	// Clear the map
-	clear(m)
+	m.Clear()
 	processedKeysPool.Put(m)
 }
 
@@ -804,7 +799,7 @@ func (mt *MVCCTable) matchesFilter(expr storage.Expression, row storage.Row) boo
 // Returns the number of rows processed
 func (mt *MVCCTable) processGlobalVersions(
 	filter storage.Expression,
-	processedKeys map[int64]bool,
+	processedKeys *fastmap.Int64Map[struct{}],
 	processor func(int64, storage.Row) error,
 	batchSize int,
 ) (int, error) {
@@ -815,9 +810,9 @@ func (mt *MVCCTable) processGlobalVersions(
 	processCount := 0
 
 	// Process matching versions
-	for rowID, version := range globalVersions {
+	for rowID, version := range globalVersions.All() {
 		// Skip if already processed
-		if processedKeys[rowID] {
+		if processedKeys.Has(rowID) {
 			continue
 		}
 
@@ -832,7 +827,7 @@ func (mt *MVCCTable) processGlobalVersions(
 		}
 
 		// Mark as processed
-		processedKeys[rowID] = true
+		processedKeys.Put(rowID, struct{}{})
 
 		// Process this row
 		err := processor(rowID, version.Data)
@@ -935,7 +930,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				globalRows := mt.versionStore.GetVisibleVersionsByIDs(visibleIDs, mt.txnID)
 				defer ReturnVisibleVersionMap(globalRows)
 
-				for id, version := range globalRows {
+				for id, version := range globalRows.All() {
 					if !version.IsDeleted {
 						// Mark as deleted
 						mt.txnVersions.Put(id, nil, true)
@@ -1009,7 +1004,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				// Then check global versions in bulk
 				globalRows := mt.versionStore.GetVisibleVersionsByIDs(batchIDs, mt.txnID)
 
-				for id, version := range globalRows {
+				for id, version := range globalRows.All() {
 					if !version.IsDeleted {
 						// Mark as deleted
 						mt.txnVersions.Put(id, nil, true)
@@ -1026,7 +1021,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 	}
 
 	// Use the pooled map for tracking processed keys
-	processedKeys := GetProcessedKeysMap(100)
+	processedKeys := GetProcessedKeysMap()
 	defer PutProcessedKeysMap(processedKeys)
 
 	// Count of rows deleted
@@ -1061,14 +1056,14 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 	if deleteCount < 100 {
 		// Skip this step for large deletes to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
-		for rowID, row := range allRows {
+		for rowID, row := range allRows.All() {
 			// Skip already processed rows
-			if processedKeys[rowID] {
+			if processedKeys.Has(rowID) {
 				continue
 			}
 
 			// Skip if already marked as deleted locally
-			if localVersion, exists := mt.txnVersions.localVersions[rowID]; exists && localVersion.IsDeleted {
+			if localVersion, exists := mt.txnVersions.localVersions.Get(rowID); exists && localVersion.IsDeleted {
 				continue
 			}
 
@@ -1804,7 +1799,7 @@ func (s *emptyScanner) Close() error {
 // RowCount returns the number of rows in the table
 func (mt *MVCCTable) RowCount() int {
 	// Create set of all row IDs
-	processedKeys := GetProcessedKeysMap(100)
+	processedKeys := GetProcessedKeysMap()
 	defer PutProcessedKeysMap(processedKeys)
 
 	rowCount := 0
@@ -1812,25 +1807,25 @@ func (mt *MVCCTable) RowCount() int {
 	// First grab visible versions from the version store
 	// We don't need the full data, just how many rows are visible
 	visibleVersions := mt.versionStore.GetAllVisibleVersions(mt.txnID)
-	for rowID, version := range visibleVersions {
+	for rowID, version := range visibleVersions.All() {
 		if !version.IsDeleted {
-			processedKeys[rowID] = true
+			processedKeys.Put(rowID, struct{}{})
 			rowCount++
 		}
 	}
 	ReturnVisibleVersionMap(visibleVersions)
 
 	// Apply local changes that might override global versions
-	for rowID, version := range mt.txnVersions.localVersions {
+	for rowID, version := range mt.txnVersions.localVersions.All() {
 		if version.IsDeleted {
 			// If deleted locally, remove from count
-			if processedKeys[rowID] {
-				processedKeys[rowID] = false
+			if processedKeys.Has(rowID) {
+				processedKeys.Del(rowID)
 				rowCount--
 			}
-		} else if !processedKeys[rowID] {
+		} else if !processedKeys.Has(rowID) {
 			// If not already counted and not deleted
-			processedKeys[rowID] = true
+			processedKeys.Put(rowID, struct{}{})
 			rowCount++
 		}
 	}
@@ -2239,9 +2234,9 @@ func hasEqualityCondition(expr storage.Expression, columnName string) bool {
 
 // GetRowsWithFilter uses columnar indexes to filter rows based on an expression
 // Returns a map of row IDs to rows that match the filter
-func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) map[int64]storage.Row {
+func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) *fastmap.Int64Map[storage.Row] {
 	// Start with an empty result
-	result := make(map[int64]storage.Row)
+	result := fastmap.NewInt64Map[storage.Row](100)
 
 	// If the expression is nil or version store is not available, return empty result
 	if expr == nil || mt.versionStore == nil {
@@ -2267,9 +2262,9 @@ func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) map[int64]storag
 			defer ReturnVisibleVersionMap(versions)
 
 			// Process the visible versions
-			for rowID, version := range versions {
+			for rowID, version := range versions.All() {
 				if !version.IsDeleted {
-					result[rowID] = version.Data
+					result.Put(rowID, version.Data)
 				}
 			}
 		} else {
@@ -2277,7 +2272,7 @@ func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) map[int64]storag
 			for _, rowID := range matchingRowIDs {
 				version, exists := mt.versionStore.GetVisibleVersion(rowID, mt.txnID)
 				if exists && !version.IsDeleted {
-					result[rowID] = version.Data
+					result.Put(rowID, version.Data)
 				}
 			}
 		}

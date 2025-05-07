@@ -89,7 +89,7 @@ func BenchmarkHashCollisionHandling(b *testing.B) {
 		collisionKeys[i] = int64(i * 1_000_000)
 	}
 
-	m := NewFastInt64Map[int64](8) // Small size for more collisions
+	m := NewSyncInt64Map[int64](8) // Small size for more collisions
 
 	// Prepopulate
 	for i := 0; i < collisionKeyCount; i++ {
@@ -140,7 +140,7 @@ func BenchmarkDatabaseWorkload(b *testing.B) {
 		readThreshold := readPct
 		writeThreshold := readPct + writePct
 
-		m := NewFastInt64Map[int64](16)
+		m := NewSyncInt64Map[int64](16)
 		// Prepopulate with half the keys
 		for i := 0; i < len(dbKeys)/2; i++ {
 			m.Set(dbKeys[i], dbKeys[i])

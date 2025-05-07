@@ -19,11 +19,11 @@ const (
 )
 
 // TransactionRegistry manages transaction states and visibility rules
-// Lock-free implementation using our optimized FastInt64Map for optimal performance and concurrency
+// Lock-free implementation using our optimized SyncInt64Map for optimal performance and concurrency
 type TransactionRegistry struct {
 	nextTxnID             atomic.Int64
-	activeTransactions    *fastmap.FastInt64Map[int64] // txnID -> begin timestamp
-	committedTransactions *fastmap.FastInt64Map[int64] // txnID -> commit timestamp
+	activeTransactions    *fastmap.SyncInt64Map[int64] // txnID -> begin timestamp
+	committedTransactions *fastmap.SyncInt64Map[int64] // txnID -> commit timestamp
 	isolationLevel        IsolationLevel
 	accepting             atomic.Bool // Flag to control if new transactions are accepted
 }
@@ -31,8 +31,8 @@ type TransactionRegistry struct {
 // NewTransactionRegistry creates a new transaction registry
 func NewTransactionRegistry() *TransactionRegistry {
 	reg := &TransactionRegistry{
-		activeTransactions:    fastmap.NewFastInt64Map[int64](16),
-		committedTransactions: fastmap.NewFastInt64Map[int64](16),
+		activeTransactions:    fastmap.NewSyncInt64Map[int64](16),
+		committedTransactions: fastmap.NewSyncInt64Map[int64](16),
 		isolationLevel:        ReadCommitted, // Default isolation level
 	}
 	reg.accepting.Store(true) // Start accepting transactions by default
@@ -61,7 +61,7 @@ func (r *TransactionRegistry) BeginTransaction() (txnID int64, beginTS int64) {
 	txnID = r.nextTxnID.Add(1)
 	beginTS = time.Now().UnixNano()
 
-	// Record the transaction (thread-safe with FastInt64Map)
+	// Record the transaction (thread-safe with SyncInt64Map)
 	r.activeTransactions.Set(txnID, beginTS)
 
 	return txnID, beginTS
@@ -71,7 +71,7 @@ func (r *TransactionRegistry) BeginTransaction() (txnID int64, beginTS int64) {
 func (r *TransactionRegistry) CommitTransaction(txnID int64) (commitTS int64) {
 	commitTS = time.Now().UnixNano()
 
-	// Lock-free operations with FastInt64Map
+	// Lock-free operations with SyncInt64Map
 	r.committedTransactions.Set(txnID, commitTS)
 	r.activeTransactions.Del(txnID)
 
@@ -119,14 +119,14 @@ func (r *TransactionRegistry) RecoverAbortedTransaction(txnID int64) {
 
 // AbortTransaction marks a transaction as aborted
 func (r *TransactionRegistry) AbortTransaction(txnID int64) {
-	// Lock-free delete with FastInt64Map
+	// Lock-free delete with SyncInt64Map
 	r.activeTransactions.Del(txnID)
 	// No entry in committedTransactions means it was aborted
 }
 
 // GetCommitTimestamp gets the commit timestamp for a transaction
 func (r *TransactionRegistry) GetCommitTimestamp(txnID int64) (int64, bool) {
-	// Thread-safe get with FastInt64Map
+	// Thread-safe get with SyncInt64Map
 	return r.committedTransactions.Get(txnID)
 }
 
@@ -143,7 +143,7 @@ func (r *TransactionRegistry) IsDirectlyVisible(versionTxnID int64) bool {
 	// Fast path for ReadCommitted isolation level (the default)
 	// where any committed transaction is visible to all other transactions
 	if r.isolationLevel == ReadCommitted {
-		// Thread-safe check with FastInt64Map
+		// Thread-safe check with SyncInt64Map
 		// This is a hot path that benefits from being as fast as possible
 		_, committed := r.committedTransactions.Get(versionTxnID)
 		return committed
@@ -176,10 +176,10 @@ func (r *TransactionRegistry) IsVisible(versionTxnID int64, viewerTxnID int64) b
 	}
 
 	// For SNAPSHOT isolation, we need full visibility check
-	// All operations are thread-safe with FastInt64Map
+	// All operations are thread-safe with SyncInt64Map
 
 	// Transaction can only see committed changes from other transactions
-	// Lock-free access via FastInt64Map
+	// Lock-free access via SyncInt64Map
 	commitTS, committed := r.committedTransactions.Get(versionTxnID)
 	if !committed {
 		// Not committed, definitely not visible
@@ -187,11 +187,11 @@ func (r *TransactionRegistry) IsVisible(versionTxnID int64, viewerTxnID int64) b
 	}
 
 	// For Snapshot Isolation, version must be committed before viewer began
-	// Lock-free access via FastInt64Map
+	// Lock-free access via SyncInt64Map
 	viewerBeginTS, viewerActive := r.activeTransactions.Get(viewerTxnID)
 	if !viewerActive {
 		// Viewer transaction isn't active, use its commit time
-		// Lock-free access via FastInt64Map
+		// Lock-free access via SyncInt64Map
 		viewerBeginTS, committed = r.committedTransactions.Get(viewerTxnID)
 		if !committed {
 			// If viewer isn't committed or active, it must be aborted
@@ -229,7 +229,7 @@ func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
 	removed := 0
 
 	// Clean up old committed transactions using ForEach
-	// This is safe because FastInt64Map is already thread-safe
+	// This is safe because SyncInt64Map is already thread-safe
 	r.committedTransactions.ForEach(func(txnID, commitTS int64) bool {
 		// Skip transactions that are still active
 		if r.isolationLevel == SnapshotIsolation {
@@ -260,7 +260,7 @@ func (r *TransactionRegistry) WaitForActiveTransactions(timeout time.Duration) i
 			break
 		}
 
-		// Count active transactions - FastInt64Map is already thread-safe
+		// Count active transactions - SyncInt64Map is already thread-safe
 		activeCount := 0
 		r.activeTransactions.ForEach(func(txnID, beginTS int64) bool {
 			activeCount++

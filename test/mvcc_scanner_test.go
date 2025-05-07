@@ -3,6 +3,7 @@ package test
 import (
 	"testing"
 
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 	"github.com/stoolap/stoolap/internal/storage/mvcc"
@@ -19,20 +20,19 @@ func TestMVCCScannerSorting(t *testing.T) {
 	}
 
 	// Create a map of rows with random order
-	rows := map[int64]storage.Row{
-		3: {
-			storage.NewIntegerValue(3),
-			storage.NewStringValue("Charlie"),
-		},
-		1: {
-			storage.NewIntegerValue(1),
-			storage.NewStringValue("Alice"),
-		},
-		2: {
-			storage.NewIntegerValue(2),
-			storage.NewStringValue("Bob"),
-		},
-	}
+	rows := fastmap.NewInt64Map[storage.Row](8)
+	rows.Put(3, storage.Row{
+		storage.NewIntegerValue(3),
+		storage.NewStringValue("Charlie"),
+	})
+	rows.Put(1, storage.Row{
+		storage.NewIntegerValue(1),
+		storage.NewStringValue("Alice"),
+	})
+	rows.Put(2, storage.Row{
+		storage.NewIntegerValue(2),
+		storage.NewStringValue("Bob"),
+	})
 
 	// Create a scanner
 	scanner := mvcc.NewMVCCScanner(rows, schema, nil, nil)
@@ -88,20 +88,19 @@ func TestMVCCScannerProjection(t *testing.T) {
 	}
 
 	// Create a map of rows
-	rows := map[int64]storage.Row{
-		1: {
-			storage.NewIntegerValue(1),
-			storage.NewStringValue("Alice"),
-			storage.NewIntegerValue(30),
-			storage.NewBooleanValue(true),
-		},
-		2: {
-			storage.NewIntegerValue(2),
-			storage.NewStringValue("Bob"),
-			storage.NewNullIntegerValue(),
-			storage.NewBooleanValue(false),
-		},
-	}
+	rows := fastmap.NewInt64Map[storage.Row](8)
+	rows.Put(1, storage.Row{
+		storage.NewIntegerValue(1),
+		storage.NewStringValue("Alice"),
+		storage.NewIntegerValue(30),
+		storage.NewBooleanValue(true),
+	})
+	rows.Put(2, storage.Row{
+		storage.NewIntegerValue(2),
+		storage.NewStringValue("Bob"),
+		storage.NewNullIntegerValue(),
+		storage.NewBooleanValue(false),
+	})
 
 	// Create a scanner with column projection (just id and name)
 	scanner := mvcc.NewMVCCScanner(rows, schema, []int{0, 1}, nil)
@@ -149,26 +148,25 @@ func TestMVCCScannerFiltering(t *testing.T) {
 	}
 
 	// Create a map of rows
-	rows := map[int64]storage.Row{
-		1: {
-			storage.NewIntegerValue(1),
-			storage.NewStringValue("Alice"),
-			storage.NewIntegerValue(30),
-			storage.NewBooleanValue(true),
-		},
-		2: {
-			storage.NewIntegerValue(2),
-			storage.NewStringValue("Bob"),
-			storage.NewNullIntegerValue(),
-			storage.NewBooleanValue(false),
-		},
-		3: {
-			storage.NewIntegerValue(3),
-			storage.NewStringValue("Charlie"),
-			storage.NewIntegerValue(25),
-			storage.NewBooleanValue(true),
-		},
-	}
+	rows := fastmap.NewInt64Map[storage.Row](8)
+	rows.Put(1, storage.Row{
+		storage.NewIntegerValue(1),
+		storage.NewStringValue("Alice"),
+		storage.NewIntegerValue(30),
+		storage.NewBooleanValue(true),
+	})
+	rows.Put(2, storage.Row{
+		storage.NewIntegerValue(2),
+		storage.NewStringValue("Bob"),
+		storage.NewNullIntegerValue(),
+		storage.NewBooleanValue(false),
+	})
+	rows.Put(3, storage.Row{
+		storage.NewIntegerValue(3),
+		storage.NewStringValue("Charlie"),
+		storage.NewIntegerValue(25),
+		storage.NewBooleanValue(true),
+	})
 
 	// Create a filter expression for active=true
 	filter := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {

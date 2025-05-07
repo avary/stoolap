@@ -209,6 +209,106 @@ func GetColumnType(schema Schema, columnName string) DataType {
 	return NULL
 }
 
+// ValueToPooledColumnValue converts a value to a ColumnValue using a pool
+func ValueToPooledColumnValue(value interface{}, dataType DataType) ColumnValue {
+	if value == nil {
+		return NewNullValue(dataType)
+	}
+
+	switch dataType {
+	case INTEGER:
+		switch v := value.(type) {
+		case int:
+			return GetPooledIntegerValue(int64(v))
+		case int64:
+			return GetPooledIntegerValue(v)
+		case float64:
+			return GetPooledIntegerValue(int64(v))
+		case string:
+			if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return GetPooledIntegerValue(i)
+			}
+		}
+		return NewNullIntegerValue()
+
+	case FLOAT:
+		switch v := value.(type) {
+		case float64:
+			return GetPooledFloatValue(v)
+		case int:
+			return GetPooledFloatValue(float64(v))
+		case int64:
+			return GetPooledFloatValue(float64(v))
+		case string:
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				return GetPooledFloatValue(f)
+			}
+		}
+		return NewNullFloatValue()
+
+	case TEXT:
+		switch v := value.(type) {
+		case string:
+			return GetPooledStringValue(v)
+		case []byte:
+			return GetPooledStringValue(string(v))
+		default:
+			return GetPooledStringValue(ValueToString(value))
+		}
+
+	case BOOLEAN:
+		switch v := value.(type) {
+		case bool:
+			return NewBooleanValue(v)
+		case int:
+			return NewBooleanValue(v != 0)
+		case int64:
+			return NewBooleanValue(v != 0)
+		case string:
+			switch v {
+			case "true", "1", "t", "yes", "y":
+				return NewBooleanValue(true)
+			case "false", "0", "f", "no", "n":
+				return NewBooleanValue(false)
+			}
+		}
+		return NewNullBooleanValue()
+
+	case TIMESTAMP:
+		switch v := value.(type) {
+		case time.Time:
+			return GetPooledTimestampValue(v)
+		case string:
+			if t, err := ParseTimestamp(v); err == nil {
+				return GetPooledTimestampValue(t)
+			}
+		}
+		return NewNullTimestampValue()
+
+	case JSON:
+		switch v := value.(type) {
+		case string:
+			// Validate JSON
+			var jsonData interface{}
+			if err := json.Unmarshal([]byte(v), &jsonData); err == nil {
+				return GetPooledJSONValue(v)
+			}
+		case []byte:
+			var jsonData interface{}
+			if err := json.Unmarshal(v, &jsonData); err == nil {
+				return GetPooledJSONValue(string(v))
+			}
+		case map[string]interface{}, []interface{}:
+			if jsonBytes, err := json.Marshal(v); err == nil {
+				return GetPooledJSONValue(string(jsonBytes))
+			}
+		}
+		return NewNullJSONValue()
+	}
+
+	return NewNullValue(dataType)
+}
+
 // ValueToColumnValue consistently converts any Go value to a ColumnValue
 // based on the data type
 func ValueToColumnValue(value interface{}, dataType DataType) ColumnValue {
@@ -308,6 +408,106 @@ func ValueToColumnValue(value interface{}, dataType DataType) ColumnValue {
 	}
 
 	return NewNullValue(dataType)
+}
+
+// ValueToTypedValue converts a value to a specific data type
+func ValueToTypedValue(value interface{}, dataType DataType) interface{} {
+	if value == nil {
+		return nil
+	}
+
+	switch dataType {
+	case INTEGER:
+		switch v := value.(type) {
+		case int:
+			return int64(v)
+		case int64:
+			return value
+		case float64:
+			return int64(v)
+		case string:
+			if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return i
+			}
+		}
+		return nil
+
+	case FLOAT:
+		switch v := value.(type) {
+		case float64:
+			return value
+		case int:
+			return float64(v)
+		case int64:
+			return float64(v)
+		case string:
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				return f
+			}
+		}
+		return nil
+
+	case TEXT:
+		switch v := value.(type) {
+		case string:
+			return value
+		case []byte:
+			return string(v)
+		default:
+			return ValueToString(value)
+		}
+
+	case BOOLEAN:
+		switch v := value.(type) {
+		case bool:
+			return value
+		case int:
+			return v != 0
+		case int64:
+			return v != 0
+		case string:
+			switch v {
+			case "true", "1", "t", "yes", "y":
+				return true
+			case "false", "0", "f", "no", "n":
+				return false
+			}
+		}
+		return nil
+
+	case TIMESTAMP:
+		switch v := value.(type) {
+		case time.Time:
+			return value
+		case string:
+			if t, err := ParseTimestamp(v); err == nil {
+				return t
+			}
+		}
+		return nil
+
+	case JSON:
+		switch v := value.(type) {
+		case string:
+			// Validate JSON
+			var jsonData interface{}
+			if err := json.Unmarshal([]byte(v), &jsonData); err == nil {
+				return value
+			}
+		case []byte:
+			var jsonData interface{}
+			if err := json.Unmarshal(v, &jsonData); err == nil {
+				return string(v)
+			}
+		case map[string]interface{}, []interface{}:
+			if jsonBytes, err := json.Marshal(v); err == nil {
+				return string(jsonBytes)
+			}
+		}
+		return nil
+	}
+
+	return nil
 }
 
 // ConvertGoValueToStorageValue normalizes Go values to consistent storage types

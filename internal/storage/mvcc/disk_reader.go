@@ -27,7 +27,7 @@ type DiskReader struct {
 	index *btree.Int64BTree[int64] // B-Tree index for fast lookups
 
 	// Loaded rowids tracking
-	LoadedRowIDs *fastmap.FastInt64Map[struct{}] // Maps loaded rowIDs
+	LoadedRowIDs *fastmap.SyncInt64Map[struct{}] // Maps loaded rowIDs
 
 	// Read buffers to reduce allocations in hot paths
 	lenBuffer []byte // Buffer for reading length prefix
@@ -52,7 +52,7 @@ func NewDiskReader(filePath string) (*DiskReader, error) {
 		filePath:     filePath,
 		fileSize:     stat.Size(),
 		lenBuffer:    make([]byte, 4),                      // Pre-allocate buffer for length prefix
-		LoadedRowIDs: fastmap.NewFastInt64Map[struct{}](8), // Initialize loaded rowids map
+		LoadedRowIDs: fastmap.NewSyncInt64Map[struct{}](8), // Initialize loaded rowids map
 	}
 
 	// Read header

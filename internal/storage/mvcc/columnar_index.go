@@ -11,19 +11,19 @@ import (
 )
 
 // Ordering function type for comparing values
-type compareFunc func(a, b interface{}) int
+type compareFunc func(a, b storage.ColumnValue) int
 
 // btreeNode represents a node in the B-tree
 type btreeNode struct {
-	keys     []interface{} // Keys stored in this node
-	rowIDs   [][]int64     // Row IDs for each key
-	children []*btreeNode  // Child nodes (nil for leaf nodes)
-	isLeaf   bool          // Whether this is a leaf node
-	compare  compareFunc   // Function for comparing keys
+	keys     []storage.ColumnValue // Keys stored in this node
+	rowIDs   [][]int64             // Row IDs for each key
+	children []*btreeNode          // Child nodes (nil for leaf nodes)
+	isLeaf   bool                  // Whether this is a leaf node
+	compare  compareFunc           // Function for comparing keys
 }
 
 // Find returns the index where the key should be inserted
-func (n *btreeNode) findIndex(key interface{}) int {
+func (n *btreeNode) findIndex(key storage.ColumnValue) int {
 	// Binary search for the key
 	return sort.Search(len(n.keys), func(i int) bool {
 		return n.compare(n.keys[i], key) >= 0
@@ -31,7 +31,7 @@ func (n *btreeNode) findIndex(key interface{}) int {
 }
 
 // insert inserts a key and rowID into the B-tree node
-func (n *btreeNode) insert(key interface{}, rowID int64) {
+func (n *btreeNode) insert(key storage.ColumnValue, rowID int64) {
 	i := n.findIndex(key)
 
 	// If key already exists, just append the rowID
@@ -50,7 +50,7 @@ func (n *btreeNode) insert(key interface{}, rowID int64) {
 }
 
 // remove removes a rowID from a key in the B-tree node
-func (n *btreeNode) remove(key interface{}, rowID int64) bool {
+func (n *btreeNode) remove(key storage.ColumnValue, rowID int64) bool {
 	i := n.findIndex(key)
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
 		// Find and remove the rowID
@@ -75,7 +75,7 @@ func (n *btreeNode) remove(key interface{}, rowID int64) bool {
 }
 
 // rangeSearch finds all rowIDs in a range [min, max]
-func (n *btreeNode) rangeSearch(min, max interface{}, includeMin, includeMax bool, result *[]int64) {
+func (n *btreeNode) rangeSearch(min, max storage.ColumnValue, includeMin, includeMax bool, result *[]int64) {
 	if len(n.keys) == 0 {
 		return
 	}
@@ -109,7 +109,9 @@ func (n *btreeNode) rangeSearch(min, max interface{}, includeMin, includeMax boo
 }
 
 // equalSearch finds all rowIDs with the given key
-func (n *btreeNode) equalSearch(key interface{}, result *[]int64) {
+func (n *btreeNode) equalSearch(key storage.ColumnValue, result *[]int64) {
+	defer storage.PutPooledColumnValue(key)
+
 	i := n.findIndex(key)
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
 		// For single match optimization
@@ -139,7 +141,7 @@ type btreeColumnar struct {
 func newBTree(compare compareFunc) *btreeColumnar {
 	return &btreeColumnar{
 		root: &btreeNode{
-			keys:     make([]interface{}, 0),
+			keys:     make([]storage.ColumnValue, 0),
 			rowIDs:   make([][]int64, 0),
 			children: nil,
 			isLeaf:   true,
@@ -151,13 +153,13 @@ func newBTree(compare compareFunc) *btreeColumnar {
 }
 
 // Insert adds a key and rowID to the B-tree
-func (t *btreeColumnar) Insert(key interface{}, rowID int64) {
+func (t *btreeColumnar) Insert(key storage.ColumnValue, rowID int64) {
 	t.root.insert(key, rowID)
 	t.size++
 }
 
 // Remove removes a key and rowID from the B-tree
-func (t *btreeColumnar) Remove(key interface{}, rowID int64) bool {
+func (t *btreeColumnar) Remove(key storage.ColumnValue, rowID int64) bool {
 	result := t.root.remove(key, rowID)
 	if result {
 		t.size--
@@ -166,7 +168,7 @@ func (t *btreeColumnar) Remove(key interface{}, rowID int64) bool {
 }
 
 // ValueCount returns the number of occurrences of a key
-func (t *btreeColumnar) ValueCount(key interface{}) int {
+func (t *btreeColumnar) ValueCount(key storage.ColumnValue) int {
 	i := t.root.findIndex(key)
 	if i < len(t.root.keys) && t.compare(t.root.keys[i], key) == 0 {
 		return len(t.root.rowIDs[i])
@@ -175,14 +177,14 @@ func (t *btreeColumnar) ValueCount(key interface{}) int {
 }
 
 // RangeSearch finds all rowIDs in a range [min, max]
-func (t *btreeColumnar) RangeSearch(min, max interface{}, includeMin, includeMax bool) []int64 {
+func (t *btreeColumnar) RangeSearch(min, max storage.ColumnValue, includeMin, includeMax bool) []int64 {
 	result := make([]int64, 0, 100) // Start with a reasonable capacity
 	t.root.rangeSearch(min, max, includeMin, includeMax, &result)
 	return result
 }
 
 // EqualSearch finds all rowIDs with the given key
-func (t *btreeColumnar) EqualSearch(key interface{}) []int64 {
+func (t *btreeColumnar) EqualSearch(key storage.ColumnValue) []int64 {
 	result := make([]int64, 0, 10) // Start with a reasonable capacity
 	t.root.equalSearch(key, &result)
 	return result
@@ -203,7 +205,7 @@ func (t *btreeColumnar) Size() int {
 // Clear removes all entries from the B-tree
 func (t *btreeColumnar) Clear() {
 	t.root = &btreeNode{
-		keys:     make([]interface{}, 0),
+		keys:     make([]storage.ColumnValue, 0),
 		rowIDs:   make([][]int64, 0),
 		children: nil,
 		isLeaf:   true,
@@ -212,112 +214,16 @@ func (t *btreeColumnar) Clear() {
 	t.size = 0
 }
 
-// compareTimestamps provides enhanced timestamp comparison for optimized timestamp operations
-func compareTimestamps(a, b time.Time, dataType storage.DataType) int {
-	// First normalize based on data type to ensure proper comparison
-	aNorm := storage.NormalizeForDataType(a, dataType)
-	bNorm := storage.NormalizeForDataType(b, dataType)
-
-	// For TIMESTAMP comparisons, we use Unix time for better performance
-	aUnix := aNorm.UnixNano()
-	bUnix := bNorm.UnixNano()
-
-	if aUnix < bUnix {
-		return -1
-	}
-	if aUnix > bUnix {
-		return 1
-	}
-	return 0
-}
-
 // compareColumnValues compares two ColumnValue objects
 // This is the key function that allows us to use a single B-tree for all data types
-func compareColumnValues(a, b interface{}) int {
-	aVal, aOK := a.(storage.ColumnValue)
-	bVal, bOK := b.(storage.ColumnValue)
-
-	if !aOK || !bOK {
-		return 0
+func compareColumnValues(aVal, bVal storage.ColumnValue) int {
+	cmp, err := aVal.Compare(bVal)
+	if err != nil {
+		return 0 // Error handling - should not happen in normal operation
 	}
 
-	// Handle NULL values
-	if aVal.IsNull() && bVal.IsNull() {
-		return 0
-	}
-	if aVal.IsNull() {
-		return -1
-	}
-	if bVal.IsNull() {
-		return 1
-	}
-
-	// Make sure both values have the same type
-	if aVal.Type() != bVal.Type() {
-		// Sort by type ID if different types (shouldn't normally happen)
-		if int(aVal.Type()) < int(bVal.Type()) {
-			return -1
-		}
-		return 1
-	}
-
-	// Compare based on data type
-	switch aVal.Type() {
-	case storage.INTEGER:
-		aInt, _ := aVal.AsInt64()
-		bInt, _ := bVal.AsInt64()
-		if aInt < bInt {
-			return -1
-		}
-		if aInt > bInt {
-			return 1
-		}
-		return 0
-
-	case storage.FLOAT:
-		aFloat, _ := aVal.AsFloat64()
-		bFloat, _ := bVal.AsFloat64()
-		if aFloat < bFloat {
-			return -1
-		}
-		if aFloat > bFloat {
-			return 1
-		}
-		return 0
-
-	case storage.TEXT, storage.JSON:
-		aStr, _ := aVal.AsString()
-		bStr, _ := bVal.AsString()
-		if aStr < bStr {
-			return -1
-		}
-		if aStr > bStr {
-			return 1
-		}
-		return 0
-
-	case storage.BOOLEAN:
-		aBool, _ := aVal.AsBoolean()
-		bBool, _ := bVal.AsBoolean()
-		if aBool == bBool {
-			return 0
-		}
-		if !aBool && bBool {
-			return -1
-		}
-		return 1
-
-	case storage.TIMESTAMP:
-		aTime, _ := aVal.AsTimestamp()
-		bTime, _ := bVal.AsTimestamp()
-		// Use specialized timestamp comparison for better performance
-		return compareTimestamps(aTime, bTime, aVal.Type())
-	}
-
-	return 0
+	return cmp
 }
-
-// Note: This function was removed as it's not needed in the current implementation.
 
 // TimeBucketGranularity represents a time bucketing granularity
 type TimeBucketGranularity int
@@ -581,7 +487,6 @@ func (idx *ColumnarIndex) FindRange(minValue, maxValue storage.ColumnValue,
 // GetRowIDsInRange returns row IDs with values in the given range
 func (idx *ColumnarIndex) GetRowIDsInRange(minValue, maxValue storage.ColumnValue,
 	includeMin, includeMax bool) []int64 {
-
 	idx.mutex.RLock()
 	defer idx.mutex.RUnlock()
 
@@ -602,7 +507,7 @@ func (idx *ColumnarIndex) GetLatestBefore(timestamp time.Time) []int64 {
 		return nil
 	}
 
-	tsValue := storage.NewTimestampValue(timestamp)
+	tsValue := storage.GetPooledTimestampValue(timestamp)
 
 	// Use range query with max value as the timestamp and no min value
 	return idx.GetRowIDsInRange(nil, tsValue, false, true) // Up to and including timestamp
@@ -618,8 +523,8 @@ func (idx *ColumnarIndex) GetRecentTimeRange(duration time.Duration) []int64 {
 	startTime := now.Add(-duration)
 
 	// Convert to timestamp values
-	startValue := storage.NewTimestampValue(startTime)
-	endValue := storage.NewTimestampValue(now)
+	startValue := storage.GetPooledTimestampValue(startTime)
+	endValue := storage.GetPooledTimestampValue(now)
 
 	// Get rows in the recent time range
 	return idx.GetRowIDsInRange(startValue, endValue, true, true)
@@ -663,7 +568,7 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			switch simpleExpr.Operator {
 			case storage.EQ:
 				// Convert the expression value to a ColumnValue with the correct type
-				valueCol := storage.ValueToColumnValue(simpleExpr.Value, idx.dataType)
+				valueCol := storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
 				return idx.GetRowIDsEqual(valueCol)
 
 			case storage.GT, storage.GTE, storage.LT, storage.LTE:
@@ -672,10 +577,10 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				var includeMin, includeMax bool
 
 				if simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE {
-					minValue = storage.ValueToColumnValue(simpleExpr.Value, idx.dataType)
+					minValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
 					includeMin = simpleExpr.Operator == storage.GTE
 				} else {
-					maxValue = storage.ValueToColumnValue(simpleExpr.Value, idx.dataType)
+					maxValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
 					includeMax = simpleExpr.Operator == storage.LTE
 				}
 
@@ -717,9 +622,9 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			// Check if expr1 is a lower bound and expr2 is an upper bound
 			if (expr1.Operator == storage.GT || expr1.Operator == storage.GTE) &&
 				(expr2.Operator == storage.LT || expr2.Operator == storage.LTE) {
-				minValue = storage.ValueToColumnValue(expr1.Value, idx.dataType)
+				minValue = storage.ValueToPooledColumnValue(expr1.Value, idx.dataType)
 				includeMin = expr1.Operator == storage.GTE
-				maxValue = storage.ValueToColumnValue(expr2.Value, idx.dataType)
+				maxValue = storage.ValueToPooledColumnValue(expr2.Value, idx.dataType)
 				includeMax = expr2.Operator == storage.LTE
 				hasRange = true
 			}
@@ -727,9 +632,9 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			// Check if expr2 is a lower bound and expr1 is an upper bound
 			if (expr2.Operator == storage.GT || expr2.Operator == storage.GTE) &&
 				(expr1.Operator == storage.LT || expr1.Operator == storage.LTE) {
-				minValue = storage.ValueToColumnValue(expr2.Value, idx.dataType)
+				minValue = storage.ValueToPooledColumnValue(expr2.Value, idx.dataType)
 				includeMin = expr2.Operator == storage.GTE
-				maxValue = storage.ValueToColumnValue(expr1.Value, idx.dataType)
+				maxValue = storage.ValueToPooledColumnValue(expr1.Value, idx.dataType)
 				includeMax = expr1.Operator == storage.LTE
 				hasRange = true
 			}
@@ -788,9 +693,9 @@ func (idx *ColumnarIndex) Build() error {
 	visibleVersions := idx.versionStore.GetAllVisibleVersions(0)
 
 	// Process each visible row
-	for rowID, version := range visibleVersions {
+	visibleVersions.ForEach(func(rowID int64, version *RowVersion) bool {
 		if version.IsDeleted {
-			continue
+			return true
 		}
 
 		// Get the value at the specified column ID
@@ -803,7 +708,9 @@ func (idx *ColumnarIndex) Build() error {
 			// Column doesn't exist in this row, treat as NULL
 			idx.Add(nil, rowID, 0)
 		}
-	}
+
+		return true
+	})
 
 	return nil
 }

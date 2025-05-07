@@ -37,7 +37,7 @@ func genRealisticKeys(n int) []int64 {
 }
 
 // Comprehensive benchmark comparing all map implementations
-func BenchmarkFastInt64Map(b *testing.B) {
+func BenchmarkSyncInt64Map(b *testing.B) {
 	const keyCount = 100_000
 	keys := genRealisticKeys(keyCount)
 
@@ -50,8 +50,8 @@ func BenchmarkFastInt64Map(b *testing.B) {
 		readThreshold := readPct
 		writeThreshold := readPct + writePct
 
-		// Benchmark FastInt64Map
-		m := NewFastInt64Map[int64](16)
+		// Benchmark SyncInt64Map
+		m := NewSyncInt64Map[int64](16)
 		for i := 0; i < keyCount/2; i++ {
 			m.Set(keys[i], keys[i])
 		}
@@ -94,7 +94,7 @@ func BenchmarkHighConcurrency(b *testing.B) {
 	const keyCount = 10_000
 	keys := genRealisticKeys(keyCount)
 
-	m := NewFastInt64Map[int64](16)
+	m := NewSyncInt64Map[int64](16)
 	for i := 0; i < keyCount/2; i++ {
 		m.Set(keys[i], keys[i])
 	}

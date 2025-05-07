@@ -85,11 +85,13 @@ func (it *ColumnarIndexIterator) Next() bool {
 		versions := it.versionStore.GetVisibleVersionsByIDs(it.prefetchRowIDs, it.txnID)
 
 		// Extract non-deleted rows
-		for rowID, version := range versions {
+		versions.ForEach(func(rowID int64, version *RowVersion) bool {
 			if !version.IsDeleted {
 				it.prefetchMap[rowID] = version.Data
 			}
-		}
+
+			return true
+		})
 
 		// IMPORTANT: Free the versions map to avoid memory leak
 		ReturnVisibleVersionMap(versions)

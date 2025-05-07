@@ -3,6 +3,7 @@ package mvcc
 import (
 	"sync"
 
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 )
@@ -12,13 +13,13 @@ type MVCCScannerMode int
 
 // MVCCScanner is a simple scanner implementation for MVCC results
 type MVCCScanner struct {
-	sourceRows    map[int64]storage.Row             // Original row references, not copied
+	sourceRows    *fastmap.Int64Map[storage.Row]    // Original row references, not copied
 	rowIDs        []int64                           // Sorted row IDs for iteration
 	currentIndex  int                               // Current position in rowIDs
 	columnIndices []int                             // Which columns to return
 	schema        storage.Schema                    // Schema information
 	err           error                             // Any error that occurred
-	rowMap        map[int64]storage.Row             // The original map, will be returned to pool on Close
+	rowMap        *fastmap.Int64Map[storage.Row]    // The original map, will be returned to pool on Close
 	whereExpr     *expression.SchemaAwareExpression // The schema-aware expression, if it needs to be returned to pool
 	projectedRow  storage.Row                       // Reusable buffer for column projection
 }
@@ -46,7 +47,10 @@ func (s *MVCCScanner) Row() storage.Row {
 	// Row mode implementation (the original logic)
 	// Get the current row
 	rowID := s.rowIDs[s.currentIndex]
-	row := s.sourceRows[rowID]
+	row, ok := s.sourceRows.Get(rowID)
+	if !ok {
+		return nil // Row not found
+	}
 
 	// If no column projection is required, return the row directly
 	if len(s.columnIndices) == 0 {
@@ -78,7 +82,7 @@ func (s *MVCCScanner) Close() error {
 	// Return the row map to the pool if it came from there
 	if s.rowMap != nil {
 		PutRowMap(s.rowMap)
-		s.rowMap = nil
+		s.rowMap.Clear()
 	}
 
 	// Return the schema aware expression to pool if applicable
@@ -134,18 +138,18 @@ func PutRowIDSlice(slice []int64) {
 
 // RangeScanner is a specialized scanner for efficient ID range queries
 type RangeScanner struct {
-	txnID         int64                 // Transaction ID for visibility checks
-	versionStore  *VersionStore         // Access to versions
-	currentID     int64                 // Current ID in range
-	endID         int64                 // End ID in range (inclusive)
-	columnIndices []int                 // Columns to include
-	schema        storage.Schema        // Schema information
-	err           error                 // Any scanning errors
-	projectedRow  storage.Row           // Reused buffer for projection
-	currentRow    storage.Row           // Current row being processed
-	batchSize     int                   // Size of batches for prefetching
-	currentBatch  map[int64]*RowVersion // Current batch of prefetched rows
-	inclusive     bool                  // Whether endID is inclusive
+	txnID         int64                          // Transaction ID for visibility checks
+	versionStore  *VersionStore                  // Access to versions
+	currentID     int64                          // Current ID in range
+	endID         int64                          // End ID in range (inclusive)
+	columnIndices []int                          // Columns to include
+	schema        storage.Schema                 // Schema information
+	err           error                          // Any scanning errors
+	projectedRow  storage.Row                    // Reused buffer for projection
+	currentRow    storage.Row                    // Current row being processed
+	batchSize     int                            // Size of batches for prefetching
+	currentBatch  *fastmap.Int64Map[*RowVersion] // Current batch of prefetched rows
+	inclusive     bool                           // Whether endID is inclusive
 }
 
 // NewRangeScanner creates a scanner optimized for ID range scans
@@ -167,7 +171,7 @@ func NewRangeScanner(
 		columnIndices: columnIndices,
 		schema:        schema,
 		batchSize:     1000, // Batch size for prefetching
-		currentBatch:  make(map[int64]*RowVersion, 1000),
+		currentBatch:  fastmap.NewInt64Map[*RowVersion](1000),
 		projectedRow:  make(storage.Row, len(columnIndices)),
 	}
 }
@@ -193,7 +197,7 @@ func (s *RangeScanner) Next() bool {
 	// Fetch the next visible row
 	for s.currentID <= actualEnd {
 		// Check if we need to fetch a new batch
-		if len(s.currentBatch) == 0 {
+		if s.currentBatch.Len() == 0 {
 			// Prepare batch of IDs to fetch
 			endBatch := s.currentID + int64(s.batchSize) - 1
 			if endBatch > actualEnd {
@@ -210,21 +214,21 @@ func (s *RangeScanner) Next() bool {
 			s.currentBatch = s.versionStore.GetVisibleVersionsByIDs(ids, s.txnID)
 
 			// If batch is empty, we can skip to the next batch
-			if len(s.currentBatch) == 0 {
+			if s.currentBatch.Len() == 0 {
 				s.currentID = endBatch + 1
 				continue
 			}
 		}
 
 		// Check if the current ID exists and is visible
-		if version, exists := s.currentBatch[s.currentID]; exists && !version.IsDeleted {
+		if version, exists := s.currentBatch.Get(s.currentID); exists && !version.IsDeleted {
 			s.currentRow = version.Data
 			s.currentID++ // Advance ID for next iteration
 			return true
 		}
 
 		// ID doesn't exist or is deleted, try next ID
-		delete(s.currentBatch, s.currentID)
+		s.currentBatch.Del(s.currentID)
 		s.currentID++
 
 		// If batch is empty after this deletion, we'll fetch a new batch next time
@@ -320,13 +324,13 @@ func ReturnMVCCScanner(scanner *MVCCScanner) {
 
 // NewMVCCScanner creates a new scanner for MVCC-tracked rows
 // Memory-optimized version that doesn't copy rows unnecessarily
-func NewMVCCScanner(rows map[int64]storage.Row, schema storage.Schema, columnIndices []int, where storage.Expression) *MVCCScanner {
+func NewMVCCScanner(rows *fastmap.Int64Map[storage.Row], schema storage.Schema, columnIndices []int, where storage.Expression) *MVCCScanner {
 	// Get a scanner from the pool instead of creating a new one
 	scanner := GetMVCCScanner()
 
 	// Initialize reused scanner fields
-	scanner.sourceRows = rows                 // Use the rows map directly to avoid copying
-	scanner.rowIDs = GetRowIDSlice(len(rows)) // Get a reused slice from the pool
+	scanner.sourceRows = rows                  // Use the rows map directly to avoid copying
+	scanner.rowIDs = GetRowIDSlice(rows.Len()) // Get a reused slice from the pool
 	scanner.currentIndex = -1
 	scanner.columnIndices = columnIndices
 	scanner.schema = schema
@@ -340,7 +344,7 @@ func NewMVCCScanner(rows map[int64]storage.Row, schema storage.Schema, columnInd
 	scanner.projectedRow = make(storage.Row, len(columnIndices))
 
 	// Filtering phase - apply where expression
-	for rowID, row := range rows {
+	for rowID, row := range rows.All() {
 		// Skip rows that don't match the filter
 		if where != nil {
 			matches, err := where.Evaluate(row)

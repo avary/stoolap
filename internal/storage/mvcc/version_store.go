@@ -22,7 +22,7 @@ type RowVersion struct {
 // VersionStore tracks the latest committed version of each row for a table
 // Simplified to keep only one version per row (the latest committed version)
 type VersionStore struct {
-	versions  *fastmap.FastInt64Map[*RowVersion] // Using high-performance concurrent map
+	versions  *fastmap.SyncInt64Map[*RowVersion] // Using high-performance concurrent map
 	tableName string                             // The name of the table this store belongs to
 
 	// Columnar indexes provide HTAP capabilities
@@ -43,7 +43,7 @@ type VersionStore struct {
 // NewVersionStore creates a new version store
 func NewVersionStore(tableName string, engine *MVCCEngine) *VersionStore {
 	vs := &VersionStore{
-		versions:        fastmap.NewFastInt64Map[*RowVersion](16), // Start with reasonable capacity
+		versions:        fastmap.NewSyncInt64Map[*RowVersion](16), // Start with reasonable capacity
 		tableName:       tableName,
 		columnarIndexes: make(map[string]storage.Index),
 		engine:          engine,
@@ -329,19 +329,19 @@ func (vs *VersionStore) IterateVisibleVersions(rowIDs []int64, txnID int64,
 
 // GetVisibleVersionsByIDs retrieves visible versions for the given rowIDs
 // This is an optimized batch version of GetVisibleVersion using fastmap for high performance
-func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map[int64]*RowVersion {
+func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) *fastmap.Int64Map[*RowVersion] {
 	// Check if the version store is closed
 	if vs.closed.Load() || vs.versions == nil {
 		// Return empty map
-		return make(map[int64]*RowVersion)
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
 	// Early validation of parameters
 	if len(rowIDs) == 0 {
-		return make(map[int64]*RowVersion)
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
-	result := GetVisibleVersionMap(len(rowIDs))
+	result := GetVisibleVersionMap()
 
 	// Track IDs not found in memory for disk lookup
 	var notFoundIDs []int64
@@ -374,7 +374,7 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 			// Check visibility
 			if vs.engine.registry.IsVisible(versionPtr.TxnID, txnID) {
 				// Add the visible version to result
-				result[rowID] = versionPtr
+				result.Put(rowID, versionPtr)
 			}
 		}
 	}
@@ -387,7 +387,7 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 			// Check if closed again
 			if vs.closed.Load() {
 				ReturnVisibleVersionMap(result)
-				return make(map[int64]*RowVersion)
+				return &fastmap.Int64Map[*RowVersion]{}
 			}
 
 			// For optimization, if there are many IDs, use batch retrieval
@@ -403,7 +403,7 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 
 						// Get the cached version pointer from memory to ensure consistency with the pool
 						if versionPtr, exists := vs.versions.Get(rowID); exists {
-							result[rowID] = versionPtr
+							result.Put(rowID, versionPtr)
 						}
 					}
 				}
@@ -418,7 +418,7 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 
 							// Get the cached version from memory
 							if versionPtr, exists := vs.versions.Get(rowID); exists {
-								result[rowID] = versionPtr
+								result.Put(rowID, versionPtr)
 							}
 						}
 					}
@@ -433,40 +433,24 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) map
 // Pool for version maps used in visible version retrieval
 var visibleVersionMapPool = sync.Pool{
 	New: func() interface{} {
-		return make(map[int64]*RowVersion)
+		return fastmap.NewInt64Map[*RowVersion](1000) // Start with reasonable capacity
 	},
 }
 
 // GetVisibleVersionMap gets a version map from the pool
-func GetVisibleVersionMap(capacity interface{}) map[int64]*RowVersion {
-	mapInterface := visibleVersionMapPool.Get()
-
-	// Convert capacity to int if it's uintptr (from haxmap.Len())
-	var capInt int
-	switch c := capacity.(type) {
-	case int:
-		capInt = c
-	case uintptr:
-		capInt = int(c)
-	default:
-		capInt = 100 // Default capacity
-	}
-
-	m, ok := mapInterface.(map[int64]*RowVersion)
-	if !ok || m == nil {
-		return make(map[int64]*RowVersion, capInt)
-	}
+func GetVisibleVersionMap() *fastmap.Int64Map[*RowVersion] {
+	m := visibleVersionMapPool.Get().(*fastmap.Int64Map[*RowVersion])
 
 	return m
 }
 
 // ReturnVisibleVersionMap returns a version map to the pool
-func ReturnVisibleVersionMap(m map[int64]*RowVersion) {
+func ReturnVisibleVersionMap(m *fastmap.Int64Map[*RowVersion]) {
 	if m == nil {
 		return
 	}
 
-	clear(m)
+	m.Clear()
 	visibleVersionMapPool.Put(m)
 }
 
@@ -474,11 +458,11 @@ func ReturnVisibleVersionMap(m map[int64]*RowVersion) {
 
 // GetAllVisibleVersions gets all visible versions for a scan operation
 // This is an optimized version that reduces allocations and properly respects snapshot isolation
-func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion {
+func (vs *VersionStore) GetAllVisibleVersions(txnID int64) *fastmap.Int64Map[*RowVersion] {
 	// Check if the version store is closed or versions is nil
 	if vs.closed.Load() || vs.versions == nil {
 		// Return empty map
-		return make(map[int64]*RowVersion)
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
 	// If we detect we're in the middle of a bulk delete, and in READ COMMITTED mode (the default),
@@ -508,23 +492,21 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 
 	// Check if closed after the sampling
 	if vs.closed.Load() {
-		return make(map[int64]*RowVersion)
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
 	// If this looks like a bulk delete in READ COMMITTED mode, return empty map
 	if vs.engine.registry.GetIsolationLevel() == ReadCommitted && isBulkDeleteOp && hasSpecificTxnVersions {
-		return map[int64]*RowVersion{}
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
-	// Get preallocated map from pool with a better initial capacity estimate
-	estimatedSize := vs.versions.Len() / 2 // Most operations only need half the versions
-	result := GetVisibleVersionMap(estimatedSize)
+	result := GetVisibleVersionMap()
 
 	// Check if the version store is closed
 	if vs.closed.Load() {
 		// Return empty result if closed
 		ReturnVisibleVersionMap(result)
-		return make(map[int64]*RowVersion)
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
 	// For bulk operations in READ COMMITTED, optimize the common case
@@ -551,14 +533,14 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 			}
 
 			// Visible row - add a copy to result
-			result[rowID] = versionPtr
+			result.Put(rowID, versionPtr)
 			return true // Continue iteration
 		})
 
 		// Check if closed after processing in-memory versions
 		if vs.closed.Load() {
 			ReturnVisibleVersionMap(result)
-			return make(map[int64]*RowVersion)
+			return &fastmap.Int64Map[*RowVersion]{}
 		}
 
 		// Only check disk if persistence is enabled
@@ -581,7 +563,7 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 
 					// Get the newly cached version for consistency
 					if versionPtr, exists := vs.versions.Get(rowID); exists {
-						result[rowID] = versionPtr
+						result.Put(rowID, versionPtr)
 					}
 
 					return true // Continue iteration
@@ -608,7 +590,7 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 
 		// Check for visibility based on isolation level rules
 		if vs.engine.registry.IsVisible(versionPtr.TxnID, txnID) {
-			result[rowID] = versionPtr
+			result.Put(rowID, versionPtr)
 		}
 		return true // Continue iteration
 	})
@@ -616,7 +598,7 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 	// Final check if closed after in-memory processing
 	if vs.closed.Load() {
 		ReturnVisibleVersionMap(result)
-		return make(map[int64]*RowVersion)
+		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
 	// For SNAPSHOT isolation, process disk versions
@@ -639,7 +621,7 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 
 				// Get the newly cached version for consistency
 				if versionPtr, exists := vs.versions.Get(rowID); exists {
-					result[rowID] = versionPtr
+					result.Put(rowID, versionPtr)
 				}
 
 				return true // Continue iteration
@@ -652,17 +634,17 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) map[int64]*RowVersion
 
 // TransactionVersionStore holds changes specific to a transaction
 type TransactionVersionStore struct {
-	localVersions map[int64]RowVersion // RowID -> local version
-	parentStore   *VersionStore        // Reference to the shared store
-	txnID         int64                // This transaction's ID
-	fromPool      bool                 // Whether this object came from the pool
+	localVersions *fastmap.Int64Map[RowVersion] // RowID -> local version
+	parentStore   *VersionStore                 // Reference to the shared store
+	txnID         int64                         // This transaction's ID
+	fromPool      bool                          // Whether this object came from the pool
 }
 
 // Pool for TransactionVersionStore objects
 var transactionVersionStorePool = sync.Pool{
 	New: func() interface{} {
 		return &TransactionVersionStore{
-			localVersions: make(map[int64]RowVersion),
+			localVersions: fastmap.NewInt64Map[RowVersion](100), // Start with reasonable capacity
 		}
 	},
 }
@@ -677,9 +659,9 @@ func NewTransactionVersionStore(
 
 	// Initialize or clear the map
 	if tvs.localVersions == nil {
-		tvs.localVersions = make(map[int64]RowVersion)
+		tvs.localVersions = fastmap.NewInt64Map[RowVersion](100)
 	} else {
-		clear(tvs.localVersions)
+		tvs.localVersions.Clear()
 	}
 
 	// Set the fields
@@ -702,7 +684,7 @@ func (tvs *TransactionVersionStore) Put(rowID int64, data storage.Row, isDelete 
 	}
 
 	// Store by value in the local versions map
-	tvs.localVersions[rowID] = rv
+	tvs.localVersions.Put(rowID, rv)
 }
 
 // PutBatch efficiently adds or updates multiple rows with the same operation
@@ -721,7 +703,7 @@ func (tvs *TransactionVersionStore) PutBatch(rowIDs []int64, data storage.Row, i
 			RowID:      rowID,
 			CreateTime: now,
 		}
-		tvs.localVersions[rowID] = rv
+		tvs.localVersions.Put(rowID, rv)
 	}
 }
 
@@ -731,18 +713,6 @@ func (tvs *TransactionVersionStore) PutRowsBatch(rowIDs []int64, rows []storage.
 	// Get a single timestamp for all versions to ensure consistency
 	// and avoid multiple system calls
 	now := GetFastTimestamp()
-
-	// Pre-allocate a larger map if we're adding a significant number of items
-	currentSize := len(tvs.localVersions)
-	expectedSize := currentSize + len(rowIDs)
-	if expectedSize > 100 && expectedSize > currentSize*2 {
-		// Create a new map with more capacity
-		newMap := make(map[int64]RowVersion, expectedSize)
-		for k, v := range tvs.localVersions {
-			newMap[k] = v
-		}
-		tvs.localVersions = newMap
-	}
 
 	// Add all rows with the same timestamp
 	for i, rowID := range rowIDs {
@@ -754,7 +724,7 @@ func (tvs *TransactionVersionStore) PutRowsBatch(rowIDs []int64, rows []storage.
 			RowID:      rowID,
 			CreateTime: now,
 		}
-		tvs.localVersions[rowID] = rv
+		tvs.localVersions.Put(rowID, rv)
 	}
 }
 
@@ -765,7 +735,7 @@ func ReleaseTransactionVersionStore(tvs *TransactionVersionStore) {
 	}
 
 	// Clear fields to prevent memory leaks
-	clear(tvs.localVersions)
+	tvs.localVersions.Clear()
 	tvs.parentStore = nil
 	tvs.txnID = 0
 	tvs.fromPool = false
@@ -790,14 +760,13 @@ func (tvs *TransactionVersionStore) Rollback() {
 // HasLocallySeen checks if this rowID has been seen in this transaction
 // This is a fast path optimization to avoid the expensive Get operation
 func (tvs *TransactionVersionStore) HasLocallySeen(rowID int64) bool {
-	_, exists := tvs.localVersions[rowID]
-	return exists
+	return tvs.localVersions.Has(rowID)
 }
 
 // Get retrieves a row by its row ID
 func (tvs *TransactionVersionStore) Get(rowID int64) (storage.Row, bool) {
 	// First check local versions
-	if localVersion, exists := tvs.localVersions[rowID]; exists {
+	if localVersion, exists := tvs.localVersions.Get(rowID); exists {
 		if localVersion.IsDeleted {
 			return nil, false
 		}
@@ -840,48 +809,33 @@ func (tvs *TransactionVersionStore) Get(rowID int64) (storage.Row, bool) {
 // Pool for row maps to reduce allocations
 var rowMapPool = sync.Pool{
 	New: func() interface{} {
-		return make(map[int64]storage.Row, 16) // Default capacity
+		return fastmap.NewInt64Map[storage.Row](1000)
 	},
 }
 
 // GetRowMap gets a map from the pool or creates a new one
-func GetRowMap(capacity int) map[int64]storage.Row {
-	mapInterface := rowMapPool.Get()
-
-	m, ok := mapInterface.(map[int64]storage.Row)
-	if !ok || m == nil {
-		return make(map[int64]storage.Row, capacity)
-	}
-
-	clear(m)
+func GetRowMap() *fastmap.Int64Map[storage.Row] {
+	m := rowMapPool.Get().(*fastmap.Int64Map[storage.Row])
 
 	return m
 }
 
 // ReturnRowMap returns a map to the pool
-func PutRowMap(m map[int64]storage.Row) {
+func PutRowMap(m *fastmap.Int64Map[storage.Row]) {
 	if m == nil {
 		return
 	}
 
-	clear(m)
+	m.Clear()
 	rowMapPool.Put(m)
 }
 
 // GetAllVisibleRows retrieves all rows visible to this transaction
 // This version implements zero-copy semantics where possible to reduce allocations
 // and uses optimized batch processing for disk data with caching
-func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
-	// Reuse maps from the pool - first estimate capacity we need
-	capacity := 100 // Default capacity
-
-	// If possible, get a better estimate of size
-	if tvs.parentStore != nil && tvs.parentStore.versions.Len() > 0 {
-		capacity = int(tvs.parentStore.versions.Len())
-	}
-
+func (tvs *TransactionVersionStore) GetAllVisibleRows() *fastmap.Int64Map[storage.Row] {
 	// Get a preallocated map from the pool
-	result := GetRowMap(capacity)
+	result := GetRowMap()
 
 	// Get globally visible versions directly from the parent store
 	if tvs.parentStore != nil {
@@ -902,13 +856,13 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 				// Fast visibility check for common patterns
 				// Most common case: our transaction seeing committed data
 				if versionPtr.TxnID != txnID && registry.IsDirectlyVisible(versionPtr.TxnID) {
-					result[rowID] = versionPtr.Data
+					result.Put(rowID, versionPtr.Data)
 				} else if versionPtr.TxnID == txnID {
 					// Direct access to our own transaction's data
-					result[rowID] = versionPtr.Data
+					result.Put(rowID, versionPtr.Data)
 				} else if registry.IsVisible(versionPtr.TxnID, txnID) {
 					// Full visibility check for complex cases
-					result[rowID] = versionPtr.Data
+					result.Put(rowID, versionPtr.Data)
 				}
 				return true // Continue iteration
 			}
@@ -926,7 +880,7 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 				// Check visibility
 				if registry.IsVisible(versionPtr.TxnID, txnID) {
 					// Add directly to result
-					result[rowID] = versionPtr.Data
+					result.Put(rowID, versionPtr.Data)
 				}
 				return true // Continue iteration
 			})
@@ -945,7 +899,7 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 					}
 
 					// All rows from disk snapshots have TxnID = -1 and are always visible
-					result[rowID] = diskVersion.Data
+					result.Put(rowID, diskVersion.Data)
 
 					// Cache in memory for future use
 					vs.AddVersion(rowID, diskVersion)
@@ -957,15 +911,17 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 	}
 
 	// Process local versions (these take precedence)
-	for rowID, version := range tvs.localVersions {
+	tvs.localVersions.ForEach(func(rowID int64, version RowVersion) bool {
 		if version.IsDeleted {
 			// If deleted locally, remove from result
-			delete(result, rowID)
+			result.Del(rowID)
 		} else {
 			// Local versions must be copied since they may be modified during transaction
-			result[rowID] = version.Data
+			result.Put(rowID, version.Data)
 		}
-	}
+
+		return true // Continue iteration
+	})
 
 	return result
 }
@@ -974,9 +930,10 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() map[int64]storage.Row {
 func (tvs *TransactionVersionStore) Commit() {
 	// Add all local versions to the parent store
 	if tvs.parentStore != nil {
-		for rowID, version := range tvs.localVersions {
+		tvs.localVersions.ForEach(func(rowID int64, version RowVersion) bool {
 			tvs.parentStore.AddVersion(rowID, version)
-		}
+			return true // Continue iteration
+		})
 	}
 
 	// If from pool, return it after commit

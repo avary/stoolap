@@ -96,8 +96,8 @@ type WALManager struct {
 	syncIntervalNano int64        // Minimum time between syncs in nanoseconds (for SyncNormal)
 
 	// Track active transactions at the time of the last checkpoint
-	// Using FastInt64Map for thread-safe, lock-free access
-	activeTransactions *fastmap.FastInt64Map[bool]
+	// Using SyncInt64Map for thread-safe, lock-free access
+	activeTransactions *fastmap.SyncInt64Map[bool]
 }
 
 // NewWALManager creates a new WAL manager
@@ -230,7 +230,7 @@ func NewWALManager(path string, syncMode SyncMode, config *storage.PersistenceCo
 		lastCheckpoint:     initialLSN,             // Start with current LSN as checkpoint
 		syncMode:           syncMode,
 		config:             config,                           // Reference to persistence config
-		activeTransactions: fastmap.NewFastInt64Map[bool](8), // 2^8 = 256 buckets for concurrent access
+		activeTransactions: fastmap.NewSyncInt64Map[bool](8), // 2^8 = 256 buckets for concurrent access
 
 		// Optimization for SyncNormal mode
 		commitBatchSize:  commitBatchSize,

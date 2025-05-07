@@ -1,6 +1,7 @@
 package mvcc
 
 import (
+	"math/rand"
 	"testing"
 	"time"
 
@@ -279,6 +280,281 @@ func BenchmarkColumnarIndexTimestamp(b *testing.B) {
 			_ = len(rowIDs)
 		}
 	})
+}
+
+// BenchmarkColumnarIndexSingleIntAdd benchmarks adding integers to a single-column ColumnarIndex
+func BenchmarkColumnarIndexSingleIntAdd(b *testing.B) {
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"num",
+		0,
+		storage.INTEGER,
+		nil, 
+		false,
+	)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		num := int64(i % 10000)
+		idx.Add(storage.NewIntegerValue(num), int64(i), 0)
+	}
+}
+
+// BenchmarkColumnarIndexSingleTimestampAdd benchmarks adding timestamps to a single-column ColumnarIndex
+func BenchmarkColumnarIndexSingleTimestampAdd(b *testing.B) {
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"ts",
+		0,
+		storage.TIMESTAMP,
+		nil, 
+		false,
+	)
+
+	// Base timestamp
+	baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Add time with 1-minute intervals
+		ts := baseTime.Add(time.Duration(i%10000) * time.Minute)
+		idx.Add(storage.NewTimestampValue(ts), int64(i), 0)
+	}
+}
+
+// BenchmarkColumnarIndexSingleIntRange benchmarks integer range queries on a single-column ColumnarIndex
+func BenchmarkColumnarIndexSingleIntRange(b *testing.B) {
+	// Setup: create and populate index with test data
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"num",
+		0,
+		storage.INTEGER,
+		nil, 
+		false,
+	)
+
+	// Add 10000 rows with sequential integer data
+	for i := 0; i < 10000; i++ {
+		idx.Add(storage.NewIntegerValue(int64(i)), int64(i), 0)
+	}
+
+	// Generate random range bounds
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	minVals := make([]int64, b.N)
+	maxVals := make([]int64, b.N)
+
+	for i := 0; i < b.N; i++ {
+		minVals[i] = int64(r.Intn(8000))
+		maxVals[i] = minVals[i] + int64(r.Intn(2000)) + 1 // Ensure range is at least 1
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx.GetRowIDsInRange(
+			storage.NewIntegerValue(minVals[i]),
+			storage.NewIntegerValue(maxVals[i]),
+			true, true,
+		)
+	}
+}
+
+// BenchmarkColumnarIndexSingleTimestampRange benchmarks timestamp range queries on a single-column ColumnarIndex
+func BenchmarkColumnarIndexSingleTimestampRange(b *testing.B) {
+	// Setup: create and populate index with test data
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"ts",
+		0,
+		storage.TIMESTAMP,
+		nil, 
+		false,
+	)
+
+	// Base timestamp
+	baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	
+	// Add 10000 rows with sequential timestamp data, 1 hour intervals
+	for i := 0; i < 10000; i++ {
+		ts := baseTime.Add(time.Duration(i) * time.Hour)
+		idx.Add(storage.NewTimestampValue(ts), int64(i), 0)
+	}
+
+	// Generate random time range bounds
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	startHours := make([]int, b.N)
+	rangeLengths := make([]int, b.N)
+
+	for i := 0; i < b.N; i++ {
+		startHours[i] = r.Intn(8000)
+		rangeLengths[i] = 100 + r.Intn(1900) // Range spans 100-2000 hours
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		minTime := baseTime.Add(time.Duration(startHours[i]) * time.Hour)
+		maxTime := baseTime.Add(time.Duration(startHours[i] + rangeLengths[i]) * time.Hour)
+
+		idx.GetRowIDsInRange(
+			storage.NewTimestampValue(minTime),
+			storage.NewTimestampValue(maxTime),
+			true, true,
+		)
+	}
+}
+
+// BenchmarkColumnarIndexSingleFloatRange benchmarks float range queries on a single-column ColumnarIndex
+func BenchmarkColumnarIndexSingleFloatRange(b *testing.B) {
+	// Setup: create and populate index with test data
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"float_val",
+		0,
+		storage.FLOAT,
+		nil, 
+		false,
+	)
+
+	// Add 10000 rows with sequential float data
+	for i := 0; i < 10000; i++ {
+		floatVal := float64(i) + float64(i)/10.0
+		idx.Add(storage.NewFloatValue(floatVal), int64(i), 0)
+	}
+
+	// Generate random float range bounds
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	minVals := make([]float64, b.N)
+	maxVals := make([]float64, b.N)
+
+	for i := 0; i < b.N; i++ {
+		minVals[i] = float64(r.Intn(8000)) + r.Float64()
+		maxVals[i] = minVals[i] + float64(r.Intn(2000)) + 1.0 // Ensure range is at least 1
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		idx.GetRowIDsInRange(
+			storage.NewFloatValue(minVals[i]),
+			storage.NewFloatValue(maxVals[i]),
+			true, true,
+		)
+	}
+}
+
+// BenchmarkColumnarIndexSingleIntFilter benchmarks filtering on a single-column integer ColumnarIndex
+func BenchmarkColumnarIndexSingleIntFilter(b *testing.B) {
+	// Setup: create and populate index with test data
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"num",
+		0,
+		storage.INTEGER,
+		nil, 
+		false,
+	)
+
+	// Add 10000 rows with sequential integer data
+	for i := 0; i < 10000; i++ {
+		idx.Add(storage.NewIntegerValue(int64(i)), int64(i), 0)
+	}
+
+	// Create schema for expression tests
+	schema := storage.Schema{
+		TableName: "test_table",
+		Columns: []storage.SchemaColumn{
+			{Name: "num", Type: storage.INTEGER},
+		},
+	}
+
+	// Generate random filter values
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	filterValues := make([]int64, b.N)
+	operators := []storage.Operator{storage.GT, storage.LT, storage.EQ, storage.GTE, storage.LTE}
+
+	for i := 0; i < b.N; i++ {
+		filterValues[i] = int64(r.Intn(10000))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Create expression: num <op> value
+		op := operators[i%len(operators)]
+		expr := &expression.SimpleExpression{
+			Column:   "num",
+			Operator: op,
+			Value:    filterValues[i],
+		}
+		
+		// Create schema-aware expression
+		schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
+		schemaExpr.ColumnMap["num"] = 0 // Set column ID directly
+
+		idx.GetFilteredRowIDs(schemaExpr)
+	}
+}
+
+// BenchmarkColumnarIndexSingleTimestampFilter benchmarks filtering on a single-column timestamp ColumnarIndex
+func BenchmarkColumnarIndexSingleTimestampFilter(b *testing.B) {
+	// Setup: create and populate index with test data
+	idx := NewColumnarIndex(
+		"bench_idx", 
+		"bench_table",
+		"ts",
+		0,
+		storage.TIMESTAMP,
+		nil, 
+		false,
+	)
+
+	// Base timestamp
+	baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	
+	// Add 10000 rows with sequential timestamp data, 1 hour intervals
+	for i := 0; i < 10000; i++ {
+		ts := baseTime.Add(time.Duration(i) * time.Hour)
+		idx.Add(storage.NewTimestampValue(ts), int64(i), 0)
+	}
+
+	// Create schema for expression tests
+	schema := storage.Schema{
+		TableName: "test_table",
+		Columns: []storage.SchemaColumn{
+			{Name: "ts", Type: storage.TIMESTAMP},
+		},
+	}
+
+	// Generate random filter values
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	filterHours := make([]int, b.N)
+	operators := []storage.Operator{storage.GT, storage.LT, storage.EQ, storage.GTE, storage.LTE}
+
+	for i := 0; i < b.N; i++ {
+		filterHours[i] = r.Intn(10000)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Create expression: ts <op> value
+		op := operators[i%len(operators)]
+		filterTime := baseTime.Add(time.Duration(filterHours[i]) * time.Hour)
+		expr := &expression.SimpleExpression{
+			Column:   "ts",
+			Operator: op,
+			Value:    filterTime,
+		}
+		
+		// Create schema-aware expression
+		schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
+		schemaExpr.ColumnMap["ts"] = 0 // Set column ID directly
+
+		idx.GetFilteredRowIDs(schemaExpr)
+	}
 }
 
 // BenchmarkColumnarIndexSparseData tests performance with sparse data
