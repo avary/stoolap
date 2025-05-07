@@ -404,6 +404,144 @@ func (t *BTree[K, V]) mergeNodes(node *btreeNode[K, V], keyIndex int) {
 	node.children = node.children[:len(node.children)-1]
 }
 
+// Iterator provides a way to iterate through all key-value pairs in the BTree
+type Iterator[K Comparer[K], V any] struct {
+	// Stack of nodes and indices for traversal
+	stack [][2]interface{} // Stores [*btreeNode[K, V], int] pairs
+	
+	// Current key and value
+	currKey   K
+	currValue V
+	
+	// Valid flag
+	valid bool
+}
+
+// Iterate creates an iterator for the BTree
+func (t *BTree[K, V]) Iterate() *Iterator[K, V] {
+	iter := &Iterator[K, V]{
+		stack: make([][2]interface{}, 0, 8),
+		valid: false,
+	}
+	
+	// Initialize the iterator by positioning at the leftmost leaf
+	if t.root != nil {
+		iter.pushLeftEdge(t.root)
+	}
+	
+	// Position at the first element
+	iter.Next()
+	
+	return iter
+}
+
+// pushLeftEdge adds all nodes along the left edge of the subtree to the stack
+func (iter *Iterator[K, V]) pushLeftEdge(node *btreeNode[K, V]) {
+	for node != nil {
+		// Add node to stack with index -1 (before first key)
+		iter.stack = append(iter.stack, [2]interface{}{node, -1})
+		if node.isLeaf {
+			break
+		}
+		node = node.children[0]
+	}
+}
+
+// Next advances the iterator to the next key-value pair
+func (iter *Iterator[K, V]) Next() bool {
+	if len(iter.stack) == 0 {
+		iter.valid = false
+		return false
+	}
+	
+	// Get the top node and index from the stack
+	top := len(iter.stack) - 1
+	node := iter.stack[top][0].(*btreeNode[K, V])
+	index := iter.stack[top][1].(int) + 1 // Move to next index
+	
+	// Update the top of the stack
+	iter.stack[top][1] = index
+	
+	// Check if we've processed all keys in this node
+	if index >= len(node.keys) {
+		// Pop this node from the stack
+		iter.stack = iter.stack[:top]
+		// Try to move to the next element
+		return iter.Next()
+	}
+	
+	// Set the current key and value
+	iter.currKey = node.keys[index]
+	iter.currValue = node.values[index]
+	iter.valid = true
+	
+	// If not a leaf, push the child node to the right of this key
+	if !node.isLeaf && len(node.children) > index+1 {
+		iter.pushLeftEdge(node.children[index+1])
+	}
+	
+	return true
+}
+
+// Get returns the current key and value
+func (iter *Iterator[K, V]) Get() (K, V) {
+	return iter.currKey, iter.currValue
+}
+
+// Valid returns whether the iterator is positioned at a valid element
+func (iter *Iterator[K, V]) Valid() bool {
+	return iter.valid
+}
+
+// SeekGE positions the iterator at the first key greater than or equal to the target
+func (t *BTree[K, V]) SeekGE(target K) *Iterator[K, V] {
+	iter := &Iterator[K, V]{
+		stack: make([][2]interface{}, 0, 8),
+		valid: false,
+	}
+	
+	if t.root == nil {
+		return iter
+	}
+	
+	// Search for the target key
+	t.seekGENode(iter, t.root, target)
+	
+	// Position at the first valid element
+	iter.Next()
+	
+	return iter
+}
+
+// seekGENode recursively searches for a key >= target
+func (t *BTree[K, V]) seekGENode(iter *Iterator[K, V], node *btreeNode[K, V], target K) bool {
+	// Binary search to find the position for this key
+	i := t.findPosition(node, target)
+	
+	// Check if we found an exact match
+	if i < len(node.keys) && node.keys[i].Compare(target) == 0 {
+		// Found exact match, push this node with index i-1
+		iter.stack = append(iter.stack, [2]interface{}{node, i-1})
+		return true
+	}
+	
+	// If this is a leaf, add it to the stack with the appropriate index
+	if node.isLeaf {
+		if i > 0 {
+			// Position before the next key (or at the end)
+			iter.stack = append(iter.stack, [2]interface{}{node, i-1})
+		} else {
+			// Position at the beginning
+			iter.stack = append(iter.stack, [2]interface{}{node, -1})
+		}
+		return false
+	}
+	
+	// Recursively search in the appropriate child
+	iter.stack = append(iter.stack, [2]interface{}{node, i-1})
+	return t.seekGENode(iter, node.children[i], target)
+}
+
 // ForEach visits all keys in the tree in order
 func (t *BTree[K, V]) ForEach(callback func(key K, value V) bool) {
 	if t.root == nil {

@@ -29,7 +29,7 @@ type MultiColumnarIndex struct {
 
 	// valueTree stores a mapping from column values to row IDs
 	// The key is a multi-column value wrapper, and the value is a slice of row IDs
-	valueTree *btree.BTree[*MultiColumnKey, []int64]
+	valueTree *btree.BTree[MultiColumnValue, []int64]
 
 	// nullRowsByColumn tracks rows with NULL in each column
 	// The keys are column IDs, and values are slices of row IDs with NULL in that column
@@ -59,26 +59,20 @@ type MultiColumnarIndex struct {
 }
 
 // MultiColumnKey is a wrapper for multiple column values that can be used as a key in a B-tree
-type MultiColumnKey struct {
-	// Values are the column values for this key
-	Values []storage.ColumnValue
-
-	// DataTypes are the data types of the column values
-	DataTypes []storage.DataType
-}
+type MultiColumnValue []storage.ColumnValue
 
 // Compare implements btree.Comparer interface for B-tree operations
-func (k *MultiColumnKey) Compare(other *MultiColumnKey) int {
+func (k MultiColumnValue) Compare(other MultiColumnValue) int {
 	// Compare each column value in order
-	minLen := len(k.Values)
-	if len(other.Values) < minLen {
-		minLen = len(other.Values)
+	minLen := len(k)
+	if len(other) < minLen {
+		minLen = len(other)
 	}
 
 	for i := 0; i < minLen; i++ {
 		// Handle NULL values
-		aIsNull := k.Values[i] == nil || k.Values[i].IsNull()
-		bIsNull := other.Values[i] == nil || other.Values[i].IsNull()
+		aIsNull := k[i] == nil || k[i].IsNull()
+		bIsNull := other[i] == nil || other[i].IsNull()
 
 		// NULL values are considered less than non-NULL values
 		if aIsNull && !bIsNull {
@@ -92,11 +86,11 @@ func (k *MultiColumnKey) Compare(other *MultiColumnKey) int {
 		}
 
 		// Compare non-NULL values using ColumnValue.Compare
-		cmp, err := k.Values[i].Compare(other.Values[i])
+		cmp, err := k[i].Compare(other[i])
 		if err != nil {
 			// Handle error gracefully - use string comparison as fallback
-			aStr, _ := k.Values[i].AsString()
-			bStr, _ := other.Values[i].AsString()
+			aStr, _ := k[i].AsString()
+			bStr, _ := other[i].AsString()
 			if aStr < bStr {
 				return -1
 			}
@@ -111,10 +105,10 @@ func (k *MultiColumnKey) Compare(other *MultiColumnKey) int {
 
 	// If we get here, all common columns are equal
 	// The shorter key is considered less than the longer key
-	if len(k.Values) < len(other.Values) {
+	if len(k) < len(other) {
 		return -1
 	}
-	if len(k.Values) > len(other.Values) {
+	if len(k) > len(other) {
 		return 1
 	}
 
@@ -123,17 +117,17 @@ func (k *MultiColumnKey) Compare(other *MultiColumnKey) int {
 }
 
 // StartsWithPrefix checks if this key starts with the given prefix values
-func (k *MultiColumnKey) StartsWithPrefix(prefix *MultiColumnKey) bool {
+func (k MultiColumnValue) StartsWithPrefix(prefix MultiColumnValue) bool {
 	// Short circuit if prefix is longer than key
-	if len(prefix.Values) > len(k.Values) {
+	if len(prefix) > len(k) {
 		return false
 	}
 
 	// Check each column in the prefix
-	for i := 0; i < len(prefix.Values); i++ {
+	for i := 0; i < len(prefix); i++ {
 		// Handle NULL values
-		aIsNull := k.Values[i] == nil || k.Values[i].IsNull()
-		bIsNull := prefix.Values[i] == nil || prefix.Values[i].IsNull()
+		aIsNull := k[i] == nil || k[i].IsNull()
+		bIsNull := prefix[i] == nil || prefix[i].IsNull()
 
 		// If both NULL, continue
 		if aIsNull && bIsNull {
@@ -146,11 +140,11 @@ func (k *MultiColumnKey) StartsWithPrefix(prefix *MultiColumnKey) bool {
 		}
 
 		// Compare non-NULL values
-		cmp, err := k.Values[i].Compare(prefix.Values[i])
+		cmp, err := k[i].Compare(prefix[i])
 		if err != nil {
 			// Handle error gracefully - use string comparison as fallback
-			aStr, _ := k.Values[i].AsString()
-			bStr, _ := prefix.Values[i].AsString()
+			aStr, _ := k[i].AsString()
+			bStr, _ := prefix[i].AsString()
 			if aStr != bStr {
 				return false
 			}
@@ -183,7 +177,7 @@ func NewMultiColumnarIndex(name, tableName string,
 	}
 
 	// Create a custom B-tree with our MultiColumnKey
-	valueTree := btree.NewBTree[*MultiColumnKey, []int64]()
+	valueTree := btree.NewBTree[MultiColumnValue, []int64]()
 
 	idx := &MultiColumnarIndex{
 		name:                  name,
@@ -283,10 +277,7 @@ func (idx *MultiColumnarIndex) AddMulti(values []storage.ColumnValue, rowID int6
 	}
 
 	// Create a MultiColumnKey for these values
-	key := &MultiColumnKey{
-		Values:    values,
-		DataTypes: idx.dataTypes,
-	}
+	key := values
 
 	// For unique constraints, check if these values already exist
 	if idx.isUnique && !hasNull {
@@ -397,10 +388,7 @@ func (idx *MultiColumnarIndex) ForEachRowIDEqualMulti(values []storage.ColumnVal
 	}
 
 	// Create a full key to search for
-	key := &MultiColumnKey{
-		Values:    values,
-		DataTypes: idx.dataTypes,
-	}
+	key := values
 
 	// Lock for reading
 	idx.mutex.RLock()
@@ -463,13 +451,11 @@ func (idx *MultiColumnarIndex) ForEachRowIDPrefixMatch(prefixValues []storage.Co
 
 	// Create a prefix key to search for
 	prefixKey := GetMultiColumnKey(len(prefixValues))
-	prefixKey.Values = prefixKey.Values[:len(prefixValues)]
-	prefixKey.DataTypes = prefixKey.DataTypes[:len(prefixValues)]
+	prefixKey = prefixKey[:len(prefixValues)]
 	defer PutMultiColumnKey(prefixKey)
 
 	for i, val := range prefixValues {
-		prefixKey.Values[i] = val
-		prefixKey.DataTypes[i] = idx.dataTypes[i]
+		prefixKey[i] = val
 	}
 
 	// Lock for reading
@@ -484,7 +470,7 @@ func (idx *MultiColumnarIndex) ForEachRowIDPrefixMatch(prefixValues []storage.Co
 	}()
 
 	// For each entry in the tree
-	idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+	idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 		// Check if this key starts with our prefix
 		if key.StartsWithPrefix(prefixKey) {
 			// Process each row ID for this key
@@ -597,21 +583,13 @@ func (idx *MultiColumnarIndex) ForEachRowIDInRangeMulti(minValues, maxValues []s
 	}
 
 	// Create min and max keys to define our range
-	minKey := &MultiColumnKey{
-		Values:    make([]storage.ColumnValue, colCount),
-		DataTypes: make([]storage.DataType, colCount),
-	}
-	maxKey := &MultiColumnKey{
-		Values:    make([]storage.ColumnValue, colCount),
-		DataTypes: make([]storage.DataType, colCount),
-	}
+	minKey := make([]storage.ColumnValue, colCount)
+	maxKey := make([]storage.ColumnValue, colCount)
 
 	// Fill in the keys
 	for i := 0; i < colCount; i++ {
-		minKey.Values[i] = minValues[i]
-		minKey.DataTypes[i] = idx.dataTypes[i]
-		maxKey.Values[i] = maxValues[i]
-		maxKey.DataTypes[i] = idx.dataTypes[i]
+		minKey[i] = minValues[i]
+		maxKey[i] = maxValues[i]
 	}
 
 	// Lock for reading
@@ -626,24 +604,24 @@ func (idx *MultiColumnarIndex) ForEachRowIDInRangeMulti(minValues, maxValues []s
 	}()
 
 	// For each entry in the tree
-	idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+	idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 		// Check each value to see if it's in range
 		inRange := true
 
 		// Ensure the key has enough columns
-		if len(key.Values) < colCount {
+		if len(key) < colCount {
 			inRange = false
 		} else {
 			// Check each column to see if it's in range
 			for i := 0; i < colCount; i++ {
 				// Skip NULL values
-				if key.Values[i] == nil || key.Values[i].IsNull() {
+				if key[i] == nil || key[i].IsNull() {
 					continue
 				}
 
 				// Check min bound if specified
 				if minValues[i] != nil && !minValues[i].IsNull() {
-					cmp, err := key.Values[i].Compare(minValues[i])
+					cmp, err := key[i].Compare(minValues[i])
 					if err != nil || cmp < 0 || (cmp == 0 && !includeMin) {
 						inRange = false
 						break
@@ -652,7 +630,7 @@ func (idx *MultiColumnarIndex) ForEachRowIDInRangeMulti(minValues, maxValues []s
 
 				// Check max bound if specified
 				if maxValues[i] != nil && !maxValues[i].IsNull() {
-					cmp, err := key.Values[i].Compare(maxValues[i])
+					cmp, err := key[i].Compare(maxValues[i])
 					if err != nil || cmp > 0 || (cmp == 0 && !includeMax) {
 						inRange = false
 						break
@@ -711,10 +689,10 @@ func (idx *MultiColumnarIndex) ForEachLatestBefore(timestamp time.Time, callback
 	}()
 
 	// For each entry in the tree
-	idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+	idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 		// Check if the key's timestamp is <= the target timestamp
-		if len(key.Values) > 0 && key.Values[0] != nil && !key.Values[0].IsNull() {
-			if keyTime, ok := key.Values[0].AsTimestamp(); ok {
+		if len(key) > 0 && key[0] != nil && !key[0].IsNull() {
+			if keyTime, ok := key[0].AsTimestamp(); ok {
 				// Process rows with timestamp <= the target
 				if !keyTime.After(timestamp) {
 					for _, rowID := range rowIDs {
@@ -810,10 +788,7 @@ func (idx *MultiColumnarIndex) RemoveMulti(values []storage.ColumnValue, rowID i
 	}
 
 	// Create a key to search for
-	key := &MultiColumnKey{
-		Values:    values,
-		DataTypes: idx.dataTypes,
-	}
+	key := values
 
 	// Look up rows with this key
 	existingRows, found := idx.valueTree.Search(key)
@@ -976,9 +951,9 @@ func (idx *MultiColumnarIndex) forEachRowIDFirstColumnPredicate(expr *expression
 		}()
 
 		// For each entry in the tree
-		idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+		idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 			// If the first column is not NULL, process all row IDs
-			if !(key.Values[0] == nil || key.Values[0].IsNull()) {
+			if !(key[0] == nil || key[0].IsNull()) {
 				for _, rowID := range rowIDs {
 					// Skip if it's in the NULL set or already processed
 					if _, isNull := nullRowsSet[rowID]; isNull {
@@ -1041,14 +1016,14 @@ func (idx *MultiColumnarIndex) forEachRowIDByColumnPredicate(colIdx int, expr *e
 	}()
 
 	// For each entry in the tree
-	idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+	idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 		// Skip if the key doesn't have enough columns
-		if colIdx >= len(key.Values) {
+		if colIdx >= len(key) {
 			return true
 		}
 
 		// Apply predicate to the column value
-		if predicate(key.Values[colIdx]) {
+		if predicate(key[colIdx]) {
 			// Process each row ID for this key
 			for _, rowID := range rowIDs {
 				// Skip if already processed (deduplication)
@@ -1132,7 +1107,7 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 			idx.mutex.RLock()
 
 			// Get pooled objects
-			rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[*MultiColumnKey])
+			rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[MultiColumnValue])
 			seen := int64StructMapPool.Get().(*fastmap.Int64Map[struct{}])
 
 			// Get a pre-allocated slice from the pool for candidate rows
@@ -1140,18 +1115,16 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 
 			// Create a prefix key to search for
 			prefixKey := GetMultiColumnKey(len(prefixValues))
-			prefixKey.Values = prefixKey.Values[:len(prefixValues)]
-			prefixKey.DataTypes = prefixKey.DataTypes[:len(prefixValues)]
+			prefixKey = prefixKey[:len(prefixValues)]
 			defer PutMultiColumnKey(prefixKey)
 
 			for i, val := range prefixValues {
-				prefixKey.Values[i] = val
-				prefixKey.DataTypes[i] = idx.dataTypes[i]
+				prefixKey[i] = val
 			}
 
 			// Find all rows matching the prefix in a single traversal
 			// Use a fixed closure to avoid recreating the function for each ForEach call
-			idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+			idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 				if key.StartsWithPrefix(prefixKey) {
 					// Reuse key reference for all rows to avoid storing multiple copies
 					k := key // Local reference to avoid multiple map lookups
@@ -1264,13 +1237,13 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 
 				candidateRows := GetCandidateRows()
 
-				rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[*MultiColumnKey])
+				rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[MultiColumnValue])
 				seen := int64StructMapPool.Get().(*fastmap.Int64Map[struct{}])
 
 				// Find all rows in the range in a single traversal
-				idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+				idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 					// Skip if the key doesn't have any columns
-					if len(key.Values) == 0 {
+					if len(key) == 0 {
 						return true
 					}
 
@@ -1279,7 +1252,7 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 
 					// Check min bound if specified
 					if minValue != nil && !minValue.IsNull() {
-						cmp, err := key.Values[0].Compare(minValue)
+						cmp, err := key[0].Compare(minValue)
 						if err != nil || cmp < 0 || (cmp == 0 && !includeMin) {
 							inRange = false
 						}
@@ -1287,7 +1260,7 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 
 					// Check max bound if specified
 					if inRange && maxValue != nil && !maxValue.IsNull() {
-						cmp, err := key.Values[0].Compare(maxValue)
+						cmp, err := key[0].Compare(maxValue)
 						if err != nil || cmp > 0 || (cmp == 0 && !includeMax) {
 							inRange = false
 						}
@@ -1335,7 +1308,7 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 	idx.mutex.RLock()
 
 	// Build a mapping of all row IDs to their keys
-	rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[*MultiColumnKey])
+	rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[MultiColumnValue])
 	allRows := int64StructMapPool.Get().(*fastmap.Int64Map[struct{}])
 
 	defer func() {
@@ -1346,7 +1319,7 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 		int64StructMapPool.Put(allRows)
 	}()
 
-	idx.valueTree.ForEach(func(key *MultiColumnKey, rowIDs []int64) bool {
+	idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
 		for _, rowID := range rowIDs {
 			rowToKey.Put(rowID, key)
 			allRows.Put(rowID, struct{}{})
@@ -1396,12 +1369,12 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 		candidateRows := GetCandidateRows()
 		for rowID := range allRows.Keys() {
 			key, ok := rowToKey.Get(rowID)
-			if !ok || colIdx >= len(key.Values) {
+			if !ok || colIdx >= len(key) {
 				continue
 			}
 
 			// Apply the selective predicate
-			if predicate(key.Values[colIdx]) {
+			if predicate(key[colIdx]) {
 				candidateRows = append(candidateRows, rowID)
 			}
 		}
@@ -1429,7 +1402,7 @@ func (idx *MultiColumnarIndex) matchesRemainingConditions(
 	rowID int64,
 	conditions map[string]*expression.SimpleExpression,
 	alreadyApplied []storage.ColumnValue,
-	rowToKey *fastmap.Int64Map[*MultiColumnKey]) bool {
+	rowToKey *fastmap.Int64Map[MultiColumnValue]) bool {
 
 	// If no conditions to check, return true
 	if len(conditions) == 0 {
@@ -1525,12 +1498,12 @@ func (idx *MultiColumnarIndex) matchesRemainingConditions(
 		dataType := predInfo.dataType
 
 		// Skip if column out of range
-		if colIdx >= len(key.Values) {
+		if colIdx >= len(key) {
 			return false
 		}
 
 		// Get the column value from the key
-		colValue := key.Values[colIdx]
+		colValue := key[colIdx]
 
 		exprValue := storage.ValueToTypedValue(expr.Value, dataType)
 
@@ -1757,7 +1730,7 @@ func (idx *MultiColumnarIndex) Build() error {
 	idx.mutex.Lock()
 
 	// Clear multi-column data structures
-	idx.valueTree = btree.NewBTree[*MultiColumnKey, []int64]()
+	idx.valueTree = btree.NewBTree[MultiColumnValue, []int64]()
 
 	// Initialize null tracking for each column
 	for colID := range idx.nullRowsByColumn {
@@ -1841,16 +1814,13 @@ var int64StructMapPool = sync.Pool{
 
 var int64KeyMapPool = sync.Pool{
 	New: func() interface{} {
-		return fastmap.NewInt64Map[*MultiColumnKey](1000)
+		return fastmap.NewInt64Map[MultiColumnValue](1000)
 	},
 }
 
 var multiColumnKeyPool = sync.Pool{
 	New: func() interface{} {
-		return &MultiColumnKey{
-			Values:    make([]storage.ColumnValue, 0, 8), // Initial capacity of 8
-			DataTypes: make([]storage.DataType, 0, 8),
-		}
+		return make(MultiColumnValue, 0, 8)
 	},
 }
 
@@ -1876,24 +1846,22 @@ func PutCandidateRows(candidates []int64) {
 }
 
 // GetMultiColumnKey gets a MultiColumnKey from the pool or creates a new one
-func GetMultiColumnKey(capacity int) *MultiColumnKey {
-	key := multiColumnKeyPool.Get().(*MultiColumnKey)
+func GetMultiColumnKey(capacity int) MultiColumnValue {
+	key := multiColumnKeyPool.Get().(MultiColumnValue)
 	// Ensure capacity
-	if cap(key.Values) < capacity {
-		key.Values = make([]storage.ColumnValue, 0, capacity)
-		key.DataTypes = make([]storage.DataType, 0, capacity)
+	if cap(key) < capacity {
+		key = make(MultiColumnValue, 0, capacity)
 	}
 	// Reset lengths
-	key.Values = key.Values[:0]
-	key.DataTypes = key.DataTypes[:0]
+	key = key[:0]
 	return key
 }
 
 // PutMultiColumnKey returns a MultiColumnKey to the pool
-func PutMultiColumnKey(key *MultiColumnKey) {
+func PutMultiColumnKey(key MultiColumnValue) {
 	// Clear references to help GC
-	for i := range key.Values {
-		key.Values[i] = nil
+	for i := range key {
+		key[i] = nil
 	}
 	multiColumnKeyPool.Put(key)
 }
