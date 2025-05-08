@@ -46,13 +46,6 @@ type MultiColumnarIndex struct {
 
 	// isUnique indicates if this is a unique index
 	isUnique bool
-
-	// timeBucketGranularity specifies the granularity for time bucketing
-	// This is only used for timestamp columns
-	timeBucketGranularity TimeBucketGranularity
-
-	// enableTimeBucketing indicates whether time bucketing is enabled
-	enableTimeBucketing bool
 }
 
 // MultiColumnKey is a wrapper for multiple column values that can be used as a key in a B-tree
@@ -177,43 +170,19 @@ func NewMultiColumnarIndex(name, tableName string,
 	valueTree := btree.NewBTree[MultiColumnValue, []int64]()
 
 	idx := &MultiColumnarIndex{
-		name:                  name,
-		columnNames:           columnNames,
-		columnIDs:             columnIDs,
-		dataTypes:             dataTypes,
-		valueTree:             valueTree,
-		nullRowsByColumn:      nullRowsByColumn,
-		mutex:                 sync.RWMutex{},
-		tableName:             tableName,
-		versionStore:          versionStore,
-		isUnique:              isUnique,
-		timeBucketGranularity: DayBucket,
-		enableTimeBucketing:   false,
+		name:             name,
+		columnNames:      columnNames,
+		columnIDs:        columnIDs,
+		dataTypes:        dataTypes,
+		valueTree:        valueTree,
+		nullRowsByColumn: nullRowsByColumn,
+		mutex:            sync.RWMutex{},
+		tableName:        tableName,
+		versionStore:     versionStore,
+		isUnique:         isUnique,
 	}
 
 	return idx
-}
-
-// EnableTimeBucketing enables time bucketing for timestamp columns
-func (idx *MultiColumnarIndex) EnableTimeBucketing(granularity TimeBucketGranularity) {
-	// Only enable for single-column timestamp indexes or when first column is timestamp
-	if len(idx.dataTypes) == 0 || idx.dataTypes[0] != storage.TIMESTAMP {
-		return
-	}
-
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	idx.timeBucketGranularity = granularity
-	idx.enableTimeBucketing = true
-}
-
-// DisableTimeBucketing disables time bucketing
-func (idx *MultiColumnarIndex) DisableTimeBucketing() {
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	idx.enableTimeBucketing = false
 }
 
 // Name returns the index name - implements IndexInterface

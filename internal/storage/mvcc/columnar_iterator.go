@@ -1,6 +1,7 @@
 package mvcc
 
 import (
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 )
@@ -24,7 +25,7 @@ type ColumnarIndexIterator struct {
 	// For pre-fetching
 	prefetchRowIDs []int64
 	prefetchIndex  int
-	prefetchMap    map[int64]storage.Row
+	prefetchMap    *fastmap.Int64Map[storage.Row]
 }
 
 // NewColumnarIndexIterator creates an efficient iterator over the matched row IDs
@@ -47,7 +48,7 @@ func NewColumnarIndexIterator(
 		batchSize:     100, // Tune based on testing
 		prefetchIndex: 0,
 		projectedRow:  make(storage.Row, len(columnIndices)),
-		prefetchMap:   make(map[int64]storage.Row, 100),
+		prefetchMap:   GetRowMap(),
 	}
 }
 
@@ -68,9 +69,7 @@ func (it *ColumnarIndexIterator) Next() bool {
 		}
 
 		// Clear previous batch data
-		for k := range it.prefetchMap {
-			delete(it.prefetchMap, k)
-		}
+		it.prefetchMap.Clear()
 
 		// Prefetch batch of IDs
 		endIdx := it.idIndex + 1 + batchSize
@@ -87,7 +86,7 @@ func (it *ColumnarIndexIterator) Next() bool {
 		// Extract non-deleted rows
 		versions.ForEach(func(rowID int64, version *RowVersion) bool {
 			if !version.IsDeleted {
-				it.prefetchMap[rowID] = version.Data
+				it.prefetchMap.Put(rowID, version.Data)
 			}
 
 			return true
@@ -97,7 +96,7 @@ func (it *ColumnarIndexIterator) Next() bool {
 		ReturnVisibleVersionMap(versions)
 
 		// If nothing found, we're done
-		if len(it.prefetchMap) == 0 {
+		if it.prefetchMap.Len() == 0 {
 			return false
 		}
 	}
@@ -109,7 +108,7 @@ func (it *ColumnarIndexIterator) Next() bool {
 		it.idIndex++
 
 		// Check if this row is in our prefetch map
-		if row, exists := it.prefetchMap[rowID]; exists {
+		if row, exists := it.prefetchMap.Get(rowID); exists {
 			it.currentRow = row
 			return true
 		}
@@ -143,10 +142,14 @@ func (it *ColumnarIndexIterator) Err() error {
 func (it *ColumnarIndexIterator) Close() error {
 	clear(it.projectedRow)
 	it.projectedRow = it.projectedRow[:0]
+
 	it.rowIDs = nil
 	it.prefetchRowIDs = nil
 	it.currentRow = nil
-	it.prefetchMap = nil
+
+	it.prefetchMap.Clear()
+	PutRowMap(it.prefetchMap)
+
 	return nil
 }
 
@@ -217,8 +220,10 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok &&
 		simpleExpr.Column == index.columnName && simpleExpr.Operator == storage.EQ {
 
+		exprValue := storage.ValueToPooledColumnValue(simpleExpr.Value, index.dataType)
+		defer storage.PutPooledColumnValue(exprValue)
 		// Fast equality match using our B-tree implementation
-		return index.GetRowIDsEqual([]storage.ColumnValue{storage.ValueToColumnValue(simpleExpr.Value, index.dataType)})
+		return index.GetRowIDsEqual([]storage.ColumnValue{exprValue})
 	}
 
 	// For simple expressions on the indexed column
@@ -232,10 +237,12 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 			var includeMin, includeMax bool
 
 			if simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE {
-				minValue = storage.ValueToColumnValue(simpleExpr.Value, index.dataType)
+				minValue = storage.ValueToPooledColumnValue(simpleExpr.Value, index.dataType)
+				defer storage.PutPooledColumnValue(minValue)
 				includeMin = simpleExpr.Operator == storage.GTE
 			} else {
-				maxValue = storage.ValueToColumnValue(simpleExpr.Value, index.dataType)
+				maxValue = storage.ValueToPooledColumnValue(simpleExpr.Value, index.dataType)
+				defer storage.PutPooledColumnValue(maxValue)
 				includeMax = simpleExpr.Operator == storage.LTE
 			}
 
@@ -266,9 +273,11 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 			// Check if expr1 is a lower bound and expr2 is an upper bound
 			if (expr1.Operator == storage.GT || expr1.Operator == storage.GTE) &&
 				(expr2.Operator == storage.LT || expr2.Operator == storage.LTE) {
-				minValue = storage.ValueToColumnValue(expr1.Value, index.dataType)
+				minValue = storage.ValueToPooledColumnValue(expr1.Value, index.dataType)
+				defer storage.PutPooledColumnValue(minValue)
 				includeMin = expr1.Operator == storage.GTE
-				maxValue = storage.ValueToColumnValue(expr2.Value, index.dataType)
+				maxValue = storage.ValueToPooledColumnValue(expr2.Value, index.dataType)
+				defer storage.PutPooledColumnValue(maxValue)
 				includeMax = expr2.Operator == storage.LTE
 				hasRange = true
 			}
@@ -276,9 +285,11 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 			// Check if expr2 is a lower bound and expr1 is an upper bound
 			if (expr2.Operator == storage.GT || expr2.Operator == storage.GTE) &&
 				(expr1.Operator == storage.LT || expr1.Operator == storage.LTE) {
-				minValue = storage.ValueToColumnValue(expr2.Value, index.dataType)
+				minValue = storage.ValueToPooledColumnValue(expr2.Value, index.dataType)
+				defer storage.PutPooledColumnValue(minValue)
 				includeMin = expr2.Operator == storage.GTE
-				maxValue = storage.ValueToColumnValue(expr1.Value, index.dataType)
+				maxValue = storage.ValueToPooledColumnValue(expr1.Value, index.dataType)
+				defer storage.PutPooledColumnValue(maxValue)
 				includeMax = expr1.Operator == storage.LTE
 				hasRange = true
 			}

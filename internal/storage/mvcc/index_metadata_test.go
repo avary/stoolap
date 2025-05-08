@@ -158,10 +158,6 @@ func TestMultipleIndexesSerialization(t *testing.T) {
 
 	// Check timestamp index
 	if tsIdx, ok := newVS.indexes["timestamp"].(*ColumnarIndex); ok {
-		// Verify the timestamp index has time bucketing enabled
-		if !tsIdx.enableTimeBucketing {
-			t.Errorf("Expected time bucketing to be enabled for timestamp index")
-		}
 		if tsIdx.dataType != storage.TypeTimestamp {
 			t.Errorf("Expected timestamp index data type to be TypeTimestamp, got %v", tsIdx.dataType)
 		}

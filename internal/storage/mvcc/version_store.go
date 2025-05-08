@@ -28,8 +28,6 @@ type VersionStore struct {
 	indexes    map[string]storage.Index
 	indexMutex sync.RWMutex
 
-	versionsMu sync.RWMutex // For version operations
-
 	closed atomic.Bool // Whether this store has been closed - using atomic for better performance
 
 	// Auto-increment counter for tables without explicit PK
@@ -1080,9 +1078,7 @@ func (vs *VersionStore) Close() error {
 	vs.indexMutex.Unlock()
 
 	// Clear all versions to release memory
-	vs.versionsMu.Lock()
 	vs.versions = nil
-	vs.versionsMu.Unlock()
 
 	// The closed state is already set to true from the CompareAndSwap above
 	return nil

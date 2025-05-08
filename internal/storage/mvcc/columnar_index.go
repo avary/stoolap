@@ -111,8 +111,6 @@ func (n *btreeNode) rangeSearch(min, max storage.ColumnValue, includeMin, includ
 
 // equalSearch finds all rowIDs with the given key
 func (n *btreeNode) equalSearch(key storage.ColumnValue, result *[]int64) {
-	defer storage.PutPooledColumnValue(key)
-
 	i := n.findIndex(key)
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
 		// For single match optimization
@@ -226,22 +224,6 @@ func compareColumnValues(aVal, bVal storage.ColumnValue) int {
 	return cmp
 }
 
-// TimeBucketGranularity represents a time bucketing granularity
-type TimeBucketGranularity int
-
-const (
-	// HourBucket buckets timestamps by hour
-	HourBucket TimeBucketGranularity = iota
-	// DayBucket buckets timestamps by day
-	DayBucket
-	// WeekBucket buckets timestamps by week
-	WeekBucket
-	// MonthBucket buckets timestamps by month
-	MonthBucket
-	// YearBucket buckets timestamps by year
-	YearBucket
-)
-
 // ColumnarIndex represents a column-oriented index optimized for range queries
 // using a B-tree data structure for efficient lookups and range scans
 type ColumnarIndex struct {
@@ -275,13 +257,6 @@ type ColumnarIndex struct {
 
 	// isUnique indicates if this is a unique index
 	isUnique bool
-
-	// timeBucketGranularity specifies the granularity for time bucketing
-	// This is only used for timestamp columns
-	timeBucketGranularity TimeBucketGranularity
-
-	// enableTimeBucketing indicates whether time bucketing is enabled
-	enableTimeBucketing bool
 }
 
 // NewColumnarIndex creates a new ColumnarIndex
@@ -290,48 +265,19 @@ func NewColumnarIndex(name, tableName, columnName string,
 	versionStore *VersionStore, isUnique bool) *ColumnarIndex {
 
 	idx := &ColumnarIndex{
-		name:                  name,
-		columnName:            columnName,
-		columnID:              columnID,
-		dataType:              dataType,
-		valueTree:             newBTree(compareColumnValues), // Use single tree with ColumnValue comparator
-		nullRows:              make([]int64, 0, 16),
-		mutex:                 sync.RWMutex{},
-		tableName:             tableName,
-		versionStore:          versionStore,
-		isUnique:              isUnique,
-		timeBucketGranularity: DayBucket, // Default to day bucketing
-		enableTimeBucketing:   false,     // Disabled by default
-	}
-
-	// Auto-enable time bucketing for timestamp columns
-	if dataType == storage.TIMESTAMP {
-		idx.enableTimeBucketing = true
+		name:         name,
+		columnName:   columnName,
+		columnID:     columnID,
+		dataType:     dataType,
+		valueTree:    newBTree(compareColumnValues), // Use single tree with ColumnValue comparator
+		nullRows:     make([]int64, 0, 16),
+		mutex:        sync.RWMutex{},
+		tableName:    tableName,
+		versionStore: versionStore,
+		isUnique:     isUnique,
 	}
 
 	return idx
-}
-
-// EnableTimeBucketing enables time bucketing for timestamp columns
-func (idx *ColumnarIndex) EnableTimeBucketing(granularity TimeBucketGranularity) {
-	// Only enable for timestamp columns
-	if idx.dataType != storage.TIMESTAMP {
-		return
-	}
-
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	idx.timeBucketGranularity = granularity
-	idx.enableTimeBucketing = true
-}
-
-// DisableTimeBucketing disables time bucketing
-func (idx *ColumnarIndex) DisableTimeBucketing() {
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	idx.enableTimeBucketing = false
 }
 
 // Name returns the index name - implements IndexInterface
@@ -599,6 +545,7 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			case storage.EQ:
 				// Convert the expression value to a ColumnValue with the correct type
 				valueCol := storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
+				defer storage.PutPooledColumnValue(valueCol)
 				return idx.GetRowIDsEqual([]storage.ColumnValue{valueCol})
 
 			case storage.GT, storage.GTE, storage.LT, storage.LTE:
@@ -608,9 +555,11 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 
 				if simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE {
 					minValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
+					defer storage.PutPooledColumnValue(minValue)
 					includeMin = simpleExpr.Operator == storage.GTE
 				} else {
 					maxValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
+					defer storage.PutPooledColumnValue(maxValue)
 					includeMax = simpleExpr.Operator == storage.LTE
 				}
 
@@ -653,8 +602,10 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			if (expr1.Operator == storage.GT || expr1.Operator == storage.GTE) &&
 				(expr2.Operator == storage.LT || expr2.Operator == storage.LTE) {
 				minValue = storage.ValueToPooledColumnValue(expr1.Value, idx.dataType)
+				defer storage.PutPooledColumnValue(minValue)
 				includeMin = expr1.Operator == storage.GTE
 				maxValue = storage.ValueToPooledColumnValue(expr2.Value, idx.dataType)
+				defer storage.PutPooledColumnValue(maxValue)
 				includeMax = expr2.Operator == storage.LTE
 				hasRange = true
 			}
@@ -663,8 +614,10 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			if (expr2.Operator == storage.GT || expr2.Operator == storage.GTE) &&
 				(expr1.Operator == storage.LT || expr1.Operator == storage.LTE) {
 				minValue = storage.ValueToPooledColumnValue(expr2.Value, idx.dataType)
+				defer storage.PutPooledColumnValue(minValue)
 				includeMin = expr2.Operator == storage.GTE
 				maxValue = storage.ValueToPooledColumnValue(expr1.Value, idx.dataType)
+				defer storage.PutPooledColumnValue(maxValue)
 				includeMax = expr1.Operator == storage.LTE
 				hasRange = true
 			}

@@ -3,6 +3,7 @@ package mvcc
 import (
 	"testing"
 
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
@@ -43,7 +44,7 @@ func TestColumnarIndexIterator(t *testing.T) {
 			idIndex:       -1,
 			batchSize:     25, // Small batch size to test multiple batches
 			prefetchIndex: 0,
-			prefetchMap:   make(map[int64]storage.Row, 25),
+			prefetchMap:   fastmap.NewInt64Map[storage.Row](25),
 		}
 
 		// Count rows and verify all 200 rows are returned
@@ -120,7 +121,7 @@ func TestColumnarIndexIterator(t *testing.T) {
 			idIndex:       -1,
 			batchSize:     30,
 			prefetchIndex: 0,
-			prefetchMap:   make(map[int64]storage.Row, 30),
+			prefetchMap:   fastmap.NewInt64Map[storage.Row](30),
 			projectedRow:  make(storage.Row, 1),
 		}
 
@@ -167,7 +168,7 @@ func TestColumnarIndexIterator(t *testing.T) {
 			idIndex:       -1,
 			batchSize:     30,
 			prefetchIndex: 0,
-			prefetchMap:   make(map[int64]storage.Row, 30),
+			prefetchMap:   fastmap.NewInt64Map[storage.Row](30),
 		}
 
 		// Should return no rows
@@ -194,7 +195,7 @@ func TestColumnarIndexIterator(t *testing.T) {
 			idIndex:       -1,
 			batchSize:     30,
 			prefetchIndex: 0,
-			prefetchMap:   make(map[int64]storage.Row, 30),
+			prefetchMap:   fastmap.NewInt64Map[storage.Row](30),
 		}
 
 		// Should return no rows

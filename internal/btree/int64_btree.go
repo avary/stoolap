@@ -107,7 +107,7 @@ func (t *Int64BTree[V]) binarySearch(node *bTreeNode[V], key int64) int {
 
 // Insert adds or updates a key-value pair in the tree
 // Returns true if a new key was inserted, false if an existing key was updated
-func (t *Int64BTree[V]) Insert(key int64, value V) bool {
+func (t *Int64BTree[V]) Insert(key int64, value V) {
 	// Special case for root overflow
 	if t.root.keyCount == bTreeMaxKeys {
 		// Create a new root
@@ -129,7 +129,6 @@ func (t *Int64BTree[V]) Insert(key int64, value V) bool {
 	if wasInserted {
 		t.size++
 	}
-	return wasInserted
 }
 
 // insertNonFull inserts a key-value pair into a non-full node
