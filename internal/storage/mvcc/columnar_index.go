@@ -2,6 +2,7 @@
 package mvcc
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -275,9 +276,6 @@ type ColumnarIndex struct {
 	// isUnique indicates if this is a unique index
 	isUnique bool
 
-	// isPrimaryKey indicates if this is the primary key column
-	isPrimaryKey bool
-
 	// timeBucketGranularity specifies the granularity for time bucketing
 	// This is only used for timestamp columns
 	timeBucketGranularity TimeBucketGranularity
@@ -302,7 +300,6 @@ func NewColumnarIndex(name, tableName, columnName string,
 		tableName:             tableName,
 		versionStore:          versionStore,
 		isUnique:              isUnique,
-		isPrimaryKey:          false,     // Will be set during Build based on schema
 		timeBucketGranularity: DayBucket, // Default to day bucketing
 		enableTimeBucketing:   false,     // Disabled by default
 	}
@@ -342,6 +339,11 @@ func (idx *ColumnarIndex) Name() string {
 	return idx.name
 }
 
+// TableName returns the name of the table this index belongs to - implements IndexInterface
+func (idx *ColumnarIndex) TableName() string {
+	return idx.tableName
+}
+
 // IndexType returns the type of the index - implements IndexInterface
 func (idx *ColumnarIndex) IndexType() storage.IndexType {
 	return storage.ColumnarIndex
@@ -352,9 +354,14 @@ func (idx *ColumnarIndex) ColumnNames() []string {
 	return []string{idx.columnName}
 }
 
-// ColumnID returns the column ID for this index
-func (idx *ColumnarIndex) ColumnID() int {
-	return idx.columnID
+// ColumnIDs returns the column IDs for this index - implements IndexInterface
+func (idx *ColumnarIndex) ColumnIDs() []int {
+	return []int{idx.columnID}
+}
+
+// DataType returns the data type of the column this index is for - implements IndexInterface
+func (idx *ColumnarIndex) DataTypes() []storage.DataType {
+	return []storage.DataType{idx.dataType}
 }
 
 // HasUniqueValue checks if a value already exists in a unique index
@@ -381,7 +388,13 @@ func (idx *ColumnarIndex) HasUniqueValue(value storage.ColumnValue) bool {
 }
 
 // Add adds a value to the index with the given row ID - implements IndexInterface
-func (idx *ColumnarIndex) Add(value storage.ColumnValue, rowID int64, refID int64) error {
+func (idx *ColumnarIndex) Add(values []storage.ColumnValue, rowID int64, refID int64) error {
+	// For columnar index, we only support single column
+	if len(values) != 1 {
+		return fmt.Errorf("expected 1 value for column %s, got %d values", idx.columnName, len(values))
+	}
+
+	value := values[0]
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
@@ -411,19 +424,15 @@ func (idx *ColumnarIndex) Add(value storage.ColumnValue, rowID int64, refID int6
 	return nil
 }
 
-// AddMulti adds multiple values to the index for multi-column indexes - implements IndexInterface
-func (idx *ColumnarIndex) AddMulti(values []storage.ColumnValue, rowID int64, refID int64) error {
+// Find finds all pairs where the column equals the given value - implements Index interface
+func (idx *ColumnarIndex) Find(values []storage.ColumnValue) ([]storage.IndexEntry, error) {
 	// For columnar index, we only support single column
 	if len(values) != 1 {
-		return nil
+		return nil, fmt.Errorf("expected 1 value for column %s, got %d values", idx.columnName, len(values))
 	}
-	return idx.Add(values[0], rowID, refID)
-}
 
-// Find finds all pairs where the column equals the given value - implements Index interface
-func (idx *ColumnarIndex) Find(value storage.ColumnValue) ([]storage.IndexEntry, error) {
 	// Get matching row IDs
-	rowIDs := idx.GetRowIDsEqual(value)
+	rowIDs := idx.GetRowIDsEqual(values)
 	if len(rowIDs) == 0 {
 		return nil, nil
 	}
@@ -437,8 +446,14 @@ func (idx *ColumnarIndex) Find(value storage.ColumnValue) ([]storage.IndexEntry,
 	return result, nil
 }
 
-// GetRowIDsEqual returns row IDs with the given value
-func (idx *ColumnarIndex) GetRowIDsEqual(value storage.ColumnValue) []int64 {
+// GetRowIDsEqual returns row IDs with the given values
+func (idx *ColumnarIndex) GetRowIDsEqual(values []storage.ColumnValue) []int64 {
+	// For columnar index, we only support single column
+	if len(values) != 1 {
+		return []int64{}
+	}
+
+	value := values[0]
 	// Fast path for common equality checks
 	if value == nil || value.IsNull() {
 		// NULL value check
@@ -466,11 +481,10 @@ func (idx *ColumnarIndex) GetRowIDsEqual(value storage.ColumnValue) []int64 {
 }
 
 // FindRange finds all row IDs where the column is in the given range
-func (idx *ColumnarIndex) FindRange(minValue, maxValue storage.ColumnValue,
-	includeMin, includeMax bool) ([]storage.IndexEntry, error) {
-
+func (idx *ColumnarIndex) FindRange(min, max []storage.ColumnValue,
+	minInclusive, maxInclusive bool) ([]storage.IndexEntry, error) {
 	// Get row IDs in the range
-	rowIDs := idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+	rowIDs := idx.GetRowIDsInRange(min, max, minInclusive, maxInclusive)
 	if len(rowIDs) == 0 {
 		return nil, nil
 	}
@@ -485,8 +499,18 @@ func (idx *ColumnarIndex) FindRange(minValue, maxValue storage.ColumnValue,
 }
 
 // GetRowIDsInRange returns row IDs with values in the given range
-func (idx *ColumnarIndex) GetRowIDsInRange(minValue, maxValue storage.ColumnValue,
+func (idx *ColumnarIndex) GetRowIDsInRange(minValues, maxValues []storage.ColumnValue,
 	includeMin, includeMax bool) []int64 {
+
+	var minValue, maxValue storage.ColumnValue
+	if len(minValues) == 1 {
+		minValue = minValues[0]
+	}
+
+	if len(maxValues) == 1 {
+		maxValue = maxValues[0]
+	}
+
 	idx.mutex.RLock()
 	defer idx.mutex.RUnlock()
 
@@ -510,7 +534,7 @@ func (idx *ColumnarIndex) GetLatestBefore(timestamp time.Time) []int64 {
 	tsValue := storage.GetPooledTimestampValue(timestamp)
 
 	// Use range query with max value as the timestamp and no min value
-	return idx.GetRowIDsInRange(nil, tsValue, false, true) // Up to and including timestamp
+	return idx.GetRowIDsInRange(nil, []storage.ColumnValue{tsValue}, false, true) // Up to and including timestamp
 }
 
 // GetRecentTimeRange finds row IDs within a recent time window (e.g., last hour, day)
@@ -527,11 +551,17 @@ func (idx *ColumnarIndex) GetRecentTimeRange(duration time.Duration) []int64 {
 	endValue := storage.GetPooledTimestampValue(now)
 
 	// Get rows in the recent time range
-	return idx.GetRowIDsInRange(startValue, endValue, true, true)
+	return idx.GetRowIDsInRange([]storage.ColumnValue{startValue}, []storage.ColumnValue{endValue}, true, true)
 }
 
 // Remove removes a value from the index - implements Index interface
-func (idx *ColumnarIndex) Remove(value storage.ColumnValue, rowID int64, refID int64) error {
+func (idx *ColumnarIndex) Remove(values []storage.ColumnValue, rowID int64, refID int64) error {
+	// For columnar index, we only support single column
+	if len(values) != 1 {
+		return fmt.Errorf("expected 1 value for column %s, got %d values", idx.columnName, len(values))
+	}
+
+	value := values[0]
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
@@ -569,7 +599,7 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			case storage.EQ:
 				// Convert the expression value to a ColumnValue with the correct type
 				valueCol := storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataType)
-				return idx.GetRowIDsEqual(valueCol)
+				return idx.GetRowIDsEqual([]storage.ColumnValue{valueCol})
 
 			case storage.GT, storage.GTE, storage.LT, storage.LTE:
 				// Range query - simple inequality
@@ -584,7 +614,7 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 					includeMax = simpleExpr.Operator == storage.LTE
 				}
 
-				return idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+				return idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
 
 			case storage.ISNULL:
 				// NULL check
@@ -640,7 +670,7 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			}
 
 			if hasRange {
-				return idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+				return idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
 			}
 		}
 	}
@@ -672,18 +702,6 @@ func (idx *ColumnarIndex) Build() error {
 	idx.nullRows = make([]int64, 0)
 	idx.mutex.Unlock()
 
-	// Get schema to check if this is a primary key column
-	if idx.versionStore != nil {
-		if schema, err := idx.versionStore.GetTableSchema(); err == nil {
-			for _, col := range schema.Columns {
-				if col.Name == idx.columnName && col.PrimaryKey {
-					idx.isPrimaryKey = true
-					break
-				}
-			}
-		}
-	}
-
 	// Get all visible versions from the version store
 	if idx.versionStore == nil {
 		return nil
@@ -703,7 +721,7 @@ func (idx *ColumnarIndex) Build() error {
 			value := version.Data[idx.columnID]
 
 			// Add to index
-			idx.Add(value, rowID, 0)
+			idx.Add([]storage.ColumnValue{value}, rowID, 0)
 		} else {
 			// Column doesn't exist in this row, treat as NULL
 			idx.Add(nil, rowID, 0)
@@ -716,12 +734,18 @@ func (idx *ColumnarIndex) Build() error {
 }
 
 // FindWithOperator finds all row IDs that match the operation - implements IndexInterface
-func (idx *ColumnarIndex) FindWithOperator(op storage.Operator, value storage.ColumnValue) ([]storage.IndexEntry, error) {
+func (idx *ColumnarIndex) FindWithOperator(op storage.Operator, values []storage.ColumnValue) ([]storage.IndexEntry, error) {
+	// For columnar index, we only support single column
+	if len(values) != 1 {
+		return nil, fmt.Errorf("expected 1 value for column %s, got %d values", idx.columnName, len(values))
+	}
+
+	value := values[0]
 	var rowIDs []int64
 
 	switch op {
 	case storage.EQ:
-		rowIDs = idx.GetRowIDsEqual(value)
+		rowIDs = idx.GetRowIDsEqual(values)
 
 	case storage.GT, storage.GTE, storage.LT, storage.LTE:
 		var minValue, maxValue storage.ColumnValue
@@ -735,7 +759,7 @@ func (idx *ColumnarIndex) FindWithOperator(op storage.Operator, value storage.Co
 			includeMax = op == storage.LTE
 		}
 
-		rowIDs = idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+		rowIDs = idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
 
 	case storage.ISNULL:
 		idx.mutex.RLock()

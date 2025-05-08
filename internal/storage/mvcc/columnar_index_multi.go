@@ -47,9 +47,6 @@ type MultiColumnarIndex struct {
 	// isUnique indicates if this is a unique index
 	isUnique bool
 
-	// isPrimaryKey indicates if this is the primary key column
-	isPrimaryKey bool
-
 	// timeBucketGranularity specifies the granularity for time bucketing
 	// This is only used for timestamp columns
 	timeBucketGranularity TimeBucketGranularity
@@ -190,7 +187,6 @@ func NewMultiColumnarIndex(name, tableName string,
 		tableName:             tableName,
 		versionStore:          versionStore,
 		isUnique:              isUnique,
-		isPrimaryKey:          false,
 		timeBucketGranularity: DayBucket,
 		enableTimeBucketing:   false,
 	}
@@ -225,6 +221,11 @@ func (idx *MultiColumnarIndex) Name() string {
 	return idx.name
 }
 
+// TableName returns the name of the table this index belongs to - implements IndexInterface
+func (idx *MultiColumnarIndex) TableName() string {
+	return idx.tableName
+}
+
 // IndexType returns the type of the index - implements IndexInterface
 func (idx *MultiColumnarIndex) IndexType() storage.IndexType {
 	return storage.ColumnarIndex
@@ -235,27 +236,18 @@ func (idx *MultiColumnarIndex) ColumnNames() []string {
 	return idx.columnNames
 }
 
-// ColumnID returns the ID of the first column in this index
-func (idx *MultiColumnarIndex) ColumnID() int {
-	if len(idx.columnIDs) > 0 {
-		return idx.columnIDs[0]
-	}
-	return -1
-}
-
 // ColumnIDs returns all column IDs for this index
 func (idx *MultiColumnarIndex) ColumnIDs() []int {
 	return idx.columnIDs
 }
 
-// Add adds a value to the index with the given row ID - implements IndexInterface
-func (idx *MultiColumnarIndex) Add(value storage.ColumnValue, rowID int64, refID int64) error {
-	// Add to multi-column index as a single-column value
-	return idx.AddMulti([]storage.ColumnValue{value}, rowID, refID)
+// DataTypes returns the data types of the columns this index is for - implements IndexInterface
+func (idx *MultiColumnarIndex) DataTypes() []storage.DataType {
+	return idx.dataTypes
 }
 
 // AddMulti adds multiple values to the index for multi-column indexes - implements IndexInterface
-func (idx *MultiColumnarIndex) AddMulti(values []storage.ColumnValue, rowID int64, refID int64) error {
+func (idx *MultiColumnarIndex) Add(values []storage.ColumnValue, rowID int64, refID int64) error {
 	// Validate we have the right number of values
 	if len(values) != len(idx.columnNames) {
 		return fmt.Errorf("expected %d values for columns, got %d values",
@@ -309,27 +301,10 @@ func (idx *MultiColumnarIndex) AddMulti(values []storage.ColumnValue, rowID int6
 	return nil
 }
 
-// Find finds all pairs where the column equals the given value - implements IndexInterface
-func (idx *MultiColumnarIndex) Find(value storage.ColumnValue) ([]storage.IndexEntry, error) {
-	// Get matching row IDs
-	rowIDs := idx.GetRowIDsEqual(value)
-	if len(rowIDs) == 0 {
-		return nil, nil
-	}
-
-	// Convert to index entries
-	result := make([]storage.IndexEntry, len(rowIDs))
-	for i, id := range rowIDs {
-		result[i] = storage.IndexEntry{RowID: id}
-	}
-
-	return result, nil
-}
-
 // FindMulti finds all pairs where multiple columns match given values - implements IndexInterface
-func (idx *MultiColumnarIndex) FindMulti(values []storage.ColumnValue) ([]storage.IndexEntry, error) {
+func (idx *MultiColumnarIndex) Find(values []storage.ColumnValue) ([]storage.IndexEntry, error) {
 	// Get matching row IDs
-	rowIDs := idx.GetRowIDsEqualMulti(values)
+	rowIDs := idx.GetRowIDsEqual(values)
 	if len(rowIDs) == 0 {
 		return nil, nil
 	}
@@ -341,26 +316,10 @@ func (idx *MultiColumnarIndex) FindMulti(values []storage.ColumnValue) ([]storag
 	}
 
 	return result, nil
-}
-
-// ForEachRowIDEqual applies a callback function to each row ID with the given value for the first column
-func (idx *MultiColumnarIndex) ForEachRowIDEqual(value storage.ColumnValue, callback func(int64) bool) {
-	// Use the first column value as a prefix search
-	idx.ForEachRowIDPrefixMatch([]storage.ColumnValue{value}, callback)
-}
-
-// GetRowIDsEqual returns row IDs with the given value for the first column
-func (idx *MultiColumnarIndex) GetRowIDsEqual(value storage.ColumnValue) []int64 {
-	var result []int64
-	idx.ForEachRowIDEqual(value, func(rowID int64) bool {
-		result = append(result, rowID)
-		return true // Continue iteration
-	})
-	return result
 }
 
 // ForEachRowIDEqualMulti applies a callback function to each row ID matching multiple column values exactly
-func (idx *MultiColumnarIndex) ForEachRowIDEqualMulti(values []storage.ColumnValue, callback func(int64) bool) {
+func (idx *MultiColumnarIndex) ForEachRowIDEqual(values []storage.ColumnValue, callback func(int64) bool) {
 	// Validate value count
 	if len(values) != len(idx.columnNames) {
 		return
@@ -406,9 +365,9 @@ func (idx *MultiColumnarIndex) ForEachRowIDEqualMulti(values []storage.ColumnVal
 }
 
 // GetRowIDsEqualMulti returns row IDs matching multiple column values exactly
-func (idx *MultiColumnarIndex) GetRowIDsEqualMulti(values []storage.ColumnValue) []int64 {
+func (idx *MultiColumnarIndex) GetRowIDsEqual(values []storage.ColumnValue) []int64 {
 	var result []int64
-	idx.ForEachRowIDEqualMulti(values, func(rowID int64) bool {
+	idx.ForEachRowIDEqual(values, func(rowID int64) bool {
 		result = append(result, rowID)
 		return true // Continue iteration
 	})
@@ -445,7 +404,7 @@ func (idx *MultiColumnarIndex) ForEachRowIDPrefixMatch(prefixValues []storage.Co
 
 	// If it's an exact match (all columns provided), use the exact match function
 	if len(prefixValues) == len(idx.columnNames) {
-		idx.ForEachRowIDEqualMulti(prefixValues, callback)
+		idx.ForEachRowIDEqual(prefixValues, callback)
 		return
 	}
 
@@ -454,9 +413,7 @@ func (idx *MultiColumnarIndex) ForEachRowIDPrefixMatch(prefixValues []storage.Co
 	prefixKey = prefixKey[:len(prefixValues)]
 	defer PutMultiColumnKey(prefixKey)
 
-	for i, val := range prefixValues {
-		prefixKey[i] = val
-	}
+	copy(prefixKey, prefixValues)
 
 	// Lock for reading
 	idx.mutex.RLock()
@@ -501,31 +458,12 @@ func (idx *MultiColumnarIndex) GetRowIDsPrefixMatch(prefixValues []storage.Colum
 	return result
 }
 
-// FindRange finds all row IDs where the column is in the given range - implements IndexInterface
-func (idx *MultiColumnarIndex) FindRange(minValue, maxValue storage.ColumnValue,
-	includeMin, includeMax bool) ([]storage.IndexEntry, error) {
-
-	// Get row IDs in the range
-	rowIDs := idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
-	if len(rowIDs) == 0 {
-		return nil, nil
-	}
-
-	// Convert to index entries
-	result := make([]storage.IndexEntry, len(rowIDs))
-	for i, id := range rowIDs {
-		result[i] = storage.IndexEntry{RowID: id}
-	}
-
-	return result, nil
-}
-
 // FindRangeMulti finds rows where multiple columns match given range conditions - implements IndexInterface
-func (idx *MultiColumnarIndex) FindRangeMulti(minValues, maxValues []storage.ColumnValue,
+func (idx *MultiColumnarIndex) FindRange(minValues, maxValues []storage.ColumnValue,
 	includeMin, includeMax bool) ([]storage.IndexEntry, error) {
 
 	// Get row IDs in the range
-	rowIDs := idx.GetRowIDsInRangeMulti(minValues, maxValues, includeMin, includeMax)
+	rowIDs := idx.GetRowIDsInRange(minValues, maxValues, includeMin, includeMax)
 	if len(rowIDs) == 0 {
 		return nil, nil
 	}
@@ -537,33 +475,10 @@ func (idx *MultiColumnarIndex) FindRangeMulti(minValues, maxValues []storage.Col
 	}
 
 	return result, nil
-}
-
-// ForEachRowIDInRange applies a callback to row IDs with values in the given range for the first column
-func (idx *MultiColumnarIndex) ForEachRowIDInRange(minValue, maxValue storage.ColumnValue,
-	includeMin, includeMax bool, callback func(int64) bool) {
-
-	// For multi-column indexes, delegate to the multi-column range search
-	idx.ForEachRowIDInRangeMulti(
-		[]storage.ColumnValue{minValue},
-		[]storage.ColumnValue{maxValue},
-		includeMin, includeMax, callback)
-}
-
-// GetRowIDsInRange returns row IDs with values in the given range for the first column
-func (idx *MultiColumnarIndex) GetRowIDsInRange(minValue, maxValue storage.ColumnValue,
-	includeMin, includeMax bool) []int64 {
-
-	var result []int64
-	idx.ForEachRowIDInRange(minValue, maxValue, includeMin, includeMax, func(rowID int64) bool {
-		result = append(result, rowID)
-		return true // Continue iteration
-	})
-	return result
 }
 
 // ForEachRowIDInRangeMulti applies a callback to row IDs with values in the given multi-column range
-func (idx *MultiColumnarIndex) ForEachRowIDInRangeMulti(minValues, maxValues []storage.ColumnValue,
+func (idx *MultiColumnarIndex) ForEachRowIDInRange(minValues, maxValues []storage.ColumnValue,
 	includeMin, includeMax bool, callback func(int64) bool) {
 
 	// Validate column counts
@@ -659,107 +574,19 @@ func (idx *MultiColumnarIndex) ForEachRowIDInRangeMulti(minValues, maxValues []s
 }
 
 // GetRowIDsInRangeMulti returns row IDs with values in the given multi-column range
-func (idx *MultiColumnarIndex) GetRowIDsInRangeMulti(minValues, maxValues []storage.ColumnValue,
+func (idx *MultiColumnarIndex) GetRowIDsInRange(minValues, maxValues []storage.ColumnValue,
 	includeMin, includeMax bool) []int64 {
 
 	var result []int64
-	idx.ForEachRowIDInRangeMulti(minValues, maxValues, includeMin, includeMax, func(rowID int64) bool {
+	idx.ForEachRowIDInRange(minValues, maxValues, includeMin, includeMax, func(rowID int64) bool {
 		result = append(result, rowID)
 		return true // Continue iteration
 	})
 	return result
-}
-
-// ForEachLatestBefore applies a callback to the most recent row IDs before a given timestamp
-func (idx *MultiColumnarIndex) ForEachLatestBefore(timestamp time.Time, callback func(int64) bool) {
-	// Only works for single-column timestamp indexes or multi-column indexes with timestamp as first column
-	if len(idx.dataTypes) == 0 || idx.dataTypes[0] != storage.TIMESTAMP {
-		return
-	}
-
-	// Lock for reading
-	idx.mutex.RLock()
-	defer idx.mutex.RUnlock()
-
-	// Track processed rows to avoid duplicates
-	seen := int64StructMapPool.Get().(*fastmap.Int64Map[struct{}])
-	defer func() {
-		seen.Clear()
-		int64StructMapPool.Put(seen)
-	}()
-
-	// For each entry in the tree
-	idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
-		// Check if the key's timestamp is <= the target timestamp
-		if len(key) > 0 && key[0] != nil && !key[0].IsNull() {
-			if keyTime, ok := key[0].AsTimestamp(); ok {
-				// Process rows with timestamp <= the target
-				if !keyTime.After(timestamp) {
-					for _, rowID := range rowIDs {
-						// Skip if already processed (deduplication)
-						if alreadySeen := seen.Has(rowID); alreadySeen {
-							continue
-						}
-						seen.Put(rowID, struct{}{})
-
-						// Apply callback
-						if !callback(rowID) {
-							return false // Stop iteration if callback returns false
-						}
-					}
-				}
-			}
-		}
-		return true // Continue iterating
-	})
-}
-
-// GetLatestBefore finds the most recent row IDs before a given timestamp
-func (idx *MultiColumnarIndex) GetLatestBefore(timestamp time.Time) []int64 {
-	var result []int64
-	idx.ForEachLatestBefore(timestamp, func(rowID int64) bool {
-		result = append(result, rowID)
-		return true // Continue iteration
-	})
-	return result
-}
-
-// ForEachRecentTimeRange applies a callback to row IDs within a recent time window
-func (idx *MultiColumnarIndex) ForEachRecentTimeRange(duration time.Duration, callback func(int64) bool) {
-	// Only works for single-column timestamp indexes or multi-column indexes with timestamp as first column
-	if len(idx.dataTypes) == 0 || idx.dataTypes[0] != storage.TIMESTAMP {
-		return
-	}
-
-	now := time.Now()
-	startTime := now.Add(-duration)
-
-	// Convert to timestamp values
-	startValue := storage.NewTimestampValue(startTime)
-	endValue := storage.NewTimestampValue(now)
-
-	// Use range query to find rows in the time range
-	idx.ForEachRowIDInRange(startValue, endValue, true, true, callback)
-}
-
-// GetRecentTimeRange finds row IDs within a recent time window (e.g., last hour, day)
-func (idx *MultiColumnarIndex) GetRecentTimeRange(duration time.Duration) []int64 {
-	var result []int64
-	idx.ForEachRecentTimeRange(duration, func(rowID int64) bool {
-		result = append(result, rowID)
-		return true // Continue iteration
-	})
-	return result
-}
-
-// Remove removes a value from the index - implements Index interface
-func (idx *MultiColumnarIndex) Remove(value storage.ColumnValue, rowID int64, refID int64) error {
-	// For single column, delegate to multi-column remove
-	return idx.RemoveMulti([]storage.ColumnValue{value}, rowID, refID)
 }
 
 // RemoveMulti removes multiple values from the index - implements IndexInterface
-func (idx *MultiColumnarIndex) RemoveMulti(values []storage.ColumnValue, rowID int64, refID int64) error {
+func (idx *MultiColumnarIndex) Remove(values []storage.ColumnValue, rowID int64, refID int64) error {
 	// Validate values count
 	if len(values) != len(idx.columnNames) {
 		return fmt.Errorf("expected %d values for columns, got %d values",
@@ -834,16 +661,8 @@ func (idx *MultiColumnarIndex) ForEachFilteredRowID(expr storage.Expression, cal
 		// Check if this is for one of our columns
 		for i, colName := range idx.columnNames {
 			if simpleExpr.Column == colName {
-				// Found our column - handle based on position
-				if i == 0 {
-					// First column - use optimized implementation
-					idx.forEachRowIDFirstColumnPredicate(simpleExpr, callback)
-					return
-				} else {
-					// Non-first column - use filtering
-					idx.forEachRowIDByColumnPredicate(i, simpleExpr, callback)
-					return
-				}
+				idx.forEachRowIDByColumnPredicate(i, simpleExpr, callback)
+				return
 			}
 		}
 
@@ -856,8 +675,6 @@ func (idx *MultiColumnarIndex) ForEachFilteredRowID(expr storage.Expression, cal
 		idx.forEachRowIDAndExpression(andExpr, callback)
 		return
 	}
-
-	// For other expressions, return (not supported by this index)
 }
 
 // GetFilteredRowIDs returns row IDs that match the given expression
@@ -884,105 +701,6 @@ func (idx *MultiColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int6
 	PutCandidateRows(result)
 
 	return resultCopy
-}
-
-// forEachRowIDFirstColumnPredicate applies a callback to row IDs that match a predicate on the first column
-func (idx *MultiColumnarIndex) forEachRowIDFirstColumnPredicate(expr *expression.SimpleExpression, callback func(int64) bool) {
-	// Handle each operator efficiently
-	switch expr.Operator {
-	case storage.EQ:
-		// Direct equality match on first column
-		valueCol := storage.ValueToPooledColumnValue(expr.Value, idx.dataTypes[0])
-		defer storage.PutPooledColumnValue(valueCol)
-
-		idx.ForEachRowIDEqual(valueCol, callback)
-
-	case storage.GT, storage.GTE, storage.LT, storage.LTE:
-		// Range query optimization
-		var minValue, maxValue storage.ColumnValue
-		var includeMin, includeMax bool
-
-		// Set range bounds based on operator
-		if expr.Operator == storage.GT || expr.Operator == storage.GTE {
-			minValue = storage.ValueToPooledColumnValue(expr.Value, idx.dataTypes[0])
-			defer storage.PutPooledColumnValue(minValue)
-			includeMin = expr.Operator == storage.GTE
-			idx.ForEachRowIDInRange(minValue, nil, includeMin, false, callback)
-		} else {
-			maxValue = storage.ValueToPooledColumnValue(expr.Value, idx.dataTypes[0])
-			defer storage.PutPooledColumnValue(maxValue)
-			includeMax = expr.Operator == storage.LTE
-			idx.ForEachRowIDInRange(nil, maxValue, false, includeMax, callback)
-		}
-
-	case storage.ISNULL:
-		// NULL check - fast path with precomputed nullRows
-		idx.mutex.RLock()
-		colID := idx.columnIDs[0]
-		nullRows := idx.nullRowsByColumn[colID]
-
-		// Process null rows
-		if len(nullRows) > 0 {
-			for _, rowID := range nullRows {
-				if !callback(rowID) {
-					break // Stop iteration if callback returns false
-				}
-			}
-		}
-		idx.mutex.RUnlock()
-
-	case storage.ISNOTNULL:
-		// Lock for reading
-		idx.mutex.RLock()
-		defer idx.mutex.RUnlock()
-
-		// Get NULL rows for first column
-		colID := idx.columnIDs[0]
-		nullRowsSet := make(map[int64]struct{})
-		for _, id := range idx.nullRowsByColumn[colID] {
-			nullRowsSet[id] = struct{}{}
-		}
-
-		// Track processed rows to avoid duplicates
-		seen := int64StructMapPool.Get().(*fastmap.Int64Map[struct{}])
-		defer func() {
-			seen.Clear()
-			int64StructMapPool.Put(seen)
-		}()
-
-		// For each entry in the tree
-		idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
-			// If the first column is not NULL, process all row IDs
-			if !(key[0] == nil || key[0].IsNull()) {
-				for _, rowID := range rowIDs {
-					// Skip if it's in the NULL set or already processed
-					if _, isNull := nullRowsSet[rowID]; isNull {
-						continue
-					}
-					if alreadySeen := seen.Has(rowID); alreadySeen {
-						continue
-					}
-					seen.Put(rowID, struct{}{})
-
-					// Apply callback
-					if !callback(rowID) {
-						return false // Stop iteration if callback returns false
-					}
-				}
-			}
-			return true // Continue iterating
-		})
-	}
-}
-
-// handleFirstColumnPredicate handles predicates on the first column and returns the result as a slice
-func (idx *MultiColumnarIndex) handleFirstColumnPredicate(expr *expression.SimpleExpression) []int64 {
-	var result []int64
-	idx.forEachRowIDFirstColumnPredicate(expr, func(rowID int64) bool {
-		result = append(result, rowID)
-		return true // Continue iteration
-	})
-	return result
 }
 
 // forEachRowIDByColumnPredicate applies a callback to row IDs that match a predicate for a non-first column
@@ -1118,9 +836,7 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 			prefixKey = prefixKey[:len(prefixValues)]
 			defer PutMultiColumnKey(prefixKey)
 
-			for i, val := range prefixValues {
-				prefixKey[i] = val
-			}
+			copy(prefixKey, prefixValues)
 
 			// Find all rows matching the prefix in a single traversal
 			// Use a fixed closure to avoid recreating the function for each ForEach call
@@ -1175,132 +891,6 @@ func (idx *MultiColumnarIndex) forEachRowIDAndExpression(andExpr *expression.And
 			PutCandidateRows(candidateRows)
 
 			return
-		}
-	}
-
-	// Handle range conditions on first column
-	if firstColExpr, hasFirst := columnConditions[idx.columnNames[0]]; hasFirst {
-		if firstColExpr.Operator == storage.GT || firstColExpr.Operator == storage.GTE ||
-			firstColExpr.Operator == storage.LT || firstColExpr.Operator == storage.LTE {
-
-			// Find a complementary range condition
-			var minValue, maxValue storage.ColumnValue
-			var includeMin, includeMax bool
-			var hasRange bool
-
-			// Set initial range based on the first expression
-			if firstColExpr.Operator == storage.GT || firstColExpr.Operator == storage.GTE {
-				minValue = storage.ValueToPooledColumnValue(firstColExpr.Value, idx.dataTypes[0])
-				defer storage.PutPooledColumnValue(minValue)
-				includeMin = firstColExpr.Operator == storage.GTE
-				hasRange = true
-			} else {
-				maxValue = storage.ValueToPooledColumnValue(firstColExpr.Value, idx.dataTypes[0])
-				defer storage.PutPooledColumnValue(maxValue)
-				includeMax = firstColExpr.Operator == storage.LTE
-				hasRange = true
-			}
-
-			// Look for complementary range condition
-			for _, subExpr := range andExpr.Expressions {
-				// Handle wrapped expressions
-				if schemaExpr, ok := subExpr.(*expression.SchemaAwareExpression); ok && schemaExpr.Expr != nil {
-					subExpr = schemaExpr.Expr
-				}
-
-				if simpleExpr, ok := subExpr.(*expression.SimpleExpression); ok &&
-					simpleExpr != firstColExpr && simpleExpr.Column == idx.columnNames[0] {
-
-					// Complete the range with complementary condition
-					if minValue != nil && (simpleExpr.Operator == storage.LT || simpleExpr.Operator == storage.LTE) {
-						maxValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataTypes[0])
-						defer storage.PutPooledColumnValue(maxValue)
-						includeMax = simpleExpr.Operator == storage.LTE
-					} else if maxValue != nil && (simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE) {
-						minValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataTypes[0])
-						defer storage.PutPooledColumnValue(minValue)
-						includeMin = simpleExpr.Operator == storage.GTE
-					}
-				}
-			}
-
-			// Process range query
-			if hasRange {
-				// If no more conditions, directly use range query
-				if len(columnConditions) <= 2 {
-					idx.ForEachRowIDInRange(minValue, maxValue, includeMin, includeMax, callback)
-					return
-				}
-
-				// Otherwise, do a single pass and collect candidates
-				idx.mutex.RLock()
-
-				candidateRows := GetCandidateRows()
-
-				rowToKey := int64KeyMapPool.Get().(*fastmap.Int64Map[MultiColumnValue])
-				seen := int64StructMapPool.Get().(*fastmap.Int64Map[struct{}])
-
-				// Find all rows in the range in a single traversal
-				idx.valueTree.ForEach(func(key MultiColumnValue, rowIDs []int64) bool {
-					// Skip if the key doesn't have any columns
-					if len(key) == 0 {
-						return true
-					}
-
-					// Check if the key's first column is in range
-					inRange := true
-
-					// Check min bound if specified
-					if minValue != nil && !minValue.IsNull() {
-						cmp, err := key[0].Compare(minValue)
-						if err != nil || cmp < 0 || (cmp == 0 && !includeMin) {
-							inRange = false
-						}
-					}
-
-					// Check max bound if specified
-					if inRange && maxValue != nil && !maxValue.IsNull() {
-						cmp, err := key[0].Compare(maxValue)
-						if err != nil || cmp > 0 || (cmp == 0 && !includeMax) {
-							inRange = false
-						}
-					}
-
-					// If in range, collect the rows
-					if inRange {
-						for _, rowID := range rowIDs {
-							if alreadySeen := seen.Has(rowID); !alreadySeen {
-								seen.Put(rowID, struct{}{})
-								candidateRows = append(candidateRows, rowID)
-								rowToKey.Put(rowID, key)
-							}
-						}
-					}
-
-					return true
-				})
-
-				idx.mutex.RUnlock()
-
-				seen.Clear()
-				int64StructMapPool.Put(seen)
-
-				// Apply remaining conditions to the candidate rows
-				for _, rowID := range candidateRows {
-					if idx.matchesRemainingConditions(rowID, columnConditions, nil, rowToKey) {
-						if !callback(rowID) {
-							break
-						}
-					}
-				}
-
-				rowToKey.Clear()
-				int64KeyMapPool.Put(rowToKey)
-
-				PutCandidateRows(candidateRows)
-
-				return
-			}
 		}
 	}
 
@@ -1666,26 +1256,26 @@ func (idx *MultiColumnarIndex) matchesRemainingConditions(
 }
 
 // FindWithOperator finds all row IDs that match the operation - implements IndexInterface
-func (idx *MultiColumnarIndex) FindWithOperator(op storage.Operator, value storage.ColumnValue) ([]storage.IndexEntry, error) {
+func (idx *MultiColumnarIndex) FindWithOperator(op storage.Operator, values []storage.ColumnValue) ([]storage.IndexEntry, error) {
 	var rowIDs []int64
 
 	switch op {
 	case storage.EQ:
-		rowIDs = idx.GetRowIDsEqual(value)
+		rowIDs = idx.GetRowIDsEqual(values)
 
 	case storage.GT, storage.GTE, storage.LT, storage.LTE:
-		var minValue, maxValue storage.ColumnValue
+		var minValues, maxValues []storage.ColumnValue
 		var includeMin, includeMax bool
 
 		if op == storage.GT || op == storage.GTE {
-			minValue = value
+			minValues = values
 			includeMin = op == storage.GTE
 		} else {
-			maxValue = value
+			maxValues = values
 			includeMax = op == storage.LTE
 		}
 
-		rowIDs = idx.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+		rowIDs = idx.GetRowIDsInRange(minValues, maxValues, includeMin, includeMax)
 
 	case storage.ISNULL:
 		idx.mutex.RLock()
@@ -1698,12 +1288,11 @@ func (idx *MultiColumnarIndex) FindWithOperator(op storage.Operator, value stora
 		idx.mutex.RUnlock()
 
 	case storage.ISNOTNULL:
-		// Handle using the first column predicate function
 		expr := &expression.SimpleExpression{
 			Column:   idx.columnNames[0],
 			Operator: storage.ISNOTNULL,
 		}
-		rowIDs = idx.handleFirstColumnPredicate(expr)
+		rowIDs = idx.GetFilteredRowIDs(expr)
 	}
 
 	if len(rowIDs) == 0 {
@@ -1738,24 +1327,6 @@ func (idx *MultiColumnarIndex) Build() error {
 	}
 	idx.mutex.Unlock()
 
-	// Get schema to check if this is a primary key column
-	if idx.versionStore != nil {
-		if schema, err := idx.versionStore.GetTableSchema(); err == nil {
-			// Check if any of our columns are part of the primary key
-			for _, col := range schema.Columns {
-				for _, colName := range idx.columnNames {
-					if col.Name == colName && col.PrimaryKey {
-						idx.isPrimaryKey = true
-						break
-					}
-				}
-				if idx.isPrimaryKey {
-					break
-				}
-			}
-		}
-	}
-
 	// Get all visible versions from the version store
 	if idx.versionStore == nil {
 		return nil
@@ -1783,7 +1354,7 @@ func (idx *MultiColumnarIndex) Build() error {
 		}
 
 		// Add to index
-		idx.AddMulti(values, rowID, 0)
+		idx.Add(values, rowID, 0)
 
 		return true
 	})

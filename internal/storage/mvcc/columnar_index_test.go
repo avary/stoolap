@@ -138,14 +138,14 @@ func TestColumnarIndex_Basic(t *testing.T) {
 	// Test adding values
 	for i := int64(1); i <= 10; i++ {
 		value := storage.NewIntegerValue(i)
-		err := index.Add(value, i, 0)
+		err := index.Add([]storage.ColumnValue{value}, i, 0)
 		if err != nil {
 			t.Fatalf("Failed to add value %d: %v", i, err)
 		}
 	}
 
 	// Test finding values
-	result, err := index.Find(storage.NewIntegerValue(5))
+	result, err := index.Find([]storage.ColumnValue{storage.NewIntegerValue(5)})
 	if err != nil {
 		t.Fatalf("Error finding value: %v", err)
 	}
@@ -160,8 +160,8 @@ func TestColumnarIndex_Basic(t *testing.T) {
 
 	// Test range queries
 	rangeResult, err := index.FindRange(
-		storage.NewIntegerValue(3),
-		storage.NewIntegerValue(7),
+		[]storage.ColumnValue{storage.NewIntegerValue(3)},
+		[]storage.ColumnValue{storage.NewIntegerValue(7)},
 		true, // includeMin
 		true, // includeMax
 	)
@@ -487,7 +487,7 @@ func TestColumnarIndex_Integration(t *testing.T) {
 	searchValue := storage.NewIntegerValue(50) // value for id=5
 
 	// Test the index by finding a specific value
-	result, err := index.Find(searchValue)
+	result, err := index.Find([]storage.ColumnValue{searchValue})
 	if err != nil {
 		t.Fatalf("Error finding value: %v", err)
 	}

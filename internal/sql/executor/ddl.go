@@ -48,6 +48,40 @@ func (e *Executor) executeCreateIndex(tx storage.Transaction, stmt *parser.Creat
 	// Determine if this is a unique index
 	isUnique := stmt.IsUnique
 
+	// Check for other indexes on the same columns with different uniqueness
+	// This prevents creating both a unique and non-unique index on the same column(s)
+	indexMap, err := e.engine.ListTableIndexes(tableName)
+	if err != nil {
+		return err
+	}
+
+	// We need to check each index to see if any of them cover the same columns
+	for indexName := range indexMap {
+		// Get the actual index object to examine its properties
+		idx, err := e.engine.GetIndex(tableName, indexName)
+		if err != nil {
+			continue // Skip if we can't get the index
+		}
+
+		// Check if the index has the same columns and different uniqueness
+		if hasSameColumns(columns, idx.ColumnNames()) && idx.IsUnique() != isUnique {
+			if stmt.IfNotExists {
+				// If IF NOT EXISTS is specified, silently ignore
+				return nil
+			}
+			var currentType, existingType string
+			if isUnique {
+				currentType = "unique"
+				existingType = "non-unique"
+			} else {
+				currentType = "non-unique"
+				existingType = "unique"
+			}
+			return fmt.Errorf("cannot create %s index; a %s index already exists for column(s) %s on table %s",
+				currentType, existingType, strings.Join(columns, ", "), tableName)
+		}
+	}
+
 	// Create the index
 	return tx.CreateTableIndex(tableName, indexName, columns, isUnique)
 }
@@ -97,8 +131,20 @@ func (e *Executor) executeCreateColumnarIndex(tx storage.Transaction, stmt *pars
 	// Determine if this is a unique index
 	isUnique := stmt.IsUnique
 
-	// Check if the index already exists
-	indexExists, err := e.engine.IndexExists(columnName, tableName)
+	// Generate default names for both unique and non-unique versions to check for duplicates
+	uniqueIndexName := fmt.Sprintf("unique_columnar_%s_%s", tableName, columnName)
+	nonUniqueIndexName := fmt.Sprintf("columnar_%s_%s", tableName, columnName)
+
+	// Choose the appropriate name based on uniqueness
+	var indexIdentifier string
+	if isUnique {
+		indexIdentifier = uniqueIndexName
+	} else {
+		indexIdentifier = nonUniqueIndexName
+	}
+
+	// First check if an index with this exact name already exists
+	indexExists, err := e.engine.IndexExists(indexIdentifier, tableName)
 	if err != nil {
 		return err
 	}
@@ -108,11 +154,66 @@ func (e *Executor) executeCreateColumnarIndex(tx storage.Transaction, stmt *pars
 			// If IF NOT EXISTS is specified, silently ignore
 			return nil
 		}
-		return fmt.Errorf("columnar index for column %s already exists on table %s", columnName, tableName)
+		return fmt.Errorf("columnar index with name %s already exists on table %s", indexIdentifier, tableName)
+	}
+
+	// Now check for other indexes on the same column with different uniqueness
+	// We'll use the same approach as in executeCreateIndex for consistency
+	indexMap, err := e.engine.ListTableIndexes(tableName)
+	if err != nil {
+		return err
+	}
+
+	// We need to check each index to see if any of them cover this column with different uniqueness
+	for indexName := range indexMap {
+		// Skip checking the current index
+		if indexName == indexIdentifier {
+			continue
+		}
+
+		// Get the actual index object to examine its properties
+		idx, err := e.engine.GetIndex(tableName, indexName)
+		if err != nil {
+			continue // Skip if we can't get the index
+		}
+
+		// For columnar indexes, we only need to check if it's on the same column
+		columnNames := idx.ColumnNames()
+		if len(columnNames) == 1 && columnNames[0] == columnName && idx.IsUnique() != isUnique {
+			if stmt.IfNotExists {
+				// If IF NOT EXISTS is specified, silently ignore
+				return nil
+			}
+			var currentType, existingType string
+			if isUnique {
+				currentType = "unique"
+				existingType = "non-unique"
+			} else {
+				currentType = "non-unique"
+				existingType = "unique"
+			}
+			return fmt.Errorf("cannot create %s index; a %s index already exists for column %s on table %s",
+				currentType, existingType, columnName, tableName)
+		}
+	}
+
+	// Also check if the column name itself is used as an index name
+	columnIndexExists, err := e.engine.IndexExists(columnName, tableName)
+	if err != nil {
+		return err
+	}
+
+	if columnIndexExists {
+		if stmt.IfNotExists {
+			// If IF NOT EXISTS is specified, silently ignore
+			return nil
+		}
+		return fmt.Errorf("cannot create columnar index; an index with name %s already exists on table %s",
+			columnName, tableName)
 	}
 
 	// Create the columnar index
-	return tx.CreateTableColumnarIndex(tableName, columnName, isUnique)
+	return tx.CreateTableColumnarIndex(tableName, columnName, isUnique, indexIdentifier)
 }
 
 // executeDropColumnarIndex executes a DROP COLUMNAR INDEX statement
@@ -123,22 +224,47 @@ func (e *Executor) executeDropColumnarIndex(tx storage.Transaction, stmt *parser
 	// Get the column name
 	columnName := stmt.ColumnName.Value
 
-	// Check if the index already exists
-	indexExists, err := e.engine.IndexExists(columnName, tableName)
+	// First try to get the index to determine if it's unique
+	// Try with the regular non-unique index name format
+	nonUniqueIndexName := fmt.Sprintf("columnar_%s_%s", tableName, columnName)
+	indexExists, err := e.engine.IndexExists(nonUniqueIndexName, tableName)
 	if err != nil {
 		return err
 	}
 
-	if !indexExists {
-		if stmt.IfExists {
-			// If IF EXISTS is specified, silently ignore
-			return nil
-		}
-		return fmt.Errorf("columnar index for column %s not exists on table %s", columnName, tableName)
+	// If the non-unique index exists, drop it
+	if indexExists {
+		return tx.DropTableColumnarIndex(tableName, nonUniqueIndexName)
 	}
 
-	// Drop the columnar index
-	return tx.DropTableColumnarIndex(tableName, columnName)
+	// If not found, try with the unique index name format
+	uniqueIndexName := fmt.Sprintf("unique_columnar_%s_%s", tableName, columnName)
+	indexExists, err = e.engine.IndexExists(uniqueIndexName, tableName)
+	if err != nil {
+		return err
+	}
+
+	// If the unique index exists, drop it
+	if indexExists {
+		return tx.DropTableColumnarIndex(tableName, uniqueIndexName)
+	}
+
+	// As a fallback, try with just the column name (for backward compatibility)
+	indexExists, err = e.engine.IndexExists(columnName, tableName)
+	if err != nil {
+		return err
+	}
+
+	if indexExists {
+		return tx.DropTableColumnarIndex(tableName, columnName)
+	}
+
+	// If we get here, the index doesn't exist under any name format
+	if stmt.IfExists {
+		// If IF EXISTS is specified, silently ignore
+		return nil
+	}
+	return fmt.Errorf("columnar index for column %s not exists on table %s", columnName, tableName)
 }
 
 // executeAlterTable executes an ALTER TABLE statement
@@ -350,4 +476,27 @@ func (e *Executor) executeDropTable(tx storage.Transaction, stmt *parser.DropTab
 
 	// Drop the table
 	return tx.DropTable(tableName)
+}
+
+// hasSameColumns checks if two column name lists cover exactly the same columns
+// Order doesn't matter for this comparison
+func hasSameColumns(columns1, columns2 []string) bool {
+	if len(columns1) != len(columns2) {
+		return false
+	}
+	
+	// Create maps for O(1) lookup
+	set1 := make(map[string]struct{}, len(columns1))
+	for _, col := range columns1 {
+		set1[col] = struct{}{}
+	}
+	
+	// Check if all columns in columns2 are in columns1
+	for _, col := range columns2 {
+		if _, exists := set1[col]; !exists {
+			return false
+		}
+	}
+	
+	return true
 }

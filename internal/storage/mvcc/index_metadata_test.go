@@ -69,8 +69,7 @@ func TestMultipleIndexesSerialization(t *testing.T) {
 		vs,
 		false,
 	)
-	// Enable time bucketing for the timestamp index
-	idxTimestamp.EnableTimeBucketing(HourBucket)
+
 	vs.AddIndex(idxTimestamp)
 
 	idxPrice := NewColumnarIndex(
@@ -145,26 +144,23 @@ func TestMultipleIndexesSerialization(t *testing.T) {
 	}
 
 	// Verify that we have the right number of indexes
-	newVS.columnarMutex.RLock()
-	indexCount := len(newVS.columnarIndexes)
-	newVS.columnarMutex.RUnlock()
+	newVS.indexMutex.RLock()
+	indexCount := len(newVS.indexes)
+	newVS.indexMutex.RUnlock()
 
 	if indexCount != 3 {
 		t.Errorf("Expected 3 indexes, got %d", indexCount)
 	}
 
 	// Verify each specific index
-	newVS.columnarMutex.RLock()
-	defer newVS.columnarMutex.RUnlock()
+	newVS.indexMutex.RLock()
+	defer newVS.indexMutex.RUnlock()
 
 	// Check timestamp index
-	if tsIdx, ok := newVS.columnarIndexes["timestamp"].(*ColumnarIndex); ok {
+	if tsIdx, ok := newVS.indexes["timestamp"].(*ColumnarIndex); ok {
 		// Verify the timestamp index has time bucketing enabled
 		if !tsIdx.enableTimeBucketing {
 			t.Errorf("Expected time bucketing to be enabled for timestamp index")
-		}
-		if tsIdx.timeBucketGranularity != HourBucket {
-			t.Errorf("Expected time bucket granularity Hour, got %v", tsIdx.timeBucketGranularity)
 		}
 		if tsIdx.dataType != storage.TypeTimestamp {
 			t.Errorf("Expected timestamp index data type to be TypeTimestamp, got %v", tsIdx.dataType)
@@ -174,7 +170,7 @@ func TestMultipleIndexesSerialization(t *testing.T) {
 	}
 
 	// Check price index
-	if priceIdx, ok := newVS.columnarIndexes["price"].(*ColumnarIndex); ok {
+	if priceIdx, ok := newVS.indexes["price"].(*ColumnarIndex); ok {
 		if priceIdx.dataType != storage.TypeFloat {
 			t.Errorf("Expected price index data type to be TypeFloat, got %v", priceIdx.dataType)
 		}
@@ -186,7 +182,7 @@ func TestMultipleIndexesSerialization(t *testing.T) {
 	}
 
 	// Check active index
-	if activeIdx, ok := newVS.columnarIndexes["is_active"].(*ColumnarIndex); ok {
+	if activeIdx, ok := newVS.indexes["is_active"].(*ColumnarIndex); ok {
 		if activeIdx.dataType != storage.TypeBoolean {
 			t.Errorf("Expected active index data type to be TypeBoolean, got %v", activeIdx.dataType)
 		}

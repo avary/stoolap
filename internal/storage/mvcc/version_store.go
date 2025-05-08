@@ -25,10 +25,10 @@ type VersionStore struct {
 	versions  *fastmap.SyncInt64Map[*RowVersion] // Using high-performance concurrent map
 	tableName string                             // The name of the table this store belongs to
 
-	// Columnar indexes provide HTAP capabilities
-	columnarIndexes map[string]storage.Index
-	columnarMutex   sync.RWMutex
-	versionsMu      sync.RWMutex // For version operations
+	indexes    map[string]storage.Index
+	indexMutex sync.RWMutex
+
+	versionsMu sync.RWMutex // For version operations
 
 	closed atomic.Bool // Whether this store has been closed - using atomic for better performance
 
@@ -43,10 +43,10 @@ type VersionStore struct {
 // NewVersionStore creates a new version store
 func NewVersionStore(tableName string, engine *MVCCEngine) *VersionStore {
 	vs := &VersionStore{
-		versions:        fastmap.NewSyncInt64Map[*RowVersion](16), // Start with reasonable capacity
-		tableName:       tableName,
-		columnarIndexes: make(map[string]storage.Index),
-		engine:          engine,
+		versions:  fastmap.NewSyncInt64Map[*RowVersion](16), // Start with reasonable capacity
+		tableName: tableName,
+		indexes:   make(map[string]storage.Index),
+		engine:    engine,
 	}
 	// Initialize atomic.Bool to false (not closed)
 	vs.closed.Store(false)
@@ -161,9 +161,9 @@ func (vs *VersionStore) AddVersion(rowID int64, version RowVersion) {
 
 		// Update columnar indexes
 		// First check if there are any indexes to update
-		vs.columnarMutex.RLock()
-		hasIndexes := len(vs.columnarIndexes) > 0
-		vs.columnarMutex.RUnlock()
+		vs.indexMutex.RLock()
+		hasIndexes := len(vs.indexes) > 0
+		vs.indexMutex.RUnlock()
 
 		if hasIndexes {
 			// If the row was previously not deleted but is now deleted,
@@ -954,16 +954,7 @@ func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string,
 		return nil, errors.New("version store is closed")
 	}
 
-	// First check with a read lock to see if the index already exists
-	vs.columnarMutex.RLock()
-	_, exists := vs.columnarIndexes[columnName]
-	vs.columnarMutex.RUnlock()
-
-	if exists {
-		return nil, fmt.Errorf("columnar index for column %s already exists", columnName)
-	}
-
-	// Create index name, using customName if provided
+	// Generate index name early so we can check if it already exists
 	indexName := customName
 	if indexName == "" {
 		// Generate default name if custom name is not provided
@@ -972,6 +963,23 @@ func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string,
 		} else {
 			indexName = fmt.Sprintf("columnar_%s_%s", tableName, columnName)
 		}
+	}
+
+	// First check with a read lock to see if the index already exists
+	vs.indexMutex.RLock()
+	
+	// Check for existing index by name
+	indexExists := false
+	for _, idx := range vs.indexes {
+		if idx.Name() == indexName {
+			indexExists = true
+			break
+		}
+	}
+	vs.indexMutex.RUnlock()
+
+	if indexExists {
+		return nil, fmt.Errorf("columnar index with name %s already exists", indexName)
 	}
 
 	// Use the btree implementation with the isUnique parameter
@@ -994,15 +1002,17 @@ func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string,
 	}
 
 	// Now acquire the lock to update the map
-	vs.columnarMutex.Lock()
-	defer vs.columnarMutex.Unlock()
+	vs.indexMutex.Lock()
+	defer vs.indexMutex.Unlock()
 
-	// Check again if the index already exists
+	// Check again if the index already exists by name
 	// Someone else might have created it while we were building
-	if _, exists := vs.columnarIndexes[columnName]; exists {
-		// Close the index to clean up any resources, since we won't be using it
-		index.Close()
-		return nil, fmt.Errorf("columnar index for column %s already exists", columnName)
+	for _, existingIndex := range vs.indexes {
+		if existingIndex.Name() == indexName {
+			// Close the index to clean up any resources, since we won't be using it
+			index.Close()
+			return nil, fmt.Errorf("columnar index with name %s already exists", indexName)
+		}
 	}
 
 	// One final check if the version store was closed while we were waiting for the lock
@@ -1012,30 +1022,36 @@ func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string,
 		return nil, errors.New("version store is closed")
 	}
 
-	// Store in the map
-	vs.columnarIndexes[columnName] = index
+	// Store in the map using the index name as the key
+	vs.indexes[indexName] = index
 
 	return index, nil
 }
 
-// GetColumnarIndex retrieves a columnar index by column name
-func (vs *VersionStore) GetColumnarIndex(columnName string) (storage.Index, error) {
+// GetColumnarIndex retrieves a columnar index by identifier (index name)
+func (vs *VersionStore) GetColumnarIndex(indexIdentifier string) (storage.Index, error) {
 	// Check if the version store is closed using atomic operation
 	if vs.closed.Load() {
 		return nil, errors.New("version store is closed")
 	}
 
 	// Acquire read lock to access the indexes map
-	vs.columnarMutex.RLock()
-	defer vs.columnarMutex.RUnlock()
+	vs.indexMutex.RLock()
+	defer vs.indexMutex.RUnlock()
 
-	// Check if the index exists
-	index, exists := vs.columnarIndexes[columnName]
-	if !exists {
-		return nil, fmt.Errorf("columnar index for column %s not found", columnName)
+	// First try direct map lookup by name (the key might be the index name)
+	if index, exists := vs.indexes[indexIdentifier]; exists {
+		return index, nil
 	}
-
-	return index, nil
+	
+	// If not found, search for index with the given name
+	for _, index := range vs.indexes {
+		if index.Name() == indexIdentifier {
+			return index, nil
+		}
+	}
+	
+	return nil, fmt.Errorf("index %s not found", indexIdentifier)
 }
 
 // Close releases resources associated with this version store
@@ -1051,17 +1067,17 @@ func (vs *VersionStore) Close() error {
 	// because we successfully changed the state from false to true
 
 	// Clear all columnar indexes - still need a lock for map access
-	vs.columnarMutex.Lock()
-	for name, index := range vs.columnarIndexes {
+	vs.indexMutex.Lock()
+	for name, index := range vs.indexes {
 		if index != nil {
 			// Call any cleanup needed for the index
 			if closeableIndex, ok := index.(interface{ Close() error }); ok {
 				_ = closeableIndex.Close() // Ignore errors during cleanup
 			}
 		}
-		delete(vs.columnarIndexes, name)
+		delete(vs.indexes, name)
 	}
-	vs.columnarMutex.Unlock()
+	vs.indexMutex.Unlock()
 
 	// Clear all versions to release memory
 	vs.versionsMu.Lock()
@@ -1079,42 +1095,34 @@ func (vs *VersionStore) IndexExists(indexName string) bool {
 		return false
 	}
 
-	vs.columnarMutex.RLock()
-	defer vs.columnarMutex.RUnlock()
+	vs.indexMutex.RLock()
+	defer vs.indexMutex.RUnlock()
 
-	// First, check if the name directly matches a column with an index
-	if _, exists := vs.columnarIndexes[indexName]; exists {
-		return true
-	}
-
-	// Second, check if any index has the given name
-	for _, index := range vs.columnarIndexes {
-		if index.Name() == indexName {
-			return true
-		}
-	}
-
-	return false
+	// Check if the index exists by name
+	_, exists := vs.indexes[indexName]
+	return exists
 }
 
 // ListIndexes returns all indexes for this table
-// The returned map has the index name as the key and the column name as the value
-// This ensures that custom index names are preserved and can be used for lookup
+// Since indexes are now stored by name, this returns a map of index names to their primary column name
 func (vs *VersionStore) ListIndexes() map[string]string {
 	// If the store is closed, return empty list
 	if vs.closed.Load() {
 		return map[string]string{}
 	}
 
-	vs.columnarMutex.RLock()
-	defer vs.columnarMutex.RUnlock()
+	vs.indexMutex.RLock()
+	defer vs.indexMutex.RUnlock()
 
-	indexes := make(map[string]string, len(vs.columnarIndexes))
-	for colName, index := range vs.columnarIndexes {
-		// Use the actual index name as the key, not the column name
-		// This ensures custom index names are preserved and can be used as keys
-		indexName := index.Name()
-		indexes[indexName] = colName
+	indexes := make(map[string]string, len(vs.indexes))
+	for indexName, index := range vs.indexes {
+		// Get the first column name as the primary column (for backward compatibility)
+		columnNames := index.ColumnNames()
+		if len(columnNames) > 0 {
+			indexes[indexName] = columnNames[0]
+		} else {
+			indexes[indexName] = "" // Should never happen, but just in case
+		}
 	}
 
 	return indexes
@@ -1151,27 +1159,115 @@ func (vs *VersionStore) AddIndex(index storage.Index) error {
 	// Get the index name
 	indexName := index.Name()
 
-	vs.columnarMutex.Lock()
-	defer vs.columnarMutex.Unlock()
+	vs.indexMutex.Lock()
+	defer vs.indexMutex.Unlock()
 
 	// Check if an index with this name already exists
-	for _, existing := range vs.columnarIndexes {
+	for _, existing := range vs.indexes {
 		if existing.Name() == indexName {
 			return fmt.Errorf("index %s already exists", indexName)
 		}
 	}
 
-	// Get the column names - columnar indexes only have one column
+	// Get the column names
 	columnNames := index.ColumnNames()
-	if len(columnNames) != 1 {
-		return fmt.Errorf("columnar index must have exactly one column, got %d", len(columnNames))
+	if len(columnNames) == 0 {
+		return fmt.Errorf("index must have at least one column")
 	}
 
-	// Store the index by column name for fast lookups
-	columnName := columnNames[0]
-	vs.columnarIndexes[columnName] = index
+	// Store the index by its name for consistent lookup across both single-column and multi-column indexes
+	vs.indexes[indexName] = index
 
 	return nil
+}
+
+// CreateIndex creates an index with the given properties
+func (vs *VersionStore) CreateIndex(meta *IndexMetadata) (storage.Index, error) {
+	// Check if the version store is closed
+	if vs.closed.Load() {
+		return nil, errors.New("version store is closed")
+	}
+
+	// Validate required fields
+	if meta == nil {
+		return nil, errors.New("index metadata cannot be nil")
+	}
+
+	if meta.Name == "" {
+		return nil, errors.New("index name cannot be empty")
+	}
+
+	if len(meta.ColumnNames) == 0 || len(meta.ColumnIDs) == 0 || len(meta.DataTypes) == 0 {
+		return nil, errors.New("index must specify at least one column")
+	}
+
+	if len(meta.ColumnNames) != len(meta.ColumnIDs) || len(meta.ColumnNames) != len(meta.DataTypes) {
+		return nil, errors.New("column names, IDs, and types must have the same length")
+	}
+
+	// First check with a read lock to see if an index with this name already exists
+	vs.indexMutex.RLock()
+	for _, existing := range vs.indexes {
+		if existing.Name() == meta.Name {
+			vs.indexMutex.RUnlock()
+			return nil, fmt.Errorf("index with name %s already exists", meta.Name)
+		}
+	}
+
+	// Release the read lock before proceeding
+	vs.indexMutex.RUnlock()
+	
+	// We now check for existing indexes by name instead of by column
+
+	// Create the appropriate type of index based on the number of columns
+	var index storage.Index
+	var err error
+
+	if len(meta.ColumnNames) == 1 {
+		// Create a single column index
+		index = NewColumnarIndex(
+			meta.Name,
+			meta.TableName,
+			meta.ColumnNames[0],
+			meta.ColumnIDs[0],
+			meta.DataTypes[0],
+			vs,
+			meta.IsUnique,
+		)
+	} else {
+		// Create a multi-column index
+		index = NewMultiColumnarIndex(
+			meta.Name,
+			meta.TableName,
+			meta.ColumnNames,
+			meta.ColumnIDs,
+			meta.DataTypes,
+			vs,
+			meta.IsUnique,
+		)
+	}
+
+	// Build the index
+	err = index.Build()
+	if err != nil {
+		// Clean up the index
+		if closeableIndex, ok := index.(interface{ Close() error }); ok {
+			_ = closeableIndex.Close() // Ignore errors during cleanup
+		}
+		return nil, fmt.Errorf("failed to build index: %w", err)
+	}
+
+	// Add the index to our map
+	err = vs.AddIndex(index)
+	if err != nil {
+		// Clean up the index
+		if closeableIndex, ok := index.(interface{ Close() error }); ok {
+			_ = closeableIndex.Close() // Ignore errors during cleanup
+		}
+		return nil, err
+	}
+
+	return index, nil
 }
 
 // RemoveIndex removes an index from the version store
@@ -1181,22 +1277,20 @@ func (vs *VersionStore) RemoveIndex(indexName string) error {
 		return errors.New("version store is closed")
 	}
 
-	vs.columnarMutex.Lock()
-	defer vs.columnarMutex.Unlock()
+	vs.indexMutex.Lock()
+	defer vs.indexMutex.Unlock()
 
-	// Find the index by name
-	for columnName, index := range vs.columnarIndexes {
-		if index.Name() == indexName {
-			// Close the index if it has a Close method
-			if closeableIndex, ok := index.(interface{ Close() error }); ok {
-				_ = closeableIndex.Close() // Ignore errors during cleanup
-			}
-
-			// Remove from the map
-			delete(vs.columnarIndexes, columnName)
-
-			return nil
+	// Check if the index exists directly by name
+	index, exists := vs.indexes[indexName]
+	if exists {
+		// Close the index if it has a Close method
+		if closeableIndex, ok := index.(interface{ Close() error }); ok {
+			_ = closeableIndex.Close() // Ignore errors during cleanup
 		}
+
+		// Remove from the map
+		delete(vs.indexes, indexName)
+		return nil
 	}
 
 	return fmt.Errorf("index %s not found", indexName)
@@ -1209,39 +1303,72 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 		return // Skip index updates if closed
 	}
 
-	vs.columnarMutex.RLock()
-	defer vs.columnarMutex.RUnlock()
+	vs.indexMutex.RLock()
+	defer vs.indexMutex.RUnlock()
 
 	// If there are no columnar indexes, we can skip this
-	if len(vs.columnarIndexes) == 0 {
+	if len(vs.indexes) == 0 {
 		return
 	}
 
 	// If the row is deleted, remove from all indexes
 	if version.IsDeleted || version.Data == nil {
-		for _, index := range vs.columnarIndexes {
-			// Find column ID for this index
-			columnID := index.ColumnID()
+		for _, index := range vs.indexes {
+			// Get the column IDs for this index
+			columnIDs := index.ColumnIDs()
 
-			// If the column exists in the row, remove its old value
-			if columnID < len(version.Data) {
-				index.Remove(version.Data[columnID], rowID, 0)
+			// For single-column indexes
+			if len(columnIDs) == 1 {
+				columnID := columnIDs[0]
+				// If the column exists in the row, remove its old value
+				if columnID < len(version.Data) {
+					index.Remove([]storage.ColumnValue{version.Data[columnID]}, rowID, 0)
+				} else {
+					// Column doesn't exist, treat as NULL
+					index.Remove([]storage.ColumnValue{nil}, rowID, 0)
+				}
+			} else if len(columnIDs) > 1 {
+				// For multi-column indexes
+				values := make([]storage.ColumnValue, len(columnIDs))
+				for i, columnID := range columnIDs {
+					if columnID < len(version.Data) {
+						values[i] = version.Data[columnID]
+					} else {
+						values[i] = nil
+					}
+				}
+				index.Remove(values, rowID, 0)
 			}
 		}
 		return
 	}
 
 	// For non-deleted rows, update all relevant indexes
-	for _, index := range vs.columnarIndexes {
-		// Find column ID for this index
-		columnID := index.ColumnID()
+	for _, index := range vs.indexes {
+		// Get the column IDs for this index
+		columnIDs := index.ColumnIDs()
 
-		// If the column exists in the row, add its new value
-		if columnID < len(version.Data) {
-			index.Add(version.Data[columnID], rowID, 0)
-		} else {
-			// Column doesn't exist, treat as NULL
-			index.Add(nil, rowID, 0)
+		// For single-column indexes
+		if len(columnIDs) == 1 {
+			columnID := columnIDs[0]
+			// If the column exists in the row, add its new value
+			if columnID < len(version.Data) {
+				index.Add([]storage.ColumnValue{version.Data[columnID]}, rowID, 0)
+			} else {
+				// Column doesn't exist, treat as NULL
+				index.Add([]storage.ColumnValue{nil}, rowID, 0)
+			}
+		} else if len(columnIDs) > 1 {
+			// For multi-column indexes
+			values := make([]storage.ColumnValue, len(columnIDs))
+			for i, columnID := range columnIDs {
+				if columnID < len(version.Data) {
+					values[i] = version.Data[columnID]
+				} else {
+					values[i] = nil
+				}
+			}
+			index.Add(values, rowID, 0)
 		}
 	}
 }

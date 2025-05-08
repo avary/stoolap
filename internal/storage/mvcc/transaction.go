@@ -908,8 +908,9 @@ func (t *MVCCTransaction) CreateTableColumnarIndex(tableName string, columnName 
 	return mvccTable.CreateColumnarIndex(columnName, isUnique)
 }
 
-// DropTableColumnarIndex drops a columnar index from a table column
-func (t *MVCCTransaction) DropTableColumnarIndex(tableName string, columnName string) error {
+// DropTableColumnarIndex drops a columnar index by name
+// The indexName parameter can be either the index name or the column name (for backward compatibility)
+func (t *MVCCTransaction) DropTableColumnarIndex(tableName string, indexName string) error {
 	if !t.active {
 		return ErrTransactionClosed
 	}
@@ -926,6 +927,6 @@ func (t *MVCCTransaction) DropTableColumnarIndex(tableName string, columnName st
 		return errors.New("table does not support columnar indexing")
 	}
 
-	// Use MVCCTable's drop columnar index method
-	return mvccTable.DropColumnarIndex(columnName)
+	// Use MVCCTable's drop columnar index method with the index name
+	return mvccTable.DropColumnarIndex(indexName)
 }

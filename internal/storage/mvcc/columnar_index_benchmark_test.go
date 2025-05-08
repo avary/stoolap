@@ -26,7 +26,7 @@ func createTestIndex(size int, valuesPerRow int) *ColumnarIndex {
 		// Add rowID % valuesPerRow as the value
 		// This creates valuesPerRow different values distributed evenly
 		value := storage.NewIntegerValue(rowID % int64(valuesPerRow))
-		index.Add(value, rowID, 0)
+		index.Add([]storage.ColumnValue{value}, rowID, 0)
 	}
 
 	return index
@@ -48,7 +48,7 @@ func createTestTimestampIndex(size int) *ColumnarIndex {
 	startDate := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := int64(0); i < int64(size); i++ {
 		date := startDate.AddDate(0, 0, int(i))
-		index.Add(storage.NewTimestampValue(date), i, 0)
+		index.Add([]storage.ColumnValue{storage.NewTimestampValue(date)}, i, 0)
 	}
 
 	return index
@@ -69,7 +69,7 @@ func BenchmarkColumnarIndexAllocFree(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					rowIDs := index.GetRowIDsEqual(testValue)
+					rowIDs := index.GetRowIDsEqual([]storage.ColumnValue{testValue})
 					// Consume the result to make sure work is done
 					_ = len(rowIDs)
 				}
@@ -84,7 +84,7 @@ func BenchmarkColumnarIndexAllocFree(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					rowIDs := index.GetRowIDsInRange(minValue, maxValue, true, true)
+					rowIDs := index.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, true, true)
 					// Consume the result to make sure work is done
 					_ = len(rowIDs)
 				}
@@ -95,7 +95,7 @@ func BenchmarkColumnarIndexAllocFree(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					entries, _ := index.FindWithOperator(storage.GT, minValue)
+					entries, _ := index.FindWithOperator(storage.GT, []storage.ColumnValue{minValue})
 					_ = len(entries)
 				}
 			})
@@ -188,7 +188,7 @@ func BenchmarkColumnarIndexTimestamp(b *testing.B) {
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
-			entries, _ := index.Find(storage.NewTimestampValue(targetDate))
+			entries, _ := index.Find([]storage.ColumnValue{storage.NewTimestampValue(targetDate)})
 			_ = len(entries)
 		}
 	})
@@ -204,8 +204,8 @@ func BenchmarkColumnarIndexTimestamp(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			entries, _ := index.FindRange(
-				storage.NewTimestampValue(minDate),
-				storage.NewTimestampValue(maxDate),
+				[]storage.ColumnValue{storage.NewTimestampValue(minDate)},
+				[]storage.ColumnValue{storage.NewTimestampValue(maxDate)},
 				true, true)
 			_ = len(entries)
 		}
@@ -220,7 +220,7 @@ func BenchmarkColumnarIndexTimestamp(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			entries, _ := index.FindWithOperator(
-				storage.GT, storage.NewTimestampValue(pivotDate))
+				storage.GT, []storage.ColumnValue{storage.NewTimestampValue(pivotDate)})
 			_ = len(entries)
 		}
 	})
@@ -285,42 +285,42 @@ func BenchmarkColumnarIndexTimestamp(b *testing.B) {
 // BenchmarkColumnarIndexSingleIntAdd benchmarks adding integers to a single-column ColumnarIndex
 func BenchmarkColumnarIndexSingleIntAdd(b *testing.B) {
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"num",
 		0,
 		storage.INTEGER,
-		nil, 
+		nil,
 		false,
 	)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		num := int64(i % 10000)
-		idx.Add(storage.NewIntegerValue(num), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewIntegerValue(num)}, int64(i), 0)
 	}
 }
 
 // BenchmarkColumnarIndexSingleTimestampAdd benchmarks adding timestamps to a single-column ColumnarIndex
 func BenchmarkColumnarIndexSingleTimestampAdd(b *testing.B) {
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"ts",
 		0,
 		storage.TIMESTAMP,
-		nil, 
+		nil,
 		false,
 	)
 
 	// Base timestamp
 	baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Add time with 1-minute intervals
 		ts := baseTime.Add(time.Duration(i%10000) * time.Minute)
-		idx.Add(storage.NewTimestampValue(ts), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewTimestampValue(ts)}, int64(i), 0)
 	}
 }
 
@@ -328,18 +328,18 @@ func BenchmarkColumnarIndexSingleTimestampAdd(b *testing.B) {
 func BenchmarkColumnarIndexSingleIntRange(b *testing.B) {
 	// Setup: create and populate index with test data
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"num",
 		0,
 		storage.INTEGER,
-		nil, 
+		nil,
 		false,
 	)
 
 	// Add 10000 rows with sequential integer data
 	for i := 0; i < 10000; i++ {
-		idx.Add(storage.NewIntegerValue(int64(i)), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewIntegerValue(int64(i))}, int64(i), 0)
 	}
 
 	// Generate random range bounds
@@ -355,8 +355,8 @@ func BenchmarkColumnarIndexSingleIntRange(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		idx.GetRowIDsInRange(
-			storage.NewIntegerValue(minVals[i]),
-			storage.NewIntegerValue(maxVals[i]),
+			[]storage.ColumnValue{storage.NewIntegerValue(minVals[i])},
+			[]storage.ColumnValue{storage.NewIntegerValue(maxVals[i])},
 			true, true,
 		)
 	}
@@ -366,22 +366,22 @@ func BenchmarkColumnarIndexSingleIntRange(b *testing.B) {
 func BenchmarkColumnarIndexSingleTimestampRange(b *testing.B) {
 	// Setup: create and populate index with test data
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"ts",
 		0,
 		storage.TIMESTAMP,
-		nil, 
+		nil,
 		false,
 	)
 
 	// Base timestamp
 	baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	
+
 	// Add 10000 rows with sequential timestamp data, 1 hour intervals
 	for i := 0; i < 10000; i++ {
 		ts := baseTime.Add(time.Duration(i) * time.Hour)
-		idx.Add(storage.NewTimestampValue(ts), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewTimestampValue(ts)}, int64(i), 0)
 	}
 
 	// Generate random time range bounds
@@ -397,11 +397,11 @@ func BenchmarkColumnarIndexSingleTimestampRange(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		minTime := baseTime.Add(time.Duration(startHours[i]) * time.Hour)
-		maxTime := baseTime.Add(time.Duration(startHours[i] + rangeLengths[i]) * time.Hour)
+		maxTime := baseTime.Add(time.Duration(startHours[i]+rangeLengths[i]) * time.Hour)
 
 		idx.GetRowIDsInRange(
-			storage.NewTimestampValue(minTime),
-			storage.NewTimestampValue(maxTime),
+			[]storage.ColumnValue{storage.NewTimestampValue(minTime)},
+			[]storage.ColumnValue{storage.NewTimestampValue(maxTime)},
 			true, true,
 		)
 	}
@@ -411,19 +411,19 @@ func BenchmarkColumnarIndexSingleTimestampRange(b *testing.B) {
 func BenchmarkColumnarIndexSingleFloatRange(b *testing.B) {
 	// Setup: create and populate index with test data
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"float_val",
 		0,
 		storage.FLOAT,
-		nil, 
+		nil,
 		false,
 	)
 
 	// Add 10000 rows with sequential float data
 	for i := 0; i < 10000; i++ {
 		floatVal := float64(i) + float64(i)/10.0
-		idx.Add(storage.NewFloatValue(floatVal), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewFloatValue(floatVal)}, int64(i), 0)
 	}
 
 	// Generate random float range bounds
@@ -439,8 +439,8 @@ func BenchmarkColumnarIndexSingleFloatRange(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		idx.GetRowIDsInRange(
-			storage.NewFloatValue(minVals[i]),
-			storage.NewFloatValue(maxVals[i]),
+			[]storage.ColumnValue{storage.NewFloatValue(minVals[i])},
+			[]storage.ColumnValue{storage.NewFloatValue(maxVals[i])},
 			true, true,
 		)
 	}
@@ -450,18 +450,18 @@ func BenchmarkColumnarIndexSingleFloatRange(b *testing.B) {
 func BenchmarkColumnarIndexSingleIntFilter(b *testing.B) {
 	// Setup: create and populate index with test data
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"num",
 		0,
 		storage.INTEGER,
-		nil, 
+		nil,
 		false,
 	)
 
 	// Add 10000 rows with sequential integer data
 	for i := 0; i < 10000; i++ {
-		idx.Add(storage.NewIntegerValue(int64(i)), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewIntegerValue(int64(i))}, int64(i), 0)
 	}
 
 	// Create schema for expression tests
@@ -490,7 +490,7 @@ func BenchmarkColumnarIndexSingleIntFilter(b *testing.B) {
 			Operator: op,
 			Value:    filterValues[i],
 		}
-		
+
 		// Create schema-aware expression
 		schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
 		schemaExpr.ColumnMap["num"] = 0 // Set column ID directly
@@ -503,22 +503,22 @@ func BenchmarkColumnarIndexSingleIntFilter(b *testing.B) {
 func BenchmarkColumnarIndexSingleTimestampFilter(b *testing.B) {
 	// Setup: create and populate index with test data
 	idx := NewColumnarIndex(
-		"bench_idx", 
+		"bench_idx",
 		"bench_table",
 		"ts",
 		0,
 		storage.TIMESTAMP,
-		nil, 
+		nil,
 		false,
 	)
 
 	// Base timestamp
 	baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	
+
 	// Add 10000 rows with sequential timestamp data, 1 hour intervals
 	for i := 0; i < 10000; i++ {
 		ts := baseTime.Add(time.Duration(i) * time.Hour)
-		idx.Add(storage.NewTimestampValue(ts), int64(i), 0)
+		idx.Add([]storage.ColumnValue{storage.NewTimestampValue(ts)}, int64(i), 0)
 	}
 
 	// Create schema for expression tests
@@ -548,7 +548,7 @@ func BenchmarkColumnarIndexSingleTimestampFilter(b *testing.B) {
 			Operator: op,
 			Value:    filterTime,
 		}
-		
+
 		// Create schema-aware expression
 		schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
 		schemaExpr.ColumnMap["ts"] = 0 // Set column ID directly
@@ -572,7 +572,7 @@ func BenchmarkColumnarIndexSparseData(b *testing.B) {
 
 	// Add sparse values - each row has a unique value
 	for i := int64(0); i < 10000; i++ {
-		index.Add(storage.NewIntegerValue(i), i, 0)
+		index.Add([]storage.ColumnValue{storage.NewIntegerValue(i)}, i, 0)
 	}
 
 	// Test with single lookups (worst case for bitmap operations)
@@ -582,7 +582,7 @@ func BenchmarkColumnarIndexSparseData(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			value := int64(i % 10000)
-			entries, _ := index.Find(storage.NewIntegerValue(value))
+			entries, _ := index.Find([]storage.ColumnValue{storage.NewIntegerValue(value)})
 			_ = len(entries)
 		}
 	})
@@ -596,8 +596,8 @@ func BenchmarkColumnarIndexSparseData(b *testing.B) {
 			start := int64(i % 9000)
 			end := start + 1000
 			entries, _ := index.FindRange(
-				storage.NewIntegerValue(start),
-				storage.NewIntegerValue(end),
+				[]storage.ColumnValue{storage.NewIntegerValue(start)},
+				[]storage.ColumnValue{storage.NewIntegerValue(end)},
 				true, true)
 			_ = len(entries)
 		}

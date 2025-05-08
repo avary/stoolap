@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/stoolap/stoolap/internal/fastmap"
@@ -142,75 +143,129 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 // CheckUniqueConstraints checks if a row violates any unique columnar index constraints
 // It returns ErrUniqueConstraint if any constraints are violated
 func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
+	// Skip if version store is not available
+	if mt.versionStore == nil {
+		return fmt.Errorf("version store not available")
+	}
+
+	// Get all unique indexes
+	mt.versionStore.indexMutex.RLock()
+	uniqueIndexes := make([]storage.Index, 0)
+
+	// Collect all unique indexes regardless of index implementation (ColumnarIndex or MultiColumnarIndex)
+	for _, index := range mt.versionStore.indexes {
+		if index.IsUnique() {
+			uniqueIndexes = append(uniqueIndexes, index)
+		}
+	}
+	mt.versionStore.indexMutex.RUnlock()
+
+	// If there are no unique indexes, return early
+	if len(uniqueIndexes) == 0 {
+		return nil
+	}
+
+	// Get schema to map column names to positions
 	schema, err := mt.versionStore.GetTableSchema()
 	if err != nil {
 		return fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	uniqueColumns := make(map[string]struct {
-		index    *ColumnarIndex
-		position int
-		name     string
-	})
+	// Create a map of column names to positions for faster lookups
+	colPosMap := make(map[string]int, len(schema.Columns))
+	for i, col := range schema.Columns {
+		colPosMap[col.Name] = i
+	}
 
-	// Get unique columnar indexes
-	mt.versionStore.columnarMutex.RLock()
-	for colName, index := range mt.versionStore.columnarIndexes {
-		if colIdx, ok := index.(*ColumnarIndex); ok && colIdx.isUnique {
-			// Find column position
-			for i, col := range schema.Columns {
-				if col.Name == colName {
-					uniqueColumns[colName] = struct {
-						index    *ColumnarIndex
-						position int
-						name     string
-					}{colIdx, i, colName}
-					break
-				}
+	// Check each unique index
+	for _, idx := range uniqueIndexes {
+		// Get column names and positions for this index
+		colNames := idx.ColumnNames()
+
+		// Skip if no column names (shouldn't happen)
+		if len(colNames) == 0 {
+			continue
+		}
+
+		// Get the values for the indexed columns
+		values := make([]storage.ColumnValue, len(colNames))
+		allNull := true
+
+		for i, colName := range colNames {
+			// Get position in the row
+			pos, exists := colPosMap[colName]
+			if !exists || pos >= len(row) {
+				// Skip if column not found or out of bounds
+				continue
+			}
+
+			// Get value
+			values[i] = row[pos]
+
+			// Check if all values are NULL (NULL values don't violate uniqueness)
+			if values[i] != nil && !values[i].IsNull() {
+				allNull = false
 			}
 		}
-	}
-	mt.versionStore.columnarMutex.RUnlock()
 
-	if len(uniqueColumns) == 0 {
-		return nil // No unique columns to check
-	}
-
-	// Check each unique column against all rows in the local transaction
-	for _, col := range uniqueColumns {
-		// Skip if column position out of bounds
-		if col.position < 0 || col.position >= len(row) {
+		// Skip if all values are NULL (uniqueness constraints don't apply to NULL values)
+		if allNull {
 			continue
 		}
 
-		// Get the value we're trying to insert/update
-		value := row[col.position]
-
-		// Skip NULL values (they don't violate uniqueness)
-		if value == nil || value.IsNull() {
-			continue
-		}
-
-		// Check all rows in the local transaction
+		// For multi-column indexes, we need to check both global and local versions
+		// First check local transaction versions
 		for localRow := range mt.txnVersions.localVersions.Values() {
 			if localRow.IsDeleted || localRow.Data == nil {
 				continue // Skip deleted rows
 			}
 
-			// Ensure we have enough columns
-			if len(localRow.Data) <= col.position {
-				continue
+			// Compare values for this index's columns
+			match := true
+
+			for i, colName := range colNames {
+				pos, exists := colPosMap[colName]
+				if !exists || pos >= len(localRow.Data) {
+					match = false
+					break
+				}
+
+				localValue := localRow.Data[pos]
+				// Skip NULL values
+				if localValue == nil || localValue.IsNull() || values[i] == nil || values[i].IsNull() {
+					match = false
+					break
+				}
+
+				// If values don't match, this row doesn't conflict
+				if !localValue.Equals(values[i]) {
+					match = false
+					break
+				}
 			}
 
-			// Check if this row has the same value
-			localValue := localRow.Data[col.position]
-			if localValue != nil && !localValue.IsNull() && localValue.Equals(value) {
-				return storage.NewUniqueConstraintError(col.index.Name(), col.name, value)
+			// If all columns match, we have a uniqueness violation
+			if match {
+				return storage.NewUniqueConstraintError(idx.Name(), colNames[0], values[0])
 			}
 		}
 
-		if col.index.HasUniqueValue(value) {
-			return storage.NewUniqueConstraintError(col.index.Name(), col.name, value)
+		// Check for uniqueness in the index
+		// For single-column indexes
+		if columnarIdx, ok := idx.(*ColumnarIndex); ok {
+			// Use the HasUniqueValue method if available
+			if len(values) > 0 && values[0] != nil && !values[0].IsNull() {
+				if columnarIdx.HasUniqueValue(values[0]) {
+					return storage.NewUniqueConstraintError(idx.Name(), colNames[0], values[0])
+				}
+			}
+		} else {
+			// For other indexes, use the standard Find method
+			entries, err := idx.Find(values)
+			if err == nil && len(entries) > 0 {
+				// Found existing entries, uniqueness constraint violated
+				return storage.NewUniqueConstraintError(idx.Name(), strings.Join(colNames, ","), values[0])
+			}
 		}
 	}
 
@@ -1400,24 +1455,32 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 		return fmt.Errorf("invalid table: version store is nil")
 	}
 
+	var indexIdentifier string
+	// Generate default name for backward compatibility
+	if isUnique {
+		indexIdentifier = fmt.Sprintf("unique_columnar_%s_%s", mt.Name(), columnName)
+	} else {
+		indexIdentifier = fmt.Sprintf("columnar_%s_%s", mt.Name(), columnName)
+	}
+
 	// First check if we've already got a matching index - either by column name or by index name
-	mt.versionStore.columnarMutex.RLock()
-	_, columnExists := mt.versionStore.columnarIndexes[columnName]
+	mt.versionStore.indexMutex.RLock()
+	_, columnarExists := mt.versionStore.indexes[indexIdentifier]
 
 	// Check if there's an index with this name already
 	indexExists := false
-	if !columnExists {
-		for _, idx := range mt.versionStore.columnarIndexes {
+	if !columnarExists {
+		for _, idx := range mt.versionStore.indexes {
 			if idx.Name() == indexName {
 				indexExists = true
 				break
 			}
 		}
 	}
-	mt.versionStore.columnarMutex.RUnlock()
+	mt.versionStore.indexMutex.RUnlock()
 
 	// If the index already exists, just return (IF NOT EXISTS case)
-	if columnExists || indexExists {
+	if columnarExists || indexExists {
 		return nil
 	}
 
@@ -1430,17 +1493,24 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 	// Find column ID and data type
 	columnID := -1
 	var dataType storage.DataType
+	var isPrimaryKey bool
 
 	for i, col := range schema.Columns {
 		if col.Name == columnName {
 			columnID = i
 			dataType = col.Type
+			isPrimaryKey = col.PrimaryKey
 			break
 		}
 	}
 
 	if columnID == -1 {
 		return fmt.Errorf("column %s not found in schema", columnName)
+	}
+
+	// Prevent creating indexes on primary key column
+	if isPrimaryKey {
+		return fmt.Errorf("cannot create index on primary key column %s", columnName)
 	}
 
 	// Create a columnar index with the specified name
@@ -1454,9 +1524,9 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 	}
 
 	// Register the index in the version store
-	mt.versionStore.columnarMutex.Lock()
-	mt.versionStore.columnarIndexes[columnName] = index
-	mt.versionStore.columnarMutex.Unlock()
+	mt.versionStore.indexMutex.Lock()
+	mt.versionStore.indexes[indexName] = index
+	mt.versionStore.indexMutex.Unlock()
 
 	// Record this operation in the WAL if the engine has persistence enabled
 	if mt.engine != nil && mt.engine.persistence != nil && mt.engine.persistence.IsEnabled() {
@@ -1482,8 +1552,6 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 		}
 	}
 
-	// Persistence is handled automatically via the engine
-
 	return nil
 }
 
@@ -1494,27 +1562,27 @@ func (mt *MVCCTable) DropIndex(indexName string) error {
 	}
 
 	// First try a direct lookup by column name
-	mt.versionStore.columnarMutex.RLock()
-	_, exists := mt.versionStore.columnarIndexes[indexName]
+	mt.versionStore.indexMutex.RLock()
+	_, exists := mt.versionStore.indexes[indexName]
 
 	// If not found by column name, look for a match by index name
 	if !exists {
-		var columnName string
-		for colName, idx := range mt.versionStore.columnarIndexes {
+		var indexIdentifier string
+		for colName, idx := range mt.versionStore.indexes {
 			if idx.Name() == indexName {
 				exists = true
-				columnName = colName
+				indexIdentifier = colName
 				break
 			}
 		}
-		mt.versionStore.columnarMutex.RUnlock()
+		mt.versionStore.indexMutex.RUnlock()
 
 		if exists {
 			// Drop the columnar index by column name
-			return mt.DropColumnarIndex(columnName)
+			return mt.DropColumnarIndex(indexIdentifier)
 		}
 	} else {
-		mt.versionStore.columnarMutex.RUnlock()
+		mt.versionStore.indexMutex.RUnlock()
 		// Drop the index by column name
 		return mt.DropColumnarIndex(indexName)
 	}
@@ -1884,13 +1952,20 @@ func (mt *MVCCTable) CreateColumnarIndex(columnName string, isUnique bool, custo
 
 	// Prevent creating columnar indexes on primary key columns
 	if isPrimaryKey {
-		return fmt.Errorf("columnar indexes cannot be created on primary key columns. Use standard indexes instead")
+		return fmt.Errorf("cannot create index on primary key column %s", columnName)
 	}
 
 	// Extract custom name if provided
 	var indexName string
 	if len(customName) > 0 && customName[0] != "" {
 		indexName = customName[0]
+	} else {
+		// Use a standardized naming pattern, consistent with the rest of the system
+		if isUnique {
+			indexName = fmt.Sprintf("unique_columnar_%s_%s", mt.versionStore.tableName, columnName)
+		} else {
+			indexName = fmt.Sprintf("columnar_%s_%s", mt.versionStore.tableName, columnName)
+		}
 	}
 
 	// The version store's CreateColumnarIndex method already handles locking properly
@@ -1932,61 +2007,96 @@ func (mt *MVCCTable) CreateColumnarIndex(columnName string, isUnique bool, custo
 }
 
 // GetColumnarIndex retrieves a columnar index for a column if it exists
-func (mt *MVCCTable) GetColumnarIndex(columnName string) (storage.Index, error) {
+func (mt *MVCCTable) GetColumnarIndex(indexIdentifier string) (storage.Index, error) {
 	// Check if the version store exists
 	if mt.versionStore == nil {
 		return nil, fmt.Errorf("version store not available")
 	}
 
-	// Get the index from the version store
-	// The version store's GetColumnarIndex method already handles locking properly
-	index, err := mt.versionStore.GetColumnarIndex(columnName)
-	if err != nil {
-		return nil, err
+	// Try multiple standard naming patterns for backward compatibility
+	possibleIndexNames := []string{
+		indexIdentifier, // Try the provided name first
+		// Try standard index naming patterns
+		fmt.Sprintf("columnar_%s_%s", mt.versionStore.tableName, indexIdentifier),
+		fmt.Sprintf("unique_columnar_%s_%s", mt.versionStore.tableName, indexIdentifier),
 	}
 
-	// Make sure it's a columnar index type
-	if index.IndexType() != storage.ColumnarIndex {
-		return nil, fmt.Errorf("index for column %s is not a columnar index", columnName)
+	// Try all possible names
+	for _, possibleName := range possibleIndexNames {
+		// Try to get the index from the version store using this name
+		index, err := mt.versionStore.GetColumnarIndex(possibleName)
+		if err == nil && index != nil {
+			// Make sure it's a columnar index type
+			if index.IndexType() != storage.ColumnarIndex {
+				continue // Not the right type, try next name
+			}
+			return index, nil
+		}
 	}
 
-	return index, nil
+	// If we get here, none of our standard patterns worked
+	return nil, fmt.Errorf("columnar index for identifier %s not found", indexIdentifier)
 }
 
-// DropColumnarIndex removes a columnar index for a column
-func (mt *MVCCTable) DropColumnarIndex(columnName string) error {
+// DropColumnarIndex removes a columnar index by index identifier (index name)
+func (mt *MVCCTable) DropColumnarIndex(indexIdentifier string) error {
 	// Check if version store is valid
 	if mt.versionStore == nil {
 		return fmt.Errorf("version store not available")
 	}
 
-	// First check if the index exists without holding the lock
-	// This is a quick check that doesn't require the lock
-	mt.versionStore.columnarMutex.RLock()
-	_, exists := mt.versionStore.columnarIndexes[columnName]
-	mt.versionStore.columnarMutex.RUnlock()
+	// Try multiple standard naming patterns for backward compatibility
+	possibleIndexNames := []string{
+		indexIdentifier, // Try the provided name first
+		// Try standard index naming patterns
+		fmt.Sprintf("columnar_%s_%s", mt.versionStore.tableName, indexIdentifier),
+		fmt.Sprintf("unique_columnar_%s_%s", mt.versionStore.tableName, indexIdentifier),
+	}
+
+	mt.versionStore.indexMutex.RLock()
+	var index storage.Index
+	var keyToDelete string
+	exists := false
+
+	// Try all possible index names
+	for _, possibleName := range possibleIndexNames {
+		// First try direct map lookup
+		if idx, found := mt.versionStore.indexes[possibleName]; found {
+			index = idx
+			keyToDelete = possibleName
+			exists = true
+			break
+		}
+	}
+
+	// If still not found, search through all indexes for a name match
+	// This is for backward compatibility
+	if !exists {
+		for key, idx := range mt.versionStore.indexes {
+			// Try matching either by key or by index name
+			if idx.Name() == indexIdentifier {
+				index = idx
+				keyToDelete = key // We need to delete using the map key
+				exists = true
+				break
+			}
+		}
+	}
+	mt.versionStore.indexMutex.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("columnar index for column %s not found", columnName)
+		return fmt.Errorf("index '%s' not found", indexIdentifier)
 	}
 
-	// Now acquire the write lock for the actual modification
-	mt.versionStore.columnarMutex.Lock()
-	defer mt.versionStore.columnarMutex.Unlock()
-
-	// Re-check conditions after acquiring the lock
-	// This is part of the double-checked locking pattern to handle
-	// concurrent modifications that might have happened while we were waiting
-	if _, exists := mt.versionStore.columnarIndexes[columnName]; !exists {
-		return fmt.Errorf("columnar index for column %s not found", columnName)
-	}
-
-	// Get a reference to the index before removing it
-	index := mt.versionStore.columnarIndexes[columnName]
+	// Remember the index name for logging and WAL
 	indexName := index.Name()
 
-	// Remove the index from the map
-	delete(mt.versionStore.columnarIndexes, columnName)
+	// Now acquire the write lock for the actual modification
+	mt.versionStore.indexMutex.Lock()
+	defer mt.versionStore.indexMutex.Unlock()
+
+	// Remove the index from the map using the correct key
+	delete(mt.versionStore.indexes, keyToDelete)
 
 	// Attempt to close the index resources if it implements a Close method
 	if closeableIndex, ok := index.(interface{ Close() error }); ok {
@@ -1995,8 +2105,7 @@ func (mt *MVCCTable) DropColumnarIndex(columnName string) error {
 
 	// Record the drop in the WAL if persistence is enabled
 	if mt.engine != nil && mt.engine.persistence != nil && mt.engine.persistence.IsEnabled() {
-		// For drop operations, we still use the index name since we may not have
-		// access to the full index data after deletion
+		// For drop operations, use the index name
 		err := mt.engine.persistence.RecordIndexOperation(
 			mt.versionStore.tableName,
 			WALDropIndex,
@@ -2023,9 +2132,9 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 	// Fast path for common case: direct simple expression on a single column
 	if simpleExpr, ok := schemaExpr.Expr.(*expression.SimpleExpression); ok {
 		// Check if we have an index for this column
-		mt.versionStore.columnarMutex.RLock()
-		_, indexExists := mt.versionStore.columnarIndexes[simpleExpr.Column]
-		mt.versionStore.columnarMutex.RUnlock()
+		mt.versionStore.indexMutex.RLock()
+		_, indexExists := mt.versionStore.indexes[simpleExpr.Column]
+		mt.versionStore.indexMutex.RUnlock()
 
 		if indexExists {
 			// Get the index directly - if it fails, we'll fall back
@@ -2048,9 +2157,9 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 				colName := expr1.Column
 
 				// Check if we have an index for this column
-				mt.versionStore.columnarMutex.RLock()
-				_, indexExists := mt.versionStore.columnarIndexes[colName]
-				mt.versionStore.columnarMutex.RUnlock()
+				mt.versionStore.indexMutex.RLock()
+				_, indexExists := mt.versionStore.indexes[colName]
+				mt.versionStore.indexMutex.RUnlock()
 
 				if indexExists {
 					// Get the index directly
@@ -2062,10 +2171,10 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 				}
 			} else {
 				// Case 2: Conditions on different columns (e.g., x > 10 AND y = true)
-				mt.versionStore.columnarMutex.RLock()
-				_, index1Exists := mt.versionStore.columnarIndexes[expr1.Column]
-				_, index2Exists := mt.versionStore.columnarIndexes[expr2.Column]
-				mt.versionStore.columnarMutex.RUnlock()
+				mt.versionStore.indexMutex.RLock()
+				_, index1Exists := mt.versionStore.indexes[expr1.Column]
+				_, index2Exists := mt.versionStore.indexes[expr2.Column]
+				mt.versionStore.indexMutex.RUnlock()
 
 				// If we have both indexes, we can apply them independently and intersect the results
 				if index1Exists && index2Exists {
@@ -2103,9 +2212,9 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 	// Optimization: if there's only one column reference, retrieve directly
 	if len(columnRefs) == 1 {
 		colName := columnRefs[0]
-		mt.versionStore.columnarMutex.RLock()
-		_, exists := mt.versionStore.columnarIndexes[colName]
-		mt.versionStore.columnarMutex.RUnlock()
+		mt.versionStore.indexMutex.RLock()
+		_, exists := mt.versionStore.indexes[colName]
+		mt.versionStore.indexMutex.RUnlock()
 
 		if exists {
 			index, err := mt.GetColumnarIndex(colName)
@@ -2121,14 +2230,14 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 
 	// Take a snapshot of available column indexes under a read lock
 	// This avoids holding locks during expensive operations
-	mt.versionStore.columnarMutex.RLock()
+	mt.versionStore.indexMutex.RLock()
 	availableIndexColumns := make([]string, 0, len(columnRefs))
 	for _, colName := range columnRefs {
-		if _, exists := mt.versionStore.columnarIndexes[colName]; exists {
+		if _, exists := mt.versionStore.indexes[colName]; exists {
 			availableIndexColumns = append(availableIndexColumns, colName)
 		}
 	}
-	mt.versionStore.columnarMutex.RUnlock()
+	mt.versionStore.indexMutex.RUnlock()
 
 	// Optimization: If no indexes are available, return early
 	if len(availableIndexColumns) == 0 {

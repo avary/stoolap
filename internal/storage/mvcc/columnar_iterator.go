@@ -218,7 +218,7 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 		simpleExpr.Column == index.columnName && simpleExpr.Operator == storage.EQ {
 
 		// Fast equality match using our B-tree implementation
-		return index.GetRowIDsEqual(storage.ValueToColumnValue(simpleExpr.Value, index.dataType))
+		return index.GetRowIDsEqual([]storage.ColumnValue{storage.ValueToColumnValue(simpleExpr.Value, index.dataType)})
 	}
 
 	// For simple expressions on the indexed column
@@ -240,7 +240,7 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 			}
 
 			// Use the index's range function
-			return index.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+			return index.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
 
 		case storage.ISNULL, storage.ISNOTNULL:
 			// Use direct implementation in the B-tree index
@@ -284,7 +284,7 @@ func getRowIDsFromColumnarIndex(expr storage.Expression, index *ColumnarIndex) [
 			}
 
 			if hasRange {
-				return index.GetRowIDsInRange(minValue, maxValue, includeMin, includeMax)
+				return index.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
 			}
 		}
 	}

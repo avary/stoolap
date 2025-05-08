@@ -863,18 +863,18 @@ func (e *MVCCEngine) GetIndex(tableName, indexName string) (storage.Index, error
 	}
 
 	// Get all indexes
-	vs.columnarMutex.RLock()
-	defer vs.columnarMutex.RUnlock()
+	vs.indexMutex.RLock()
+	defer vs.indexMutex.RUnlock()
 
 	// First try to find by exact index name
-	for _, index := range vs.columnarIndexes {
+	for _, index := range vs.indexes {
 		if index.Name() == indexName {
 			return index, nil
 		}
 	}
 
 	// If not found, try looking for the column name as the index name
-	if index, ok := vs.columnarIndexes[indexName]; ok {
+	if index, ok := vs.indexes[indexName]; ok {
 		return index, nil
 	}
 

@@ -259,33 +259,31 @@ func (dvs *DiskVersionStore) writeMetadata(path string, schema *storage.Schema) 
 	// Write auto-increment counter value
 	writer.WriteInt64(dvs.versionStore.GetCurrentAutoIncrementValue())
 
-	// Save columnar indexes metadata
+	// Save indexes metadata
 	// First collect all index data under the read lock to minimize lock time
 	var indexDataList [][]byte
-	dvs.versionStore.columnarMutex.RLock()
+	dvs.versionStore.indexMutex.RLock()
 	// Store the number of indexes
-	indexCount := len(dvs.versionStore.columnarIndexes)
+	indexCount := len(dvs.versionStore.indexes)
 
 	// Collect indexes in a deterministic order using a map to prevent duplicate indexes
-	indexMap := make(map[string]*ColumnarIndex)
+	indexMap := make(map[string]storage.Index)
 	indexNames := make([]string, 0, indexCount)
 
-	// Collect all columnar indexes with details and ensure we have unique instances
-	for name, index := range dvs.versionStore.columnarIndexes {
-		if colIndex, ok := index.(*ColumnarIndex); ok {
-			// Store in our map and track the index names in order
-			indexMap[name] = colIndex
-			indexNames = append(indexNames, name)
-		}
+	// Collect all indexes with details and ensure we have unique instances
+	for name, index := range dvs.versionStore.indexes {
+		// Store in our map and track the index names in order
+		indexMap[name] = index
+		indexNames = append(indexNames, name)
 	}
 
 	// Now create an ordered list of indexes from our map to ensure consistent ordering
-	var columnarIndexes []*ColumnarIndex
+	var indexes []storage.Index
 	for _, name := range indexNames {
-		columnarIndexes = append(columnarIndexes, indexMap[name])
+		indexes = append(indexes, indexMap[name])
 	}
 
-	dvs.versionStore.columnarMutex.RUnlock()
+	dvs.versionStore.indexMutex.RUnlock()
 
 	// Write index count
 	writer.WriteUint16(uint16(indexCount))
@@ -294,14 +292,14 @@ func (dvs *DiskVersionStore) writeMetadata(path string, schema *storage.Schema) 
 	indexSerialData := make(map[string][]byte)
 
 	// Process each index to create serialized data
-	for _, colIndex := range columnarIndexes {
+	for _, colIndex := range indexes {
 		indexData, err := SerializeIndexMetadata(colIndex)
 		if err != nil {
-			return fmt.Errorf("failed to serialize index metadata for %s: %w", colIndex.name, err)
+			return fmt.Errorf("failed to serialize index metadata for %s: %w", colIndex.Name(), err)
 		}
 
 		// Store in our map
-		indexSerialData[colIndex.name] = indexData
+		indexSerialData[colIndex.Name()] = indexData
 
 		// Create deep copy of the data to prevent any reference issues
 		dataCopy := make([]byte, len(indexData))
@@ -312,9 +310,9 @@ func (dvs *DiskVersionStore) writeMetadata(path string, schema *storage.Schema) 
 	}
 
 	// Verify the arrays have the same length
-	if len(indexDataList) != len(columnarIndexes) {
-		return fmt.Errorf("mismatch between indexDataList (%d) and columnarIndexes (%d)",
-			len(indexDataList), len(columnarIndexes))
+	if len(indexDataList) != len(indexes) {
+		return fmt.Errorf("mismatch between indexDataList (%d) and indexes (%d)",
+			len(indexDataList), len(indexes))
 	}
 
 	// Now write each index's serialized data to the file
@@ -422,9 +420,9 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 		// After loading the snapshot, build indexes directly with data from the reader
 		// This is critical to ensure that unique constraints are enforced properly
 		// but we do it in a memory-efficient way by not loading all rows to memory first
-		dvs.versionStore.columnarMutex.RLock()
-		hasIndexes := len(dvs.versionStore.columnarIndexes) > 0
-		dvs.versionStore.columnarMutex.RUnlock()
+		dvs.versionStore.indexMutex.RLock()
+		hasIndexes := len(dvs.versionStore.indexes) > 0
+		dvs.versionStore.indexMutex.RUnlock()
 
 		if len(dvs.readers) > 0 && hasIndexes {
 			// Get all rows from the newest reader without loading to memory
@@ -435,30 +433,39 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 			rowCount := 0
 
 			// Build indexes with data directly from disk
-			dvs.versionStore.columnarMutex.RLock()
-			for _, index := range dvs.versionStore.columnarIndexes {
-				if colIndex, ok := index.(*ColumnarIndex); ok {
-					// Get column ID for this index
-					columnID := colIndex.ColumnID()
+			dvs.versionStore.indexMutex.RLock()
+			for _, index := range dvs.versionStore.indexes {
+				// Get column IDs for this index
+				columnIDs := index.ColumnIDs()
 
-					// Add each row's value to the index
-					for rowID, version := range allRows {
-						if !version.IsDeleted {
-							// Get the value for this column
+				// Add each row's values to the index
+				for rowID, version := range allRows {
+					if !version.IsDeleted {
+						// Create values array for each row
+						values := make([]storage.ColumnValue, len(columnIDs))
+
+						// Fill values array with data from the row
+						for i, columnID := range columnIDs {
 							if int(columnID) < len(version.Data) {
-								value := version.Data[columnID]
-								// Add to index directly - this enforces uniqueness constraints
-								colIndex.Add(value, rowID, 0)
+								values[i] = version.Data[columnID]
 							} else {
 								// Column doesn't exist, treat as NULL
-								colIndex.Add(nil, rowID, 0)
+								values[i] = nil
 							}
-							rowCount++
 						}
+
+						// Add values to the index
+						err := index.Add(values, rowID, 0)
+						if err != nil {
+							// Log error but continue processing
+							fmt.Printf("Error adding row %d to index %s: %v\n", rowID, index.Name(), err)
+						}
+
+						rowCount++
 					}
 				}
 			}
-			dvs.versionStore.columnarMutex.RUnlock()
+			dvs.versionStore.indexMutex.RUnlock()
 		}
 
 		return nil
@@ -472,7 +479,7 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 	return nil
 }
 
-// loadMetadataFile loads and processes a metadata file, including recreating columnar indexes
+// loadMetadataFile loads and processes a metadata file, including recreating indexes
 func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	// Open the metadata file
 	file, err := os.Open(path)
@@ -539,7 +546,7 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	}
 
 	// Process each index
-	var createdIndexes []*ColumnarIndex
+	var createdIndexes []storage.Index
 
 	// First read all index metadata
 	var indexMetaList []*IndexMetadata
@@ -603,11 +610,11 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	for _, indexMeta := range indexMetaList {
 		// Check if this index already exists
 		exists := false
-		dvs.versionStore.columnarMutex.RLock()
+		dvs.versionStore.indexMutex.RLock()
 
 		// First check if an index with this name already exists
 		// This is critical for custom-named indexes
-		for _, idx := range dvs.versionStore.columnarIndexes {
+		for _, idx := range dvs.versionStore.indexes {
 			if idx.Name() == indexMeta.Name {
 				exists = true
 				break
@@ -615,67 +622,49 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 		}
 
 		// Only if not found by name, check if the column already has an index
-		if !exists && indexMeta.ColumnName != "" {
-			if _, ok := dvs.versionStore.columnarIndexes[indexMeta.ColumnName]; ok {
+		if !exists && len(indexMeta.ColumnNames) > 0 {
+			if _, ok := dvs.versionStore.indexes[indexMeta.Name]; ok {
 				exists = true
 			}
 		}
 
-		dvs.versionStore.columnarMutex.RUnlock()
+		dvs.versionStore.indexMutex.RUnlock()
 
 		// Skip if the index already exists
 		if exists {
 			continue
 		}
 
-		// Create new columnar index
-		index, err := dvs.versionStore.CreateColumnarIndex(
-			indexMeta.TableName,
-			indexMeta.ColumnName,
-			indexMeta.ColumnID,
-			indexMeta.DataType,
-			indexMeta.IsUnique,
-			indexMeta.Name,
-		)
+		// Create the index using the standardized CreateIndex method
+		idx, err := dvs.versionStore.CreateIndex(indexMeta)
 		if err != nil {
-			return fmt.Errorf("failed to create columnar index: %w", err)
+			return fmt.Errorf("failed to create index: %w", err)
 		}
 
-		// If it's a columnar index, configure additional properties
-		if colIndex, ok := index.(*ColumnarIndex); ok {
-			// Set primary key flag
-			colIndex.isPrimaryKey = indexMeta.IsPrimaryKey
-
-			// Set time bucketing if needed
-			if indexMeta.EnableTimeBucketing {
-				colIndex.EnableTimeBucketing(indexMeta.TimeGranularity)
-			}
-
-			// Add to list of created indexes
-			createdIndexes = append(createdIndexes, colIndex)
-		}
+		// Add to list of created indexes
+		createdIndexes = append(createdIndexes, idx)
 	}
 
 	// Build indexes using optimized Build method
 	if len(createdIndexes) > 0 {
 		// Use the index's Build method which is optimized for bulk loading
 		for _, colIndex := range createdIndexes {
-			// Verify the index was added to the columnar indexes map
-			dvs.versionStore.columnarMutex.RLock()
+			// Verify the index was added to the indexes map
+			dvs.versionStore.indexMutex.RLock()
 			var found bool
-			for _, idx := range dvs.versionStore.columnarIndexes {
-				if idx.Name() == colIndex.name {
+			for _, idx := range dvs.versionStore.indexes {
+				if idx.Name() == colIndex.Name() {
 					found = true
 					break
 				}
 			}
-			dvs.versionStore.columnarMutex.RUnlock()
+			dvs.versionStore.indexMutex.RUnlock()
 
 			if !found {
-				// This is a crucial fix: manually add the index to the columnar indexes map if it's missing
-				dvs.versionStore.columnarMutex.Lock()
-				dvs.versionStore.columnarIndexes[colIndex.columnName] = colIndex
-				dvs.versionStore.columnarMutex.Unlock()
+				// This is a crucial fix: manually add the index to the indexes map if it's missing
+				dvs.versionStore.indexMutex.Lock()
+				dvs.versionStore.indexes[colIndex.Name()] = colIndex
+				dvs.versionStore.indexMutex.Unlock()
 			}
 		}
 	}

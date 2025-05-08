@@ -497,7 +497,7 @@ func (m *Int64Map[V]) fixChain(emptyIdx int) {
 		// For a key to be potentially affected, it must have its primary
 		// position earlier than our current checking position
 		primary := m.primaryIndex(m.data[nextIdx].Key)
-		if isBetween(primary, emptyIdx, nextIdx, m.mask) {
+		if isBetween(primary, emptyIdx, nextIdx) {
 			keysToReinsert = append(keysToReinsert, m.data[nextIdx])
 			m.data[nextIdx].Key = 0
 			m.data[nextIdx].Value = zero
@@ -537,7 +537,7 @@ func (m *Int64Map[V]) fixChain(emptyIdx int) {
 }
 
 // isBetween checks if idx is in the range [start, end] in a circular buffer
-func isBetween(original, empty, current, mask int) bool {
+func isBetween(original, empty, current int) bool {
 	if empty <= current {
 		return original <= empty || original > current
 	}

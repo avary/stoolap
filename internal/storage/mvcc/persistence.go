@@ -44,21 +44,18 @@ type PersistenceMeta struct {
 	lastWALLSN           atomic.Uint64 // Used during recovery
 }
 
-// IndexMetadata stores essential information about a columnar index
+// IndexMetadata stores essential information about an index
 type IndexMetadata struct {
-	Name                string                // Index name
-	TableName           string                // Table the index belongs to
-	ColumnName          string                // Column the index is for
-	ColumnID            int                   // ID of the column in the table schema
-	DataType            storage.DataType      // Type of data in the index
-	IsUnique            bool                  // Whether the index enforces uniqueness
-	IsPrimaryKey        bool                  // Whether the index is for a primary key
-	TimeGranularity     TimeBucketGranularity // Granularity for time bucketing
-	EnableTimeBucketing bool                  // Whether time bucketing is enabled
+	Name        string             // Index name
+	TableName   string             // Table the index belongs to
+	ColumnNames []string           // Names of the columns this index is for
+	ColumnIDs   []int              // IDs of the columns in the table schema
+	DataTypes   []storage.DataType // Types of data in the index
+	IsUnique    bool               // Whether the index enforces uniqueness
 }
 
 // SerializeIndexMetadata converts index metadata to binary format
-func SerializeIndexMetadata(index *ColumnarIndex) ([]byte, error) {
+func SerializeIndexMetadata(index storage.Index) ([]byte, error) {
 	if index == nil {
 		return nil, fmt.Errorf("index cannot be nil")
 	}
@@ -67,15 +64,36 @@ func SerializeIndexMetadata(index *ColumnarIndex) ([]byte, error) {
 	writer := binser.NewWriter()
 	defer writer.Release()
 
-	writer.WriteString(index.name)
-	writer.WriteString(index.tableName)
-	writer.WriteString(index.columnName)
-	writer.WriteInt32(int32(index.columnID))
-	writer.WriteUint8(uint8(index.dataType))
-	writer.WriteBool(index.isUnique)
-	writer.WriteBool(index.isPrimaryKey)
-	writer.WriteUint8(uint8(index.timeBucketGranularity))
-	writer.WriteBool(index.enableTimeBucketing)
+	// Write index name and table name
+	writer.WriteString(index.Name())
+	writer.WriteString(index.TableName())
+
+	// Get column names, IDs, and data types from the interface
+	columnNames := index.ColumnNames()
+	columnIDs := index.ColumnIDs()
+	dataTypes := index.DataTypes()
+
+	// Write column count
+	writer.WriteUint16(uint16(len(columnNames)))
+
+	// Write column names
+	for _, name := range columnNames {
+		writer.WriteString(name)
+	}
+
+	// Write column IDs
+	for _, id := range columnIDs {
+		writer.WriteInt32(int32(id))
+	}
+
+	// Write data types
+	writer.WriteUint16(uint16(len(dataTypes)))
+	for _, dataType := range dataTypes {
+		writer.WriteUint8(uint8(dataType))
+	}
+
+	// Write unique flag
+	writer.WriteBool(index.IsUnique())
 
 	return writer.Bytes(), nil
 }
@@ -90,6 +108,8 @@ func DeserializeIndexMetadata(data []byte) (*IndexMetadata, error) {
 	meta := &IndexMetadata{}
 
 	var err error
+
+	// Read index name and table name
 	meta.Name, err = reader.ReadString()
 	if err != nil {
 		return nil, fmt.Errorf("error reading index name: %w", err)
@@ -100,42 +120,50 @@ func DeserializeIndexMetadata(data []byte) (*IndexMetadata, error) {
 		return nil, fmt.Errorf("error reading table name: %w", err)
 	}
 
-	meta.ColumnName, err = reader.ReadString()
+	// Read column count
+	columnCount, err := reader.ReadUint16()
 	if err != nil {
-		return nil, fmt.Errorf("error reading column name: %w", err)
+		return nil, fmt.Errorf("error reading column count: %w", err)
 	}
 
-	columnID, err := reader.ReadInt32()
-	if err != nil {
-		return nil, fmt.Errorf("error reading column ID: %w", err)
+	// Read column names
+	meta.ColumnNames = make([]string, columnCount)
+	for i := uint16(0); i < columnCount; i++ {
+		meta.ColumnNames[i], err = reader.ReadString()
+		if err != nil {
+			return nil, fmt.Errorf("error reading column name %d: %w", i, err)
+		}
 	}
-	meta.ColumnID = int(columnID)
 
-	dataType, err := reader.ReadUint8()
-	if err != nil {
-		return nil, fmt.Errorf("error reading data type: %w", err)
+	// Read column IDs
+	meta.ColumnIDs = make([]int, columnCount)
+	for i := uint16(0); i < columnCount; i++ {
+		colID, err := reader.ReadInt32()
+		if err != nil {
+			return nil, fmt.Errorf("error reading column ID %d: %w", i, err)
+		}
+		meta.ColumnIDs[i] = int(colID)
 	}
-	meta.DataType = storage.DataType(dataType)
 
+	// Read data types
+	dataTypeCount, err := reader.ReadUint16()
+	if err != nil {
+		return nil, fmt.Errorf("error reading data type count: %w", err)
+	}
+
+	meta.DataTypes = make([]storage.DataType, dataTypeCount)
+	for i := uint16(0); i < dataTypeCount; i++ {
+		dataType, err := reader.ReadUint8()
+		if err != nil {
+			return nil, fmt.Errorf("error reading data type %d: %w", i, err)
+		}
+		meta.DataTypes[i] = storage.DataType(dataType)
+	}
+
+	// Read unique flag
 	meta.IsUnique, err = reader.ReadBool()
 	if err != nil {
 		return nil, fmt.Errorf("error reading unique flag: %w", err)
-	}
-
-	meta.IsPrimaryKey, err = reader.ReadBool()
-	if err != nil {
-		return nil, fmt.Errorf("error reading primary key flag: %w", err)
-	}
-
-	timeGranularity, err := reader.ReadUint8()
-	if err != nil {
-		return nil, fmt.Errorf("error reading time granularity: %w", err)
-	}
-	meta.TimeGranularity = TimeBucketGranularity(timeGranularity)
-
-	meta.EnableTimeBucketing, err = reader.ReadBool()
-	if err != nil {
-		return nil, fmt.Errorf("error reading time bucketing flag: %w", err)
 	}
 
 	return meta, nil
@@ -901,55 +929,15 @@ func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*s
 			// Ensure the table exists
 			pm.engine.mu.RLock()
 			vs, exists := pm.engine.versionStores[entry.TableName]
-			tableSchema, schemaExists := pm.engine.schemas[entry.TableName]
 			pm.engine.mu.RUnlock()
 
-			if !exists || !schemaExists {
+			if !exists {
 				return fmt.Errorf("table %s not found for index creation", entry.TableName)
 			}
 
-			// Find the column ID by name if it doesn't match
-			columnID := indexMeta.ColumnID
-			if columnID < 0 || columnID >= len(tableSchema.Columns) {
-				// Need to find the column by name
-				for i, col := range tableSchema.Columns {
-					if col.Name == indexMeta.ColumnName {
-						columnID = i
-						break
-					}
-				}
-			}
-
-			// Create the index
-			idx := NewColumnarIndex(
-				indexMeta.Name,
-				entry.TableName,
-				indexMeta.ColumnName,
-				columnID,
-				indexMeta.DataType,
-				vs,
-				indexMeta.IsUnique,
-			)
-
-			// Set additional properties
-			idx.isPrimaryKey = indexMeta.IsPrimaryKey
-
-			// Configure time bucketing if enabled
-			if indexMeta.EnableTimeBucketing {
-				idx.EnableTimeBucketing(indexMeta.TimeGranularity)
-			}
-
-			// Add the index to the version store
-			err = vs.AddIndex(idx)
+			_, err = vs.CreateIndex(indexMeta)
 			if err != nil {
-				return fmt.Errorf("failed to add index to version store: %w", err)
-			}
-
-			// Build the index (populates it with data)
-			err = idx.Build()
-			if err != nil {
-				fmt.Printf("Warning: Error building index %s: %v\n", indexMeta.Name, err)
-				// Continue anyway - partial index is better than no index
+				return fmt.Errorf("failed to create index %s on table %s: %w", indexMeta.Name, entry.TableName, err)
 			}
 
 			return nil

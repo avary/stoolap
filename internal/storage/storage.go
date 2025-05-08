@@ -278,20 +278,26 @@ type Index interface {
 	// Name returns the name of the index
 	Name() string
 
+	// TableName returns the name of the table this index belongs to
+	TableName() string
+
 	// Build builds the index
 	Build() error
 
-	// Add adds a value to the index with the given row IDs
-	Add(value ColumnValue, rowID int64, refID int64) error
+	// Add adds a values to the index with the given row IDs
+	Add(values []ColumnValue, rowID int64, refID int64) error
 
-	// Remove removes a value from the index
-	Remove(value ColumnValue, rowID int64, refID int64) error
+	// Remove removes a values from the index
+	Remove(values []ColumnValue, rowID int64, refID int64) error
 
-	// ColumnID returns the column ID for this index
-	ColumnID() int // Returns the column ID for this index
+	// ColumnIDs returns the column IDs for this index
+	ColumnIDs() []int // Returns the column ID for this index
 
 	// ColumnNames returns the column names for this index
 	ColumnNames() []string // Returns the column names for this index
+
+	// DataTypes returns the data types for this index
+	DataTypes() []DataType // Returns the data types for this index
 
 	// Type returns the type of index
 	IndexType() IndexType // Returns the type of index (e.g., BTree, Bitmap)
@@ -299,20 +305,20 @@ type Index interface {
 	// IsUnique returns true if this is a unique index
 	IsUnique() bool // Returns true if this is a unique index
 
-	// Find finds all pairs where the column equals the given value
-	Find(value ColumnValue) ([]IndexEntry, error)
+	// Find finds all pairs where the column equals the given values
+	Find(values []ColumnValue) ([]IndexEntry, error)
 
 	// FindRange finds all pairs where the column is in the given range
-	FindRange(min, max ColumnValue, minInclusive, maxInclusive bool) ([]IndexEntry, error)
+	FindRange(min, max []ColumnValue, minInclusive, maxInclusive bool) ([]IndexEntry, error)
 
-	// FindWithOperator finds all pairs where the column matches the given operator and value
-	FindWithOperator(op Operator, value ColumnValue) ([]IndexEntry, error)
+	// FindWithOperator finds all pairs where the column matches the given operator and values
+	FindWithOperator(op Operator, values []ColumnValue) ([]IndexEntry, error)
 
-	// GetRowIDsEqual returns row IDs with the given value
-	GetRowIDsEqual(value ColumnValue) []int64
+	// GetRowIDsEqual returns row IDs with the given values
+	GetRowIDsEqual(values []ColumnValue) []int64
 
 	// GetRowIDsInRange returns row IDs with values in the given range
-	GetRowIDsInRange(minValue, maxValue ColumnValue, includeMin, includeMax bool) []int64
+	GetRowIDsInRange(minValue, maxValue []ColumnValue, includeMin, includeMax bool) []int64
 
 	// GetFilteredRowIDs returns row IDs that match the given expression
 	GetFilteredRowIDs(expr Expression) []int64
