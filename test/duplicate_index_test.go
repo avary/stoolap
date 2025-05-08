@@ -38,7 +38,7 @@ func TestDuplicateIndexCreation(t *testing.T) {
 		// Check if the error message contains the expected text
 		expectedErrorText := "cannot create non-unique index; a unique index already exists for column"
 		if !strings.Contains(err.Error(), expectedErrorText) {
-			t.Errorf("Unexpected error message. Expected to contain '%s', got: %v", 
+			t.Errorf("Unexpected error message. Expected to contain '%s', got: %v",
 				expectedErrorText, err)
 		}
 
@@ -81,7 +81,7 @@ func TestDuplicateIndexCreation(t *testing.T) {
 		// Check if the error message contains the expected text
 		expectedErrorText := "cannot create unique index; a non-unique index already exists for column"
 		if !strings.Contains(err.Error(), expectedErrorText) {
-			t.Errorf("Unexpected error message. Expected to contain '%s', got: %v", 
+			t.Errorf("Unexpected error message. Expected to contain '%s', got: %v",
 				expectedErrorText, err)
 		}
 

@@ -967,7 +967,7 @@ func (vs *VersionStore) CreateColumnarIndex(tableName string, columnName string,
 
 	// First check with a read lock to see if the index already exists
 	vs.indexMutex.RLock()
-	
+
 	// Check for existing index by name
 	indexExists := false
 	for _, idx := range vs.indexes {
@@ -1043,14 +1043,14 @@ func (vs *VersionStore) GetColumnarIndex(indexIdentifier string) (storage.Index,
 	if index, exists := vs.indexes[indexIdentifier]; exists {
 		return index, nil
 	}
-	
+
 	// If not found, search for index with the given name
 	for _, index := range vs.indexes {
 		if index.Name() == indexIdentifier {
 			return index, nil
 		}
 	}
-	
+
 	return nil, fmt.Errorf("index %s not found", indexIdentifier)
 }
 
@@ -1216,7 +1216,7 @@ func (vs *VersionStore) CreateIndex(meta *IndexMetadata) (storage.Index, error) 
 
 	// Release the read lock before proceeding
 	vs.indexMutex.RUnlock()
-	
+
 	// We now check for existing indexes by name instead of by column
 
 	// Create the appropriate type of index based on the number of columns

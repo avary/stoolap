@@ -3,7 +3,6 @@ package mvcc
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -1143,75 +1142,15 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 
 // Optimized PK cache with more metadata for faster extraction
 type schemaPKInfo struct {
-	pkIndices       []int                                      // Primary key column indices
-	hasPK           bool                                       // Whether this schema has a primary key
-	pkType          storage.DataType                           // Primary key data type (for single PKs)
-	singleIntPK     bool                                       // Special flag for single integer PKs (fast path)
-	singlePKIndex   int                                        // Index of the single PK column (for fast path)
-	fastAccessFuncs []func(storage.ColumnValue) (uint64, bool) // Type-specific optimized access functions
+	pkIndices     []int            // Primary key column indices
+	hasPK         bool             // Whether this schema has a primary key
+	pkType        storage.DataType // Primary key data type (for single PKs)
+	singleIntPK   bool             // Special flag for single integer PKs (fast path)
+	singlePKIndex int              // Index of the single PK column (for fast path)
 }
 
 // Cache of schema PK info to avoid expensive lookups
 var schemaPKInfoCache sync.Map
-
-// Internal constant for hash computation
-const fnvPrime uint64 = 1099511628211
-const fnvOffset uint64 = 14695981039346656037
-
-// Precomputed fast access functions by column type
-var pkAccessFuncs = map[storage.DataType]func(storage.ColumnValue) (uint64, bool){
-	storage.TypeInteger: func(cv storage.ColumnValue) (uint64, bool) {
-		if v, ok := cv.AsInt64(); ok {
-			return uint64(v), true
-		}
-		return 0, false
-	},
-	storage.TypeFloat: func(cv storage.ColumnValue) (uint64, bool) {
-		if v, ok := cv.AsFloat64(); ok {
-			return math.Float64bits(v), true
-		}
-		return 0, false
-	},
-	storage.TypeBoolean: func(cv storage.ColumnValue) (uint64, bool) {
-		if v, ok := cv.AsBoolean(); ok {
-			if v {
-				return 1, true
-			}
-			return 0, true
-		}
-		return 0, false
-	},
-	storage.TypeTimestamp: func(cv storage.ColumnValue) (uint64, bool) {
-		if v, ok := cv.AsTimestamp(); ok {
-			return uint64(v.UnixNano()), true
-		}
-		return 0, false
-	},
-	storage.TypeString: func(cv storage.ColumnValue) (uint64, bool) {
-		// Fast path for DirectValue strings
-		if dv, ok := cv.(*storage.DirectValue); ok && dv.AsInterface() != nil {
-			if strVal, ok := dv.AsInterface().(string); ok {
-				hash := fnvOffset
-				for i := 0; i < len(strVal); i++ {
-					hash ^= uint64(strVal[i])
-					hash *= fnvPrime
-				}
-				return hash, true
-			}
-		}
-
-		// Regular string path
-		if strVal, ok := cv.AsString(); ok {
-			hash := fnvOffset
-			for i := 0; i < len(strVal); i++ {
-				hash ^= uint64(strVal[i])
-				hash *= fnvPrime
-			}
-			return hash, true
-		}
-		return 0, false
-	},
-}
 
 // getOrCreatePKInfo gets or creates cached PK info for a schema
 func getOrCreatePKInfo(schema storage.Schema) *schemaPKInfo {
@@ -1264,29 +1203,12 @@ func getOrCreatePKInfo(schema storage.Schema) *schemaPKInfo {
 		}
 	}
 
-	// Create fast access functions
-	fastAccessFuncs := make([]func(storage.ColumnValue) (uint64, bool), len(pkIndices))
-	for i, idx := range pkIndices {
-		if idx < len(schema.Columns) {
-			colType := schema.Columns[idx].Type
-			if accessFunc, ok := pkAccessFuncs[colType]; ok {
-				fastAccessFuncs[i] = accessFunc
-			} else {
-				// Default access function for unknown types
-				fastAccessFuncs[i] = func(cv storage.ColumnValue) (uint64, bool) {
-					return uint64(cv.Type()), false
-				}
-			}
-		}
-	}
-
 	info := &schemaPKInfo{
-		pkIndices:       pkIndices,
-		hasPK:           hasPK,
-		pkType:          pkType,
-		singleIntPK:     singleIntPK,
-		singlePKIndex:   singlePKIndex,
-		fastAccessFuncs: fastAccessFuncs,
+		pkIndices:     pkIndices,
+		hasPK:         hasPK,
+		pkType:        pkType,
+		singleIntPK:   singleIntPK,
+		singlePKIndex: singlePKIndex,
 	}
 
 	// Store in cache (if another thread did this simultaneously, we'll just have a duplicate that GC will clean up)
@@ -2131,18 +2053,11 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 
 	// Fast path for common case: direct simple expression on a single column
 	if simpleExpr, ok := schemaExpr.Expr.(*expression.SimpleExpression); ok {
-		// Check if we have an index for this column
-		mt.versionStore.indexMutex.RLock()
-		_, indexExists := mt.versionStore.indexes[simpleExpr.Column]
-		mt.versionStore.indexMutex.RUnlock()
-
-		if indexExists {
-			// Get the index directly - if it fails, we'll fall back
-			index, err := mt.GetColumnarIndex(simpleExpr.Column)
-			if err == nil {
-				// Use the optimized path for this index
-				return GetRowIDsFromColumnarIndex(simpleExpr, index)
-			}
+		// Get the index directly using our consistent method - it will check all naming patterns
+		index, err := mt.GetColumnarIndex(simpleExpr.Column)
+		if err == nil {
+			// Use the optimized path for this index
+			return GetRowIDsFromColumnarIndex(simpleExpr, index)
 		}
 	}
 
@@ -2156,48 +2071,34 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 			if expr1.Column == expr2.Column {
 				colName := expr1.Column
 
-				// Check if we have an index for this column
-				mt.versionStore.indexMutex.RLock()
-				_, indexExists := mt.versionStore.indexes[colName]
-				mt.versionStore.indexMutex.RUnlock()
-
-				if indexExists {
-					// Get the index directly
-					index, err := mt.GetColumnarIndex(colName)
-					if err == nil {
-						// Let the index handle the AND condition directly
-						return index.GetFilteredRowIDs(andExpr)
-					}
+				// Get the index directly using our consistent method
+				index, err := mt.GetColumnarIndex(colName)
+				if err == nil {
+					// Let the index handle the AND condition directly
+					return index.GetFilteredRowIDs(andExpr)
 				}
 			} else {
 				// Case 2: Conditions on different columns (e.g., x > 10 AND y = true)
-				mt.versionStore.indexMutex.RLock()
-				_, index1Exists := mt.versionStore.indexes[expr1.Column]
-				_, index2Exists := mt.versionStore.indexes[expr2.Column]
-				mt.versionStore.indexMutex.RUnlock()
+				// Get the first index directly
+				index1, err1 := mt.GetColumnarIndex(expr1.Column)
+				// Get the second index directly
+				index2, err2 := mt.GetColumnarIndex(expr2.Column)
 
 				// If we have both indexes, we can apply them independently and intersect the results
-				if index1Exists && index2Exists {
-					// Get the first index
-					index1, err1 := mt.GetColumnarIndex(expr1.Column)
-					// Get the second index
-					index2, err2 := mt.GetColumnarIndex(expr2.Column)
+				if err1 == nil && err2 == nil {
+					// Get matching row IDs from first condition
+					rowIDs1 := GetRowIDsFromColumnarIndex(expr1, index1)
 
-					if err1 == nil && err2 == nil {
-						// Get matching row IDs from first condition
-						rowIDs1 := GetRowIDsFromColumnarIndex(expr1, index1)
+					// Get matching row IDs from second condition
+					rowIDs2 := GetRowIDsFromColumnarIndex(expr2, index2)
 
-						// Get matching row IDs from second condition
-						rowIDs2 := GetRowIDsFromColumnarIndex(expr2, index2)
-
-						// If either result set is empty, return empty result
-						if len(rowIDs1) == 0 || len(rowIDs2) == 0 {
-							return nil
-						}
-
-						// Intersect the results and return
-						return intersectSortedIDs(rowIDs1, rowIDs2)
+					// If either result set is empty, return empty result
+					if len(rowIDs1) == 0 || len(rowIDs2) == 0 {
+						return nil
 					}
+
+					// Intersect the results and return
+					return intersectSortedIDs(rowIDs1, rowIDs2)
 				}
 			}
 		}
@@ -2212,15 +2113,9 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 	// Optimization: if there's only one column reference, retrieve directly
 	if len(columnRefs) == 1 {
 		colName := columnRefs[0]
-		mt.versionStore.indexMutex.RLock()
-		_, exists := mt.versionStore.indexes[colName]
-		mt.versionStore.indexMutex.RUnlock()
-
-		if exists {
-			index, err := mt.GetColumnarIndex(colName)
-			if err == nil {
-				return GetRowIDsFromColumnarIndex(schemaExpr.Expr, index)
-			}
+		index, err := mt.GetColumnarIndex(colName)
+		if err == nil {
+			return GetRowIDsFromColumnarIndex(schemaExpr.Expr, index)
 		}
 	}
 
@@ -2228,16 +2123,14 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 	var matchingRowIDs []int64
 	var foundIndex bool
 
-	// Take a snapshot of available column indexes under a read lock
-	// This avoids holding locks during expensive operations
-	mt.versionStore.indexMutex.RLock()
+	// Create a list of available columnar indexes for these columns
 	availableIndexColumns := make([]string, 0, len(columnRefs))
 	for _, colName := range columnRefs {
-		if _, exists := mt.versionStore.indexes[colName]; exists {
+		// Check if index exists using our consistent method
+		if _, err := mt.GetColumnarIndex(colName); err == nil {
 			availableIndexColumns = append(availableIndexColumns, colName)
 		}
 	}
-	mt.versionStore.indexMutex.RUnlock()
 
 	// Optimization: If no indexes are available, return early
 	if len(availableIndexColumns) == 0 {

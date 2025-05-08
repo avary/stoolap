@@ -484,19 +484,19 @@ func hasSameColumns(columns1, columns2 []string) bool {
 	if len(columns1) != len(columns2) {
 		return false
 	}
-	
+
 	// Create maps for O(1) lookup
 	set1 := make(map[string]struct{}, len(columns1))
 	for _, col := range columns1 {
 		set1[col] = struct{}{}
 	}
-	
+
 	// Check if all columns in columns2 are in columns1
 	for _, col := range columns2 {
 		if _, exists := set1[col]; !exists {
 			return false
 		}
 	}
-	
+
 	return true
 }
