@@ -459,33 +459,3 @@ func (c *Conn) IsValid() bool {
 	// Quick check by pinging the database
 	// return c.Ping(context.Background()) == nil
 }
-
-// CleanupDriverDatabase properly closes and removes the database with the given DSN
-// This should only be called when the application is actually shutting down
-// and no more connections to this database will be needed
-func (d *Driver) CleanupDriverDatabase(dsn string) error {
-	d.connsMu.Lock()
-	defer d.connsMu.Unlock()
-
-	entry, ok := d.conns[dsn]
-	if !ok {
-		return nil // Already removed
-	}
-
-	entry.createMu.Lock()
-	defer entry.createMu.Unlock()
-
-	// Close the database engine
-	if entry.db != nil {
-		err := entry.db.Close()
-
-		// Remove from map regardless of error
-		delete(d.conns, dsn)
-
-		return err
-	}
-
-	// No database to close
-	delete(d.conns, dsn)
-	return nil
-}

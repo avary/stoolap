@@ -922,14 +922,14 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 		// For equality operator with integer PK, we can do direct deletion (fastest path)
 		if pkInfo.Operator == storage.EQ && pkInfo.ID != 0 {
 			// Check if row exists and is visible
-			_, exists := mt.txnVersions.Get(pkInfo.ID)
+			row, exists := mt.txnVersions.Get(pkInfo.ID)
 			if !exists {
 				// Row doesn't exist or isn't visible to this transaction
 				return 0, nil
 			}
 
 			// Mark the row as deleted with tombstone
-			mt.txnVersions.Put(pkInfo.ID, nil, true)
+			mt.txnVersions.Put(pkInfo.ID, row, true)
 
 			// Return count of 1 row deleted
 			return 1, nil
@@ -974,7 +974,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 					if mt.txnVersions.HasLocallySeen(id) {
 						if row, exists := mt.txnVersions.Get(id); exists && row != nil {
 							// Mark as deleted with tombstone
-							mt.txnVersions.Put(id, nil, true)
+							mt.txnVersions.Put(id, row, true)
 							deleteCount++
 						}
 					}
@@ -987,7 +987,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				for id, version := range globalRows.All() {
 					if !version.IsDeleted {
 						// Mark as deleted
-						mt.txnVersions.Put(id, nil, true)
+						mt.txnVersions.Put(id, version.Data, true)
 						deleteCount++
 					}
 				}
@@ -1049,7 +1049,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 					if mt.txnVersions.HasLocallySeen(id) {
 						if row, exists := mt.txnVersions.Get(id); exists && row != nil {
 							// Mark as deleted with tombstone
-							mt.txnVersions.Put(id, nil, true)
+							mt.txnVersions.Put(id, row, true)
 							deleteCount++
 						}
 					}
@@ -1061,7 +1061,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				for id, version := range globalRows.All() {
 					if !version.IsDeleted {
 						// Mark as deleted
-						mt.txnVersions.Put(id, nil, true)
+						mt.txnVersions.Put(id, version.Data, true)
 						deleteCount++
 					}
 				}
@@ -1100,7 +1100,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 	// PART 2: Process global versions with batch limiting
 	processCount, _ := mt.processGlobalVersions(filterExpr, processedKeys, func(rowID int64, row storage.Row) error {
 		// Mark as deleted in transaction's local versions
-		mt.txnVersions.Put(rowID, nil, true)
+		mt.txnVersions.Put(rowID, row, true)
 		return nil
 	}, 0) // Process in batches all at once
 
@@ -1127,7 +1127,7 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 			}
 
 			// Mark as deleted
-			mt.txnVersions.Put(rowID, nil, true)
+			mt.txnVersions.Put(rowID, row, true)
 			deleteCount++
 		}
 
@@ -1439,6 +1439,7 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 	index := NewColumnarIndex(indexName, mt.versionStore.tableName,
 		columnName, columnID, dataType, mt.versionStore, isUnique)
 
+	fmt.Printf("Index building %s on column %s\n", indexName, columnName)
 	// Build the index from existing data
 	if err := index.Build(); err != nil {
 		index.Close()

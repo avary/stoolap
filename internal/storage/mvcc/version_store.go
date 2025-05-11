@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
@@ -40,15 +41,19 @@ type VersionStore struct {
 
 	// Reference to the engine that owns this version store
 	engine *MVCCEngine // Engine that owns this version store
+
+	// Hot/Cold data management
+	accessTimes *fastmap.SyncInt64Map[int64] // Maps rowID -> last access timestamp
 }
 
 // NewVersionStore creates a new version store
 func NewVersionStore(tableName string, engine *MVCCEngine) *VersionStore {
 	vs := &VersionStore{
-		versions:  fastmap.NewSyncInt64Map[*RowVersion](16), // Start with reasonable capacity
-		tableName: tableName,
-		indexes:   make(map[string]storage.Index),
-		engine:    engine,
+		versions:    fastmap.NewSyncInt64Map[*RowVersion](16), // Start with reasonable capacity
+		tableName:   tableName,
+		indexes:     make(map[string]storage.Index),
+		engine:      engine,
+		accessTimes: fastmap.NewSyncInt64Map[int64](16), // Initialize access times tracking
 	}
 	// Initialize atomic.Bool to false (not closed)
 	vs.closed.Store(false)
@@ -157,9 +162,12 @@ func (vs *VersionStore) AddVersion(rowID int64, version RowVersion) {
 		// Update the fields of the existing version
 		rv.TxnID = version.TxnID
 		rv.IsDeleted = version.IsDeleted
-		rv.Data = version.Data
 		rv.RowID = version.RowID
 		rv.CreateTime = version.CreateTime
+
+		if !version.IsDeleted {
+			rv.Data = version.Data
+		}
 
 		// Update columnar indexes
 		// First check if there are any indexes to update
@@ -252,6 +260,10 @@ func (vs *VersionStore) GetVisibleVersion(rowID int64, txnID int64) (RowVersion,
 			if version, found := diskStore.GetVersionFromDisk(rowID); found {
 				// Cache the version in memory for future access
 				vs.AddVersion(rowID, version)
+
+				// Track access time for rows loaded from disk
+				vs.accessTimes.Set(rowID, GetFastTimestamp())
+
 				return version, true
 			}
 		}
@@ -317,6 +329,9 @@ func (vs *VersionStore) IterateVisibleVersions(rowIDs []int64, txnID int64,
 				if version, found := diskStore.GetVersionFromDisk(rowID); found {
 					// Cache the version in memory for future access
 					vs.AddVersion(rowID, version)
+
+					// Track access time for this row loaded from disk
+					vs.accessTimes.Set(rowID, GetFastTimestamp())
 
 					// Call the callback
 					if !callback(rowID, version) {
@@ -403,6 +418,9 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) *fa
 						// Cache the version in memory for future access
 						vs.AddVersion(rowID, version)
 
+						// Track access time for disk-loaded row
+						vs.accessTimes.Set(rowID, GetFastTimestamp())
+
 						// Get the cached version pointer from memory to ensure consistency with the pool
 						if versionPtr, exists := vs.versions.Get(rowID); exists {
 							result.Put(rowID, versionPtr)
@@ -417,6 +435,9 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) *fa
 						if !version.IsDeleted {
 							// Cache the version in memory for future access
 							vs.AddVersion(rowID, version)
+
+							// Track access time for disk-loaded row
+							vs.accessTimes.Set(rowID, GetFastTimestamp())
 
 							// Get the cached version from memory
 							if versionPtr, exists := vs.versions.Get(rowID); exists {
@@ -563,6 +584,9 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) *fastmap.Int64Map[*Ro
 					// Cache in memory for future use
 					vs.AddVersion(rowID, diskVersion)
 
+					// Track access time for disk-loaded row
+					vs.accessTimes.Set(rowID, GetFastTimestamp())
+
 					// Get the newly cached version for consistency
 					if versionPtr, exists := vs.versions.Get(rowID); exists {
 						result.Put(rowID, versionPtr)
@@ -620,6 +644,9 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) *fastmap.Int64Map[*Ro
 
 				// Cache in memory for future use
 				vs.AddVersion(rowID, diskVersion)
+
+				// Track access time for disk-loaded row
+				vs.accessTimes.Set(rowID, GetFastTimestamp())
 
 				// Get the newly cached version for consistency
 				if versionPtr, exists := vs.versions.Get(rowID); exists {
@@ -783,26 +810,6 @@ func (tvs *TransactionVersionStore) Get(rowID int64) (storage.Row, bool) {
 			}
 			return nil, false
 		}
-
-		// Check if engine has persistence enabled and if there's a disk store for this table
-		if tvs.parentStore.engine != nil && tvs.parentStore.engine.persistence != nil &&
-			tvs.parentStore.engine.persistence.IsEnabled() {
-
-			// Get the disk store for this table
-			tableName := tvs.parentStore.tableName
-			if diskStore, exists := tvs.parentStore.engine.persistence.diskStores[tableName]; exists {
-				// Check if the row exists in the disk store
-				if version, found := diskStore.GetVersionFromDisk(rowID); found {
-					// All rows from disk snapshots have TxnID = -1 and are always visible
-					if !version.IsDeleted {
-						// If we found a version on disk, add it to in-memory store for future access
-						tvs.parentStore.AddVersion(rowID, version)
-						return version.Data, true
-					}
-					return nil, false
-				}
-			}
-		}
 	}
 
 	return nil, false
@@ -905,6 +912,9 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() *fastmap.Int64Map[storag
 
 					// Cache in memory for future use
 					vs.AddVersion(rowID, diskVersion)
+
+					// Track access time for disk-loaded row
+					vs.accessTimes.Set(rowID, GetFastTimestamp())
 
 					return true // Continue iteration
 				})
@@ -1054,6 +1064,116 @@ func (vs *VersionStore) GetColumnarIndex(indexIdentifier string) (storage.Index,
 	}
 
 	return nil, fmt.Errorf("index %s not found", indexIdentifier)
+}
+
+// UpdateAccessTime records the current time as the last access time for a row
+// This is used to identify hot/cold data for memory management
+func (vs *VersionStore) UpdateAccessTime(rowID int64) {
+	// Only track if persistence is enabled (otherwise we're memory-only and don't need this)
+	if vs.engine != nil && vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
+		vs.accessTimes.Set(rowID, GetFastTimestamp())
+	}
+}
+
+// CleanupDeletedRows removes deleted rows that are older than the specified retention period
+// This helps prevent memory leaks from accumulated deleted rows
+func (vs *VersionStore) CleanupDeletedRows(retentionPeriod time.Duration) int {
+	// Check if the version store is closed
+	if vs.closed.Load() {
+		return 0 // Skip cleanup if closed
+	}
+
+	// Current time for comparison
+	now := time.Now().UnixNano()
+	cutoffTime := now - retentionPeriod.Nanoseconds()
+
+	var rowsToDelete []int64
+
+	// First pass: identify deleted rows older than the retention period
+	vs.versions.ForEach(func(rowID int64, version *RowVersion) bool {
+		if version.IsDeleted && version.CreateTime < cutoffTime {
+			rowsToDelete = append(rowsToDelete, rowID)
+		}
+		return true // Continue iteration
+	})
+
+	// Second pass: remove the identified rows
+	for _, rowID := range rowsToDelete {
+		vs.versions.Del(rowID)
+		// Also remove from access times tracking
+		vs.accessTimes.Del(rowID)
+	}
+
+	return len(rowsToDelete)
+}
+
+// EvictColdData removes rows that haven't been accessed for longer than the specified period
+// but only if they are already stored on disk (so they can be loaded again if needed)
+// This helps manage memory usage by keeping only hot data in memory
+func (vs *VersionStore) EvictColdData(coldPeriod time.Duration, maxRowsToEvict int) int {
+	// Check if the version store is closed
+	if vs.closed.Load() {
+		return 0 // Skip cleanup if closed
+	}
+
+	// Skip if persistence is not enabled
+	if vs.engine == nil || vs.engine.persistence == nil || !vs.engine.persistence.IsEnabled() {
+		return 0 // Memory-only mode, no eviction
+	}
+
+	// Get the disk store for this table
+	diskStore, exists := vs.engine.persistence.diskStores[vs.tableName]
+	if !exists || diskStore == nil {
+		return 0 // No disk store, cannot evict
+	}
+
+	// Current time for comparison
+	now := GetFastTimestamp()
+	cutoffTime := now - coldPeriod.Nanoseconds()
+
+	var coldRows []int64
+
+	// First pass: identify cold rows (not accessed recently)
+	vs.accessTimes.ForEach(func(rowID int64, lastAccess int64) bool {
+		// Skip if we've already found enough rows to evict
+		if len(coldRows) >= maxRowsToEvict {
+			return false // Stop iteration
+		}
+
+		// Check if this row is cold (not accessed recently)
+		if lastAccess < cutoffTime {
+			// Only evict if not deleted (deleted rows should be handled by CleanupDeletedRows)
+			if versionPtr, exists := vs.versions.Get(rowID); exists && !versionPtr.IsDeleted {
+				// Only evict if we have a disk version that can be reloaded
+				if diskStore.QuickCheckRowExists(rowID) {
+					coldRows = append(coldRows, rowID)
+				}
+			}
+		}
+
+		return true // Continue iteration
+	})
+
+	// Second pass: evict the identified cold rows
+	for _, rowID := range coldRows {
+		// Remove from memory version store
+		vs.versions.Del(rowID)
+
+		// Remove from access times tracking
+		vs.accessTimes.Del(rowID)
+
+		// CRITICAL: Remove from the newest DiskReader's LoadedRowIDs to allow reloading later
+		// This allows the row to be loaded again from disk when it's next accessed
+		if len(diskStore.readers) > 0 {
+			// Only update the newest reader, which is the one we load from
+			newestReader := diskStore.readers[len(diskStore.readers)-1]
+			if newestReader.LoadedRowIDs != nil {
+				newestReader.LoadedRowIDs.Del(rowID)
+			}
+		}
+	}
+
+	return len(coldRows)
 }
 
 // Close releases resources associated with this version store
@@ -1312,7 +1432,7 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 	}
 
 	// If the row is deleted, remove from all indexes
-	if version.IsDeleted || version.Data == nil {
+	if version.IsDeleted {
 		for _, index := range vs.indexes {
 			// Get the column IDs for this index
 			columnIDs := index.ColumnIDs()

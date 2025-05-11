@@ -545,8 +545,55 @@ func (e *MVCCEngine) CleanupOldTransactions(maxAge time.Duration) int {
 	return e.registry.CleanupOldTransactions(maxAge)
 }
 
+// CleanupDeletedRows removes deleted rows that are older than maxAge from all tables
+// Returns the total number of rows removed
+func (e *MVCCEngine) CleanupDeletedRows(maxAge time.Duration) int {
+	if !e.open.Load() {
+		return 0 // Engine not open
+	}
+
+	totalRemoved := 0
+
+	// Lock for accessing version stores
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Iterate through all tables and clean up deleted rows in each
+	for _, vs := range e.versionStores {
+		if vs != nil {
+			totalRemoved += vs.CleanupDeletedRows(maxAge)
+		}
+	}
+
+	return totalRemoved
+}
+
+// EvictColdData evicts cold data from memory across all tables
+// This helps manage memory usage by keeping only hot data in memory
+// Returns the total number of rows evicted
+func (e *MVCCEngine) EvictColdData(coldPeriod time.Duration, maxRowsPerTable int) int {
+	if !e.open.Load() {
+		return 0 // Engine not open
+	}
+
+	totalEvicted := 0
+
+	// Lock for accessing version stores
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Iterate through all tables and evict cold data from each
+	for _, vs := range e.versionStores {
+		if vs != nil {
+			totalEvicted += vs.EvictColdData(coldPeriod, maxRowsPerTable)
+		}
+	}
+
+	return totalEvicted
+}
+
 // StartPeriodicCleanup starts a goroutine that periodically cleans up old transactions
-// Returns a function that can be called to stop the cleanup process
+// and deleted rows. Returns a function that can be called to stop the cleanup process.
 func (e *MVCCEngine) StartPeriodicCleanup(interval, maxAge time.Duration) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -557,7 +604,21 @@ func (e *MVCCEngine) StartPeriodicCleanup(interval, maxAge time.Duration) func()
 		for {
 			select {
 			case <-ticker.C:
-				e.CleanupOldTransactions(maxAge)
+				// Clean up old transactions
+				txnCount := e.CleanupOldTransactions(maxAge)
+
+				// Clean up deleted rows using the same maxAge parameter
+				// This keeps consistency between transaction and version cleanup
+				rowCount := e.CleanupDeletedRows(maxAge)
+
+				// Evict cold data that hasn't been accessed in 2x maxAge
+				// Limit to 1000 rows per table to avoid excessive disk I/O
+				evictedCount := e.EvictColdData(2*maxAge, 1000)
+
+				if rowCount > 0 || txnCount > 0 || evictedCount > 0 {
+					fmt.Printf("Cleanup: removed %d transactions, %d deleted rows older than %s, evicted %d cold rows\n",
+						txnCount, rowCount, maxAge, evictedCount)
+				}
 			case <-ctx.Done():
 				return
 			}

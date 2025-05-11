@@ -521,7 +521,7 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 		// After loading the snapshot, build indexes directly with data from the reader
 		// This is critical to ensure that unique constraints are enforced properly
 		// but we do it in a memory-efficient way by not loading all rows to memory first
-		dvs.versionStore.indexMutex.RLock()
+		/* dvs.versionStore.indexMutex.RLock()
 		hasIndexes := len(dvs.versionStore.indexes) > 0
 		dvs.versionStore.indexMutex.RUnlock()
 
@@ -567,7 +567,7 @@ func (dvs *DiskVersionStore) LoadSnapshots() error {
 				}
 			}
 			dvs.versionStore.indexMutex.RUnlock()
-		}
+		} */
 
 		return nil
 	}
