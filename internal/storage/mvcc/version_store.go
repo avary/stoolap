@@ -19,6 +19,10 @@ type RowVersion struct {
 	CreateTime int64       // Timestamp when this version was created
 }
 
+func (rv *RowVersion) String() string {
+	return fmt.Sprintf("RowVersion{TxnID: %d, IsDeleted: %t, RowID: %d, CreateTime: %d}", rv.TxnID, rv.IsDeleted, rv.RowID, rv.CreateTime)
+}
+
 // VersionStore tracks the latest committed version of each row for a table
 // Simplified to keep only one version per row (the latest committed version)
 type VersionStore struct {

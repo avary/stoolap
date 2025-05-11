@@ -7,12 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sync"
 
 	sqlexecutor "github.com/stoolap/stoolap/internal/sql"
 	"github.com/stoolap/stoolap/internal/storage"
 
 	// Import the storage engine
 	_ "github.com/stoolap/stoolap/internal/storage/mvcc"
+)
+
+// Global engine registry to ensure only one engine instance per DSN
+var (
+	// engineRegistry maps DSN strings to engine instances
+	engineRegistry = make(map[string]*DB)
+	// engineMutex protects access to the engine registry
+	engineMutex sync.RWMutex
 )
 
 // DB represents a stoolap database
@@ -29,8 +38,30 @@ const (
 )
 
 // Open opens a database connection
+// STRICT RULE: Only ONE engine instance can exist per DSN for the entire application lifetime
+// Any attempt to open the same DSN again will return the existing engine instance
 func Open(dsn string) (*DB, error) {
-	var engine storage.Engine
+	// First check if we already have an engine for this DSN in our registry
+	engineMutex.RLock()
+	db, exists := engineRegistry[dsn]
+	engineMutex.RUnlock()
+
+	// If we found an existing engine, return it immediately
+	if exists {
+		fmt.Printf("SINGLETON: Reusing existing engine for DSN: %s (only one instance allowed per DSN)\n", dsn)
+		return db, nil
+	}
+
+	// Acquire write lock for creating a new engine
+	engineMutex.Lock()
+	defer engineMutex.Unlock()
+
+	// Double-check after acquiring the lock
+	if db, exists := engineRegistry[dsn]; exists {
+		return db, nil
+	}
+
+	// Not found in registry, create a new engine
 
 	// Parse URL to validate and extract scheme
 	parsedURL, err := url.Parse(dsn)
@@ -59,7 +90,7 @@ func Open(dsn string) (*DB, error) {
 	}
 
 	// Create the engine with the validated connection string
-	engine, err = factory.Create(dsn)
+	engine, err := factory.Create(dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -68,13 +99,36 @@ func Open(dsn string) (*DB, error) {
 		return nil, err
 	}
 
-	return &DB{
+	// Create new DB instance
+	db = &DB{
 		engine: engine,
-	}, nil
+	}
+
+	// Add to registry
+	engineRegistry[dsn] = db
+	fmt.Printf("SINGLETON: Created new engine for DSN: %s (this DSN is now locked for the application lifetime)\n", dsn)
+
+	return db, nil
 }
 
-// Close closes the database connection
+// Close closes the database connection and releases resources
+// This will actually close the engine and remove it from the registry
 func (db *DB) Close() error {
+	fmt.Printf("Closing database...\n")
+	engineMutex.Lock()
+	defer engineMutex.Unlock()
+
+	// Find and remove this engine from the registry
+	for dsn, registeredDB := range engineRegistry {
+		if registeredDB == db {
+			delete(engineRegistry, dsn)
+			fmt.Printf("Engine for DSN '%s' is being closed and removed from registry\n", dsn)
+			break
+		}
+	}
+
+	fmt.Printf("Closing engine for DSN '%s'\n", db.engine.Path())
+	// Actually close the engine
 	return db.engine.Close()
 }
 

@@ -1244,8 +1244,12 @@ func (wm *WALManager) writeEnhancedCheckpointMeta(walFile string, lsn uint64, is
 // This is used after a successful checkpoint to reclaim disk space
 func (wm *WALManager) TruncateWAL(upToLSN uint64) error {
 	// Skip if not running or if upToLSN is zero (no valid checkpoint)
-	if !wm.running.Load() || upToLSN == 0 {
-		return fmt.Errorf("WAL manager is not running or invalid LSN")
+	if !wm.running.Load() {
+		return fmt.Errorf("WAL manager is not running")
+	}
+
+	if upToLSN == 0 {
+		return fmt.Errorf("invalid LSN for WAL truncation: %d", upToLSN)
 	}
 
 	// Get a lock to ensure no concurrent operations during truncation

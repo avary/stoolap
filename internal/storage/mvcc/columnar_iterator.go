@@ -36,7 +36,18 @@ func NewColumnarIndexIterator(
 	schema storage.Schema,
 	columnIndices []int) storage.Scanner {
 
+	// Sort row IDs for efficient access pattern and sequential prefetching
 	SIMDSortInt64s(rowIDs)
+
+	// Choose optimal batch size based on result set size
+	batchSize := 100 // Default batch size
+	if len(rowIDs) > 1000 {
+		// For large result sets, use larger batches
+		batchSize = 200
+	} else if len(rowIDs) < 50 {
+		// For tiny result sets, use smaller batches to avoid waste
+		batchSize = max(10, len(rowIDs))
+	}
 
 	return &ColumnarIndexIterator{
 		versionStore:  versionStore,
@@ -45,7 +56,7 @@ func NewColumnarIndexIterator(
 		columnIndices: columnIndices,
 		rowIDs:        rowIDs,
 		idIndex:       -1,
-		batchSize:     100, // Tune based on testing
+		batchSize:     batchSize,
 		prefetchIndex: 0,
 		projectedRow:  make(storage.Row, len(columnIndices)),
 		prefetchMap:   GetRowMap(),
@@ -63,45 +74,62 @@ func (it *ColumnarIndexIterator) Next() bool {
 		}
 
 		// Determine batch size (don't exceed remaining rows)
+		// Optimize batch size based on remaining rows and data density
 		batchSize := it.batchSize
 		if remainingRows < batchSize {
 			batchSize = remainingRows
+		} else if remainingRows > batchSize*10 {
+			// For large result sets, use a larger batch size to reduce the
+			// number of fetches and improve performance
+			batchSize = min(remainingRows/5, 500) // Cap at 500 to avoid excessive memory usage
 		}
 
 		// Clear previous batch data
 		it.prefetchMap.Clear()
 
-		// Prefetch batch of IDs
+		// Prefetch batch of IDs with optimized slice handling
 		endIdx := it.idIndex + 1 + batchSize
 		if endIdx > len(it.rowIDs) {
 			endIdx = len(it.rowIDs)
 		}
 
-		it.prefetchRowIDs = it.rowIDs[it.idIndex+1 : endIdx]
+		// Reuse the prefetch slice if possible to reduce allocations
+		if cap(it.prefetchRowIDs) >= endIdx-(it.idIndex+1) {
+			it.prefetchRowIDs = it.prefetchRowIDs[:0] // Reset length but keep capacity
+			it.prefetchRowIDs = append(it.prefetchRowIDs, it.rowIDs[it.idIndex+1:endIdx]...)
+		} else {
+			it.prefetchRowIDs = it.rowIDs[it.idIndex+1 : endIdx]
+		}
 		it.prefetchIndex = 0
 
 		// Batch fetch visible versions
 		versions := it.versionStore.GetVisibleVersionsByIDs(it.prefetchRowIDs, it.txnID)
 
+		// Track if any rows were found to determine early exit
+		foundAny := false
+
 		// Extract non-deleted rows
 		versions.ForEach(func(rowID int64, version *RowVersion) bool {
 			if !version.IsDeleted {
 				it.prefetchMap.Put(rowID, version.Data)
+				foundAny = true
 			}
-
 			return true
 		})
 
 		// IMPORTANT: Free the versions map to avoid memory leak
 		ReturnVisibleVersionMap(versions)
 
-		// If nothing found, we're done
-		if it.prefetchMap.Len() == 0 {
-			return false
+		// If nothing found, skip to next batch immediately rather than looping
+		if !foundAny {
+			// Advance the idIndex past this entire batch to avoid revisiting
+			it.idIndex += len(it.prefetchRowIDs)
+			// Try next batch directly, skipping the loop below
+			return it.Next()
 		}
 	}
 
-	// Advance until we find a visible row
+	// Fast path: Advance until we find a visible row
 	for it.prefetchIndex < len(it.prefetchRowIDs) {
 		rowID := it.prefetchRowIDs[it.prefetchIndex]
 		it.prefetchIndex++
@@ -109,6 +137,7 @@ func (it *ColumnarIndexIterator) Next() bool {
 
 		// Check if this row is in our prefetch map
 		if row, exists := it.prefetchMap.Get(rowID); exists {
+			// Use direct assignment for better performance
 			it.currentRow = row
 			return true
 		}
@@ -120,14 +149,29 @@ func (it *ColumnarIndexIterator) Next() bool {
 
 // Row returns the current row
 func (it *ColumnarIndexIterator) Row() storage.Row {
+	// Fast path for full row projection
 	if len(it.columnIndices) == 0 {
 		return it.currentRow
 	}
 
-	// Project columns
+	// Fast path for single column projection (common case)
+	if len(it.columnIndices) == 1 {
+		colIdx := it.columnIndices[0]
+		if colIdx < len(it.currentRow) {
+			it.projectedRow[0] = it.currentRow[colIdx]
+		} else {
+			// Column doesn't exist, set to nil
+			it.projectedRow[0] = nil
+		}
+		return it.projectedRow
+	}
+
+	// Regular column projection for multiple columns
 	for i, colIdx := range it.columnIndices {
 		if colIdx < len(it.currentRow) {
 			it.projectedRow[i] = it.currentRow[colIdx]
+		} else {
+			it.projectedRow[i] = nil
 		}
 	}
 	return it.projectedRow
@@ -310,6 +354,13 @@ func intersectSortedIDs(a []int64, b []int64) []int64 {
 		return nil
 	}
 
+	// Optimization: If one list is much smaller than the other, swap them
+	// This improves cache locality when the sizes are very different
+	if len(a) > len(b)*10 {
+		// b is much smaller, keep it as the inner loop for better cache performance
+		a, b = b, a
+	}
+
 	// Sort if not already sorted
 	if !isSorted(a) {
 		SIMDSortInt64s(a)
@@ -319,10 +370,17 @@ func intersectSortedIDs(a []int64, b []int64) []int64 {
 		SIMDSortInt64s(b)
 	}
 
+	// Fast path for common case of no intersection
+	if a[len(a)-1] < b[0] || b[len(b)-1] < a[0] {
+		return nil // Ranges don't overlap at all
+	}
+
 	// Use merge-like algorithm for linear time intersection
+	// Pre-allocate with exact capacity to avoid reallocations
 	result := make([]int64, 0, min(len(a), len(b)))
 	i, j := 0, 0
 
+	// Main intersection loop
 	for i < len(a) && j < len(b) {
 		if a[i] < b[j] {
 			i++

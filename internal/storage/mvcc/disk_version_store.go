@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/binser"
 )
@@ -116,19 +117,51 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 	// Get schema for the table
 	schema, err := dvs.versionStore.GetTableSchema()
 	if err != nil {
+		appender.Fail()
 		return fmt.Errorf("failed to get table schema: %w", err)
 	}
 
 	// Write schema to file
 	if err := appender.WriteSchema(&schema); err != nil {
+		appender.Fail()
 		return fmt.Errorf("failed to write schema: %w", err)
 	}
 
 	// Process data in batches without locking the whole table
 	batch := make([]RowVersion, 0, DefaultBatchSize)
 
+	// Map to track processed rowIDs
+	processedRowIDs := fastmap.NewInt64Map[struct{}](1000)
+
+	var lastErr error
+
 	// Use ForEach to avoid locking the whole table
 	dvs.versionStore.versions.ForEach(func(rowID int64, version *RowVersion) bool {
+		// Verify that map key matches the RowID inside the version
+		if rowID != version.RowID {
+			fmt.Printf("WARNING: Version store RowID (%d) doesn't match RowVersion.RowID (%d)\n",
+				rowID, version.RowID)
+
+			fmt.Printf("DEBUG: Problematic RowVersion: %v\n", version)
+			return true // Continue processing
+		}
+
+		// Record that we've processed this rowID
+		processedRowIDs.Put(rowID, struct{}{})
+
+		if version.IsDeleted {
+			// Skip deleted versions
+			return true
+		}
+
+		if dvs.tableName == "users" {
+			fmt.Printf("DEBUG: Found in memory store: Problematic users RowID=%d RowVersion=%v\n", rowID, version)
+		}
+
+		if dvs.tableName == "sessions" {
+			fmt.Printf("DEBUG: Found in memory store: Problematic sessions RowID=%d RowVersion=%v\n", rowID, version)
+		}
+
 		// Copy the version to avoid concurrent modification issues
 		versionCopy := *version
 
@@ -141,6 +174,7 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		if len(batch) >= DefaultBatchSize {
 			if err := appender.AppendBatch(batch); err != nil {
 				fmt.Printf("Error: appending batch: %v\n", err)
+				lastErr = err
 				return false // Stop iteration on error
 			}
 			batch = batch[:0] // Reset batch
@@ -149,27 +183,94 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		return true
 	})
 
+	if lastErr != nil {
+		appender.Fail()
+		return fmt.Errorf("failed to process append batch: %w", lastErr)
+	}
+
 	// Process any remaining rows
 	if len(batch) > 0 {
 		if err := appender.AppendBatch(batch); err != nil {
+			appender.Fail()
 			return fmt.Errorf("failed to append final batch: %w", err)
+		}
+	}
+
+	// Now check if we have previous disk snapshots to merge
+	if len(dvs.readers) > 0 {
+		batch = batch[:0] // Reset batch
+
+		newestReader := dvs.readers[len(dvs.readers)-1]
+
+		// Get all rows from disk
+		for diskRowID, diskVersion := range newestReader.GetAllRows() {
+			// Skip if this row was already processed from memory
+			if processedRowIDs.Has(diskRowID) {
+				continue
+			}
+
+			if diskVersion.IsDeleted {
+				// Skip deleted versions
+				continue
+			}
+
+			if dvs.tableName == "users" {
+				fmt.Printf("DEBUG: Found in disk store: Problematic users RowID=%d RowVersion=%v\n", diskRowID, &diskVersion)
+			}
+
+			if dvs.tableName == "sessions" {
+				fmt.Printf("DEBUG: Found in disk store: Problematic sessions RowID=%d RowVersion=%v\n", diskRowID, &diskVersion)
+			}
+
+			// Copy the version with snapshot TxnID
+			versionCopy := diskVersion
+			versionCopy.TxnID = -1 // Mark as snapshot version
+
+			// Add to batch
+			batch = append(batch, versionCopy)
+
+			// Process batch when full
+			if len(batch) >= DefaultBatchSize {
+				if err := appender.AppendBatch(batch); err != nil {
+					fmt.Printf("Error: appending disk batch: %v\n", err)
+					lastErr = err
+					break // Stop iteration on error
+				}
+				batch = batch[:0] // Reset batch
+			}
+		}
+
+		if lastErr != nil {
+			appender.Fail()
+			return fmt.Errorf("failed to process appending disk batch: %w", lastErr)
+		}
+
+		// Process any remaining rows from disk
+		if len(batch) > 0 {
+			if err := appender.AppendBatch(batch); err != nil {
+				appender.Fail()
+				return fmt.Errorf("failed to append final disk batch: %w", err)
+			}
 		}
 	}
 
 	// Finalize the snapshot file
 	if err := appender.Finalize(); err != nil {
+		appender.Fail()
 		return fmt.Errorf("failed to finalize snapshot: %w", err)
 	}
 
 	// Create metadata file
 	metaPath := strings.TrimSuffix(filePath, ".bin") + ".meta"
 	if err := dvs.writeMetadata(metaPath, &schema); err != nil {
+		appender.Fail()
 		return fmt.Errorf("failed to write metadata: %w", err)
 	}
 
 	// Add reader for the new snapshot
 	reader, err := NewDiskReader(filePath)
 	if err != nil {
+		appender.Fail()
 		return fmt.Errorf("failed to create disk reader: %w", err)
 	}
 

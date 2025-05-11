@@ -1935,12 +1935,20 @@ func (mt *MVCCTable) GetColumnarIndex(indexIdentifier string) (storage.Index, er
 		return nil, fmt.Errorf("version store not available")
 	}
 
+	total := 17 + len(mt.versionStore.tableName) + len(indexIdentifier)
+	var columnarName strings.Builder
+	columnarName.Grow(total)
+	columnarName.WriteString("unique_columnar_")
+	columnarName.WriteString(mt.versionStore.tableName)
+	columnarName.WriteString("_")
+	columnarName.WriteString(indexIdentifier)
+
 	// Try multiple standard naming patterns for backward compatibility
 	possibleIndexNames := []string{
 		indexIdentifier, // Try the provided name first
 		// Try standard index naming patterns
-		fmt.Sprintf("columnar_%s_%s", mt.versionStore.tableName, indexIdentifier),
-		fmt.Sprintf("unique_columnar_%s_%s", mt.versionStore.tableName, indexIdentifier),
+		columnarName.String()[7:],
+		columnarName.String(),
 	}
 
 	// Try all possible names

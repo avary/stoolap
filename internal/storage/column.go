@@ -101,6 +101,8 @@ func (v *DirectValue) AsInt64() (int64, bool) {
 			return 1, true
 		}
 		return 0, true
+	case TIMESTAMP:
+		return v.timeValue.UTC().UnixNano(), true
 	default:
 		// Return 0 with ok=false for other types
 		return 0, false

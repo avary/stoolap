@@ -54,6 +54,11 @@ func NewMVCCEngine(config *storage.Config) *MVCCEngine {
 		registry:      NewTransactionRegistry(),
 	}
 
+	if engine.path == "" {
+		// In-memory mode
+		engine.path = "memory://"
+	}
+
 	// Initialize the loadingFromDisk flag to false
 	engine.loadingFromDisk.Store(false)
 
@@ -140,6 +145,7 @@ func (e *MVCCEngine) Open() error {
 
 // Close closes the storage engine and cleans up resources with robust timeout protection
 func (e *MVCCEngine) Close() error {
+	fmt.Printf("Closing MVCCEngine at path: %s\n", e.path)
 	// Skip if already closed - use atomic operation for thread safety
 	if !e.open.CompareAndSwap(true, false) {
 		return nil

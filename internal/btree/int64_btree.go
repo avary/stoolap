@@ -1,6 +1,7 @@
 package btree
 
 import (
+	"iter"
 	"sort"
 )
 
@@ -588,6 +589,11 @@ func (t *Int64BTree[V]) forEachNode(node *bTreeNode[V], callback func(key int64,
 	}
 
 	return true
+}
+
+// GetAll returns all values in the tree
+func (t *Int64BTree[V]) GetAll() iter.Seq2[int64, V] {
+	return t.ForEach
 }
 
 // BatchInsert efficiently inserts multiple key-value pairs

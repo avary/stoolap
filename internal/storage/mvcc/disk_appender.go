@@ -20,6 +20,8 @@ type DiskAppender struct {
 	rowCount        uint64
 	rowIDIndex      map[int64]uint64 // Maps rowIDs to offsets
 	committedTxnIDs map[int64]int64  // Maps committed TxnIDs to timestamps
+
+	fails bool // Indicates if the appender has failed
 }
 
 // NewDiskAppender creates a new disk appender
@@ -44,6 +46,8 @@ func NewDiskAppender(filePath string) (*DiskAppender, error) {
 	writer := bufio.NewWriterSize(file, DefaultBlockSize)
 	if _, err := writer.Write(headerBytes); err != nil {
 		file.Close()
+
+		os.Remove(filePath) // Clean up on error
 		return nil, err
 	}
 
@@ -57,13 +61,30 @@ func NewDiskAppender(filePath string) (*DiskAppender, error) {
 	}, nil
 }
 
+// Fail marks the appender as failed, preventing further writes
+func (a *DiskAppender) Fail() {
+	a.fails = true
+}
+
 // Close closes the appender and its file
 func (a *DiskAppender) Close() error {
 	if a.file != nil {
 		if a.writer != nil {
 			a.writer.Flush()
 		}
-		return a.file.Close()
+
+		fileName := a.file.Name() // Store the filename before closing
+		closeErr := a.file.Close()
+
+		if a.fails {
+			removeErr := os.Remove(fileName)
+			if closeErr != nil {
+				return fmt.Errorf("failed to close file: %w (and tried to remove it)", closeErr)
+			}
+			return removeErr
+		}
+
+		return closeErr
 	}
 	return nil
 }

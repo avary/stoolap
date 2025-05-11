@@ -75,37 +75,150 @@ func (n *btreeNode) remove(key storage.ColumnValue, rowID int64) bool {
 	return false
 }
 
+// findLeftBoundary finds the left (starting) boundary of a range search
+// Returns the index of the first element that should be included
+func (n *btreeNode) findLeftBoundary(min storage.ColumnValue, includeMin bool) int {
+	// Handle NULL min value case
+	if min == nil {
+		return 0 // Include all from beginning
+	}
+
+	// Use binary search to efficiently find the position
+	// This is a specialized version of sort.Search for our boundary cases
+	left, right := 0, len(n.keys)-1
+
+	// Special case for tiny arrays: linear scan might be faster
+	if right < 8 {
+		for i := 0; i <= right; i++ {
+			compare := n.compare(n.keys[i], min)
+			if includeMin && compare >= 0 {
+				return i
+			} else if !includeMin && compare > 0 {
+				return i
+			}
+		}
+		return right + 1
+	}
+
+	// Standard binary search with custom comparison function
+	for left <= right {
+		mid := left + (right-left)/2
+		compare := n.compare(n.keys[mid], min)
+
+		if includeMin {
+			// Looking for first key >= min
+			if compare < 0 {
+				left = mid + 1
+			} else {
+				// This could be a candidate, look to the left
+				right = mid - 1
+			}
+		} else {
+			// Looking for first key > min
+			if compare <= 0 {
+				left = mid + 1
+			} else {
+				// This could be a candidate, look to the left
+				right = mid - 1
+			}
+		}
+	}
+
+	// Left is now the index of the first key that should be included
+	return left
+}
+
+// findRightBoundary finds the right (ending) boundary of a range search
+// Returns the index after the last element that should be included
+func (n *btreeNode) findRightBoundary(max storage.ColumnValue, includeMax bool) int {
+	// Handle NULL max value case
+	if max == nil {
+		return len(n.keys) // Include all to the end
+	}
+
+	// Use binary search to efficiently find the position
+	left, right := 0, len(n.keys)-1
+
+	// Special case for tiny arrays: linear scan might be faster
+	if right < 8 {
+		for i := 0; i <= right; i++ {
+			compare := n.compare(n.keys[i], max)
+			if includeMax && compare > 0 {
+				return i
+			} else if !includeMax && compare >= 0 {
+				return i
+			}
+		}
+		return right + 1
+	}
+
+	// Standard binary search with custom comparison function
+	for left <= right {
+		mid := left + (right-left)/2
+		compare := n.compare(n.keys[mid], max)
+
+		if includeMax {
+			// Looking for first key > max
+			if compare <= 0 {
+				left = mid + 1
+			} else {
+				// This could be a candidate, look to the left
+				right = mid - 1
+			}
+		} else {
+			// Looking for first key >= max
+			if compare < 0 {
+				left = mid + 1
+			} else {
+				// This could be a candidate, look to the left
+				right = mid - 1
+			}
+		}
+	}
+
+	// Left is now the index of the first key that should be excluded
+	return left
+}
+
 // rangeSearch finds all rowIDs in a range [min, max]
 func (n *btreeNode) rangeSearch(min, max storage.ColumnValue, includeMin, includeMax bool, result *[]int64) {
 	if len(n.keys) == 0 {
 		return
 	}
 
-	// Find the start index
-	startIdx := 0
-	if min != nil {
-		startIdx = sort.Search(len(n.keys), func(i int) bool {
-			if includeMin {
-				return n.compare(n.keys[i], min) >= 0
-			}
-			return n.compare(n.keys[i], min) > 0
-		})
+	// Get the start and end boundaries using optimized functions
+	startIdx := n.findLeftBoundary(min, includeMin)
+	endIdx := n.findRightBoundary(max, includeMax)
+
+	// Early return if no overlap (completely outside range)
+	if startIdx >= len(n.keys) || endIdx <= 0 || startIdx >= endIdx {
+		return
 	}
 
-	// Find the end index
-	endIdx := len(n.keys)
-	if max != nil {
-		endIdx = sort.Search(len(n.keys), func(i int) bool {
-			if includeMax {
-				return n.compare(n.keys[i], max) > 0
-			}
-			return n.compare(n.keys[i], max) >= 0
-		})
+	// Fast path: If start and end are close, we can estimate the number of IDs
+	if endIdx-startIdx < 64 { // Small range optimization
+		// Estimate result capacity to reduce reallocations
+		estimatedCapacity := 0
+		for i := startIdx; i < endIdx; i++ {
+			estimatedCapacity += len(n.rowIDs[i])
+		}
+
+		// Pre-allocate result capacity if needed
+		if estimatedCapacity > 0 && cap(*result)-len(*result) < estimatedCapacity {
+			newResult := make([]int64, len(*result), len(*result)+estimatedCapacity)
+			copy(newResult, *result)
+			*result = newResult
+		}
 	}
 
-	// Collect all rowIDs in the range
+	// Collect all rowIDs in the range - optimized with boundary checks
 	for i := startIdx; i < endIdx; i++ {
-		*result = append(*result, n.rowIDs[i]...)
+		// Direct append for the common case of 1 or few row IDs per key
+		if len(n.rowIDs[i]) == 1 {
+			*result = append(*result, n.rowIDs[i][0])
+		} else {
+			*result = append(*result, n.rowIDs[i]...)
+		}
 	}
 }
 
@@ -177,14 +290,76 @@ func (t *btreeColumnar) ValueCount(key storage.ColumnValue) int {
 
 // RangeSearch finds all rowIDs in a range [min, max]
 func (t *btreeColumnar) RangeSearch(min, max storage.ColumnValue, includeMin, includeMax bool) []int64 {
-	result := make([]int64, 0, 100) // Start with a reasonable capacity
+	// Estimate capacity based on range size and tree characteristics
+	estimatedCapacity := t.estimateRangeSize(min, max)
+	result := make([]int64, 0, estimatedCapacity)
+
+	// Perform the range search with the optimized boundaries
 	t.root.rangeSearch(min, max, includeMin, includeMax, &result)
+
+	// If result is much smaller than capacity, consider trimming
+	if len(result) > 0 && cap(result) > 2*len(result) && cap(result) > 1000 {
+		trimmedResult := make([]int64, len(result))
+		copy(trimmedResult, result)
+		return trimmedResult
+	}
+
 	return result
+}
+
+// estimateRangeSize estimates the number of rows in a given range
+// This helps allocate appropriate capacity for the result slice
+func (t *btreeColumnar) estimateRangeSize(min, max storage.ColumnValue) int {
+	// Default reasonable capacity
+	defaultCapacity := 100
+
+	// If tree is empty, return minimum capacity
+	if t.size == 0 || t.root == nil || len(t.root.keys) == 0 {
+		return defaultCapacity
+	}
+
+	// For unbounded ranges (no min or max), use a proportion of the tree size
+	if min == nil && max == nil {
+		return t.size
+	}
+
+	// Try to get a rough range size estimate
+	if min != nil && max != nil {
+		// Find the start and end boundaries
+		startIdx := t.root.findLeftBoundary(min, true)
+		endIdx := t.root.findRightBoundary(max, true)
+
+		// If we can determine the boundaries
+		if startIdx < len(t.root.keys) && endIdx <= len(t.root.keys) && startIdx < endIdx {
+			// Count the actual number of rowIDs in this range
+			estimateCap := 0
+			for i := startIdx; i < endIdx && i < len(t.root.keys); i++ {
+				estimateCap += len(t.root.rowIDs[i])
+			}
+
+			// Use actual count with some buffer
+			return estimateCap + 10
+		}
+
+		// If we have some range information but can't determine exact count
+		range_ratio := float64(endIdx-startIdx) / float64(len(t.root.keys))
+		if range_ratio > 0 && range_ratio <= 1.0 {
+			return int(float64(t.size)*range_ratio) + 10
+		}
+	}
+
+	// If we have only min or only max, use half the tree size as an estimate
+	if (min != nil && max == nil) || (min == nil && max != nil) {
+		return t.size/2 + 10
+	}
+
+	// Fallback to a reasonable default
+	return defaultCapacity
 }
 
 // EqualSearch finds all rowIDs with the given key
 func (t *btreeColumnar) EqualSearch(key storage.ColumnValue) []int64 {
-	result := make([]int64, 0, 10) // Start with a reasonable capacity
+	result := make([]int64, 0, 1) // Start with a reasonable capacity
 	t.root.equalSearch(key, &result)
 	return result
 }
