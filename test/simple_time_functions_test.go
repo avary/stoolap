@@ -245,7 +245,4 @@ func TestSimpleV2TimeFunctions(t *testing.T) {
 			}
 		}
 	})
-
-	// Note: Large dataset test removed in favor of the more robust candle_time_trunc_test.go
-	// which uses real-world financial data from Binance to test TIME_TRUNC and aggregate functions.
 }

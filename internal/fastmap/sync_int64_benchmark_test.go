@@ -89,6 +89,28 @@ func BenchmarkSyncInt64Map(b *testing.B) {
 	})
 }
 
+// Benchmark for the Has method
+func BenchmarkSyncInt64MapHas(b *testing.B) {
+	const keyCount = 100_000
+	keys := genRealisticKeys(keyCount)
+
+	// Create and populate the map
+	m := NewSyncInt64Map[int64](16)
+	for i := 0; i < keyCount/2; i++ {
+		m.Set(keys[i], keys[i])
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			k := keys[i%keyCount]
+			_ = m.Has(k)
+			i++
+		}
+	})
+}
+
 // High concurrency benchmark to test scalability
 func BenchmarkHighConcurrency(b *testing.B) {
 	const keyCount = 10_000

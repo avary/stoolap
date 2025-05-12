@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 )
@@ -16,11 +17,11 @@ type compareFunc func(a, b storage.ColumnValue) int
 
 // btreeNode represents a node in the B-tree
 type btreeNode struct {
-	keys     []storage.ColumnValue // Keys stored in this node
-	rowIDs   [][]int64             // Row IDs for each key
-	children []*btreeNode          // Child nodes (nil for leaf nodes)
-	isLeaf   bool                  // Whether this is a leaf node
-	compare  compareFunc           // Function for comparing keys
+	keys     []storage.ColumnValue          // Keys stored in this node
+	rowIDs   []*fastmap.Int64Map[struct{}]  // Row IDs for each key using fast map for O(1) operations
+	children []*btreeNode                   // Child nodes (nil for leaf nodes)
+	isLeaf   bool                           // Whether this is a leaf node
+	compare  compareFunc                    // Function for comparing keys
 }
 
 // Find returns the index where the key should be inserted
@@ -35,41 +36,45 @@ func (n *btreeNode) findIndex(key storage.ColumnValue) int {
 func (n *btreeNode) insert(key storage.ColumnValue, rowID int64) {
 	i := n.findIndex(key)
 
-	// If key already exists, just append the rowID
+	// If key already exists, just add the rowID to the map
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
-		n.rowIDs[i] = append(n.rowIDs[i], rowID)
+		n.rowIDs[i].Put(rowID, struct{}{})
 		return
 	}
 
-	// Insert new key and rowID
+	// Insert new key and initialize a new map for the rowID
 	n.keys = append(n.keys, nil)
+	// Create a new map for the rowIDs - start with a small capacity as most keys have few rows
+	newMap := fastmap.NewInt64Map[struct{}](4)
+	newMap.Put(rowID, struct{}{})
+
+	// Append empty values then copy to shift elements
 	n.rowIDs = append(n.rowIDs, nil)
 	copy(n.keys[i+1:], n.keys[i:])
 	copy(n.rowIDs[i+1:], n.rowIDs[i:])
+
+	// Set the values at the insertion point
 	n.keys[i] = key
-	n.rowIDs[i] = []int64{rowID}
+	n.rowIDs[i] = newMap
 }
 
 // remove removes a rowID from a key in the B-tree node
 func (n *btreeNode) remove(key storage.ColumnValue, rowID int64) bool {
 	i := n.findIndex(key)
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
-		// Find and remove the rowID
-		for j, id := range n.rowIDs[i] {
-			if id == rowID {
-				// Remove by swapping with last element and truncating
-				n.rowIDs[i][j] = n.rowIDs[i][len(n.rowIDs[i])-1]
-				n.rowIDs[i] = n.rowIDs[i][:len(n.rowIDs[i])-1]
+		// O(1) removal from the Int64Map
+		deleted := n.rowIDs[i].Del(rowID)
 
-				// If no more rowIDs for this key, remove the key
-				if len(n.rowIDs[i]) == 0 {
-					copy(n.keys[i:], n.keys[i+1:])
-					copy(n.rowIDs[i:], n.rowIDs[i+1:])
-					n.keys = n.keys[:len(n.keys)-1]
-					n.rowIDs = n.rowIDs[:len(n.rowIDs)-1]
-				}
-				return true
+		// If the key was found and deleted
+		if deleted {
+			// If no more rowIDs for this key, remove the key
+			if n.rowIDs[i].Len() == 0 {
+				copy(n.keys[i:], n.keys[i+1:])
+				copy(n.rowIDs[i:], n.rowIDs[i+1:])
+				n.keys = n.keys[:len(n.keys)-1]
+				n.rowIDs = n.rowIDs[:len(n.rowIDs)-1]
 			}
+			return true
 		}
 	}
 	return false
@@ -200,7 +205,7 @@ func (n *btreeNode) rangeSearch(min, max storage.ColumnValue, includeMin, includ
 		// Estimate result capacity to reduce reallocations
 		estimatedCapacity := 0
 		for i := startIdx; i < endIdx; i++ {
-			estimatedCapacity += len(n.rowIDs[i])
+			estimatedCapacity += n.rowIDs[i].Len()
 		}
 
 		// Pre-allocate result capacity if needed
@@ -211,14 +216,13 @@ func (n *btreeNode) rangeSearch(min, max storage.ColumnValue, includeMin, includ
 		}
 	}
 
-	// Collect all rowIDs in the range - optimized with boundary checks
+	// Collect all rowIDs in the range
 	for i := startIdx; i < endIdx; i++ {
-		// Direct append for the common case of 1 or few row IDs per key
-		if len(n.rowIDs[i]) == 1 {
-			*result = append(*result, n.rowIDs[i][0])
-		} else {
-			*result = append(*result, n.rowIDs[i]...)
-		}
+		// For efficiency, use the ForEach method of Int64Map
+		n.rowIDs[i].ForEach(func(id int64, _ struct{}) bool {
+			*result = append(*result, id)
+			return true // Continue iteration
+		})
 	}
 }
 
@@ -226,19 +230,49 @@ func (n *btreeNode) rangeSearch(min, max storage.ColumnValue, includeMin, includ
 func (n *btreeNode) equalSearch(key storage.ColumnValue, result *[]int64) {
 	i := n.findIndex(key)
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
-		// For single match optimization
-		if len(n.rowIDs[i]) == 1 {
-			*result = append(*result, n.rowIDs[i][0])
-			return
+		// Fast path: Pre-allocate space if needed
+		currentLen := len(*result)
+		rowCount := n.rowIDs[i].Len()
+
+		if rowCount > 0 {
+			// Ensure capacity
+			if cap(*result)-currentLen < rowCount {
+				newResult := make([]int64, currentLen, currentLen+rowCount)
+				copy(newResult, *result)
+				*result = newResult
+			}
+
+			// Use fast iteration to append all IDs
+			n.rowIDs[i].ForEach(func(id int64, _ struct{}) bool {
+				*result = append(*result, id)
+				return true // Continue iteration
+			})
 		}
-		*result = append(*result, n.rowIDs[i]...)
 	}
 }
 
 // getAll returns all rowIDs in the node
 func (n *btreeNode) getAll(result *[]int64) {
-	for _, ids := range n.rowIDs {
-		*result = append(*result, ids...)
+	// Estimate total capacity needed
+	totalRowCount := 0
+	for _, idMap := range n.rowIDs {
+		totalRowCount += idMap.Len()
+	}
+
+	// Ensure capacity
+	currentLen := len(*result)
+	if cap(*result)-currentLen < totalRowCount {
+		newResult := make([]int64, currentLen, currentLen+totalRowCount)
+		copy(newResult, *result)
+		*result = newResult
+	}
+
+	// Add all IDs
+	for _, idMap := range n.rowIDs {
+		idMap.ForEach(func(id int64, _ struct{}) bool {
+			*result = append(*result, id)
+			return true
+		})
 	}
 }
 
@@ -254,7 +288,7 @@ func newBTree(compare compareFunc) *btreeColumnar {
 	return &btreeColumnar{
 		root: &btreeNode{
 			keys:     make([]storage.ColumnValue, 0),
-			rowIDs:   make([][]int64, 0),
+			rowIDs:   make([]*fastmap.Int64Map[struct{}], 0),
 			children: nil,
 			isLeaf:   true,
 			compare:  compare,
@@ -283,7 +317,7 @@ func (t *btreeColumnar) Remove(key storage.ColumnValue, rowID int64) bool {
 func (t *btreeColumnar) ValueCount(key storage.ColumnValue) int {
 	i := t.root.findIndex(key)
 	if i < len(t.root.keys) && t.compare(t.root.keys[i], key) == 0 {
-		return len(t.root.rowIDs[i])
+		return t.root.rowIDs[i].Len()
 	}
 	return 0
 }
@@ -334,7 +368,7 @@ func (t *btreeColumnar) estimateRangeSize(min, max storage.ColumnValue) int {
 			// Count the actual number of rowIDs in this range
 			estimateCap := 0
 			for i := startIdx; i < endIdx && i < len(t.root.keys); i++ {
-				estimateCap += len(t.root.rowIDs[i])
+				estimateCap += t.root.rowIDs[i].Len()
 			}
 
 			// Use actual count with some buffer
@@ -380,7 +414,7 @@ func (t *btreeColumnar) Size() int {
 func (t *btreeColumnar) Clear() {
 	t.root = &btreeNode{
 		keys:     make([]storage.ColumnValue, 0),
-		rowIDs:   make([][]int64, 0),
+		rowIDs:   make([]*fastmap.Int64Map[struct{}], 0),
 		children: nil,
 		isLeaf:   true,
 		compare:  t.compare,
@@ -418,8 +452,8 @@ type ColumnarIndex struct {
 	// This eliminates unnecessary conversions between types
 	valueTree *btreeColumnar
 
-	// nullRows tracks rows with NULL in this column
-	nullRows []int64
+	// nullRows tracks rows with NULL in this column using a fast Int64Map
+	nullRows *fastmap.Int64Map[struct{}]
 
 	// Create a mutex for thread-safety
 	mutex sync.RWMutex
@@ -445,7 +479,7 @@ func NewColumnarIndex(name, tableName, columnName string,
 		columnID:     columnID,
 		dataType:     dataType,
 		valueTree:    newBTree(compareColumnValues), // Use single tree with ColumnValue comparator
-		nullRows:     make([]int64, 0, 16),
+		nullRows:     fastmap.NewInt64Map[struct{}](16), // Start with small capacity for NULL rows
 		mutex:        sync.RWMutex{},
 		tableName:    tableName,
 		versionStore: versionStore,
@@ -521,7 +555,8 @@ func (idx *ColumnarIndex) Add(values []storage.ColumnValue, rowID int64, refID i
 
 	// Handle NULL value - NULLs are always allowed, even with unique constraint
 	if value == nil || value.IsNull() {
-		idx.nullRows = append(idx.nullRows, rowID)
+		// Use O(1) insert to track NULL values
+		idx.nullRows.Put(rowID, struct{}{})
 		return nil
 	}
 
@@ -533,7 +568,7 @@ func (idx *ColumnarIndex) Add(values []storage.ColumnValue, rowID int64, refID i
 	}
 
 	// For unique indexes, check if the value already exists
-	// We don't need to allocate a new slice for this check - just peek
+	// Fast O(1) check with the optimized ValueCount method
 	count := idx.valueTree.ValueCount(value)
 	if count > 0 {
 		// Return unique constraint violation
@@ -579,17 +614,23 @@ func (idx *ColumnarIndex) GetRowIDsEqual(values []storage.ColumnValue) []int64 {
 	if value == nil || value.IsNull() {
 		// NULL value check
 		idx.mutex.RLock()
+		defer idx.mutex.RUnlock()
 
 		// Quick return for empty nullRows
-		if len(idx.nullRows) == 0 {
-			idx.mutex.RUnlock()
+		if idx.nullRows.Len() == 0 {
 			return nil
 		}
 
-		// Return a copy of nullRows
-		result := make([]int64, len(idx.nullRows))
-		copy(result, idx.nullRows)
-		idx.mutex.RUnlock()
+		// Allocate result slice with exact capacity needed
+		nullCount := idx.nullRows.Len()
+		result := make([]int64, 0, nullCount)
+
+		// Efficiently collect all NULL row IDs
+		idx.nullRows.ForEach(func(id int64, _ struct{}) bool {
+			result = append(result, id)
+			return true // Continue iteration
+		})
+
 		return result
 	}
 
@@ -686,20 +727,14 @@ func (idx *ColumnarIndex) Remove(values []storage.ColumnValue, rowID int64, refI
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
-	// Handle NULL value
+	// Handle NULL value - O(1) removal
 	if value == nil || value.IsNull() {
-		for i, id := range idx.nullRows {
-			if id == rowID {
-				// Remove by swapping with the last element and truncating
-				idx.nullRows[i] = idx.nullRows[len(idx.nullRows)-1]
-				idx.nullRows = idx.nullRows[:len(idx.nullRows)-1]
-				break
-			}
-		}
+		// Simply delete from the map - no iteration needed
+		idx.nullRows.Del(rowID)
 		return nil
 	}
 
-	// Remove directly from the valueTree
+	// Remove directly from the valueTree - now O(1) with our optimized B-tree
 	idx.valueTree.Remove(value, rowID)
 
 	return nil
@@ -741,14 +776,22 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				return idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
 
 			case storage.ISNULL:
-				// NULL check
+				// NULL check - fast path with Int64Map
 				idx.mutex.RLock()
 				defer idx.mutex.RUnlock()
-				if len(idx.nullRows) == 0 {
+				if idx.nullRows.Len() == 0 {
 					return nil
 				}
-				result := make([]int64, len(idx.nullRows))
-				copy(result, idx.nullRows)
+
+				// Use pre-sized allocation and fast iteration
+				nullCount := idx.nullRows.Len()
+				result := make([]int64, 0, nullCount)
+
+				idx.nullRows.ForEach(func(id int64, _ struct{}) bool {
+					result = append(result, id)
+					return true
+				})
+
 				return result
 
 			case storage.ISNOTNULL:
@@ -827,7 +870,12 @@ func (idx *ColumnarIndex) Build() error {
 		idx.valueTree = newBTree(compareColumnValues)
 	}
 
-	idx.nullRows = make([]int64, 0)
+	// Clear the nullRows map or create a new one if needed
+	if idx.nullRows != nil {
+		idx.nullRows.Clear()
+	} else {
+		idx.nullRows = fastmap.NewInt64Map[struct{}](16)
+	}
 	idx.mutex.Unlock()
 
 	// Get all visible versions from the version store
@@ -891,9 +939,15 @@ func (idx *ColumnarIndex) FindWithOperator(op storage.Operator, values []storage
 
 	case storage.ISNULL:
 		idx.mutex.RLock()
-		if len(idx.nullRows) > 0 {
-			rowIDs = make([]int64, len(idx.nullRows))
-			copy(rowIDs, idx.nullRows)
+		if idx.nullRows.Len() > 0 {
+			// Fast path with Int64Map
+			nullCount := idx.nullRows.Len()
+			rowIDs = make([]int64, 0, nullCount)
+
+			idx.nullRows.ForEach(func(id int64, _ struct{}) bool {
+				rowIDs = append(rowIDs, id)
+				return true
+			})
 		}
 		idx.mutex.RUnlock()
 

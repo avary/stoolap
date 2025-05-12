@@ -48,7 +48,6 @@ func Open(dsn string) (*DB, error) {
 
 	// If we found an existing engine, return it immediately
 	if exists {
-		fmt.Printf("SINGLETON: Reusing existing engine for DSN: %s (only one instance allowed per DSN)\n", dsn)
 		return db, nil
 	}
 
@@ -106,7 +105,6 @@ func Open(dsn string) (*DB, error) {
 
 	// Add to registry
 	engineRegistry[dsn] = db
-	fmt.Printf("SINGLETON: Created new engine for DSN: %s (this DSN is now locked for the application lifetime)\n", dsn)
 
 	return db, nil
 }
@@ -114,7 +112,6 @@ func Open(dsn string) (*DB, error) {
 // Close closes the database connection and releases resources
 // This will actually close the engine and remove it from the registry
 func (db *DB) Close() error {
-	fmt.Printf("Closing database...\n")
 	engineMutex.Lock()
 	defer engineMutex.Unlock()
 
@@ -122,12 +119,10 @@ func (db *DB) Close() error {
 	for dsn, registeredDB := range engineRegistry {
 		if registeredDB == db {
 			delete(engineRegistry, dsn)
-			fmt.Printf("Engine for DSN '%s' is being closed and removed from registry\n", dsn)
 			break
 		}
 	}
 
-	fmt.Printf("Closing engine for DSN '%s'\n", db.engine.Path())
 	// Actually close the engine
 	return db.engine.Close()
 }

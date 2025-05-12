@@ -280,6 +280,7 @@ func queryTypeFromQuery(q string) queryType {
 	// Fast check for common DML prefixes using byte comparisons
 	c1, c2 := q[0], q[1]
 
+	//FIXME : This is a very naive check, we should use a more robust parser
 	// Check for 'SELECT', 'INSERT', 'UPDATE', 'DELETE'
 	if (c1 == 'S' || c1 == 's') || // SELECT
 		(c1 == 'I' || c1 == 'i') || // INSERT
@@ -288,6 +289,7 @@ func queryTypeFromQuery(q string) queryType {
 		return queryTypeDML
 	}
 
+	//FIXME : This is a very naive check, we should use a more robust parser
 	// Check for 'CREATE', 'DROP', 'ALTER'
 	if (c1 == 'C' || c1 == 'c') || // CREATE
 		(c1 == 'D' || c1 == 'd' && c2 == 'R' || c2 == 'r') || // DROP
@@ -390,9 +392,6 @@ func (s *Stmt) CheckNamedValue(nv *driver.NamedValue) error {
 		return nil
 	}
 }
-
-// Import convertValues from transaction.go
-// Function moved to transaction.go to avoid circular imports
 
 // driverResult implements driver.Result
 type driverResult struct {

@@ -200,30 +200,49 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 	if len(dvs.readers) > 0 {
 		batch = batch[:0] // Reset batch
 
-		newestReader := dvs.readers[len(dvs.readers)-1]
+		// Get the last reader
+		r := dvs.readers[len(dvs.readers)-1]
 
-		// Get all rows from disk
-		for diskRowID, diskVersion := range newestReader.GetAllRows() {
+		// Iterate through all entries in the index
+		r.index.ForEach(func(rowID int64, offset int64) bool {
 			// Skip if this row was already processed from memory
-			if processedRowIDs.Has(diskRowID) {
-				continue
+			if processedRowIDs.Has(rowID) {
+				return true
 			}
 
-			if diskVersion.IsDeleted {
+			// Read length prefix using pre-allocated buffer
+			if _, err := r.file.ReadAt(r.lenBuffer, offset); err != nil {
+				return true // Continue on error
+			}
+			rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
+
+			// Read row data
+			rowBytes := make([]byte, rowLen)
+			if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+				return true // Continue on error
+			}
+
+			// Deserialize row version
+			version, err := deserializeRowVersion(rowBytes)
+			if err != nil {
+				return true // Continue on error
+			}
+
+			if version.IsDeleted {
 				// Skip deleted versions
-				continue
+				return true
 			}
 
 			if dvs.tableName == "users" {
-				fmt.Printf("DEBUG: Found in disk store: Problematic users RowID=%d RowVersion=%v\n", diskRowID, &diskVersion)
+				fmt.Printf("DEBUG: Found in disk store: Problematic users RowID=%d RowVersion=%v\n", rowID, &version)
 			}
 
 			if dvs.tableName == "sessions" {
-				fmt.Printf("DEBUG: Found in disk store: Problematic sessions RowID=%d RowVersion=%v\n", diskRowID, &diskVersion)
+				fmt.Printf("DEBUG: Found in disk store: Problematic sessions RowID=%d RowVersion=%v\n", rowID, &version)
 			}
 
 			// Copy the version with snapshot TxnID
-			versionCopy := diskVersion
+			versionCopy := version
 			versionCopy.TxnID = -1 // Mark as snapshot version
 
 			// Add to batch
@@ -234,11 +253,13 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 				if err := appender.AppendBatch(batch); err != nil {
 					fmt.Printf("Error: appending disk batch: %v\n", err)
 					lastErr = err
-					break // Stop iteration on error
+					return false // Stop iteration on error
 				}
 				batch = batch[:0] // Reset batch
 			}
-		}
+
+			return true
+		})
 
 		if lastErr != nil {
 			appender.Fail()
@@ -283,10 +304,11 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 
 		// Iterate through all loaded rowIDs and transfer them to the new reader
 		// This ensures we don't reload rows that were already loaded into memory
-		previousReader.LoadedRowIDs.ForEach(func(rowID int64, _ struct{}) bool {
-			reader.LoadedRowIDs.Set(rowID, struct{}{})
-			return true // Continue iteration
-		})
+		previousReader.mu.Lock()
+		for rowID := range previousReader.LoadedRowIDs.Keys() {
+			reader.LoadedRowIDs.Put(rowID, struct{}{})
+		}
+		previousReader.mu.Unlock()
 	}
 
 	// Manage readers list according to keepCount
@@ -787,7 +809,7 @@ func (dvs *DiskVersionStore) QuickCheckRowExists(rowID int64) bool {
 	neweastReader := dvs.readers[len(dvs.readers)-1]
 
 	// Check if the rowID exists in the in-memory version store
-	if _, exists := neweastReader.LoadedRowIDs.Get(rowID); exists {
+	if neweastReader.LoadedRowIDs.Has(rowID) {
 		return false
 	}
 

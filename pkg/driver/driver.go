@@ -218,6 +218,7 @@ func isCacheableQuery(query string) bool {
 	// Fast check for common query prefixes using a single character
 	// This avoids expensive string operations
 	c := query[0]
+	//FIXME : This is a very naive check, we should use a more robust parser
 	if c == 'S' || c == 's' || // SELECT
 		c == 'I' || c == 'i' || // INSERT
 		c == 'U' || c == 'u' || // UPDATE
@@ -274,8 +275,6 @@ func (c *Conn) Close() error {
 
 	if entry.refCount <= 0 {
 		entry.refCount = 0 // Reset to zero (not negative)
-
-		fmt.Printf("Connection pool reference count dropped to zero for DSN '%s', closing database\n", c.dsn)
 
 		err := entry.db.Close()
 		if err != nil {

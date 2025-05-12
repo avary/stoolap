@@ -27,8 +27,8 @@ func (rv *RowVersion) String() string {
 // VersionStore tracks the latest committed version of each row for a table
 // Simplified to keep only one version per row (the latest committed version)
 type VersionStore struct {
-	versions  *fastmap.SyncInt64Map[*RowVersion] // Using high-performance concurrent map
-	tableName string                             // The name of the table this store belongs to
+	versions  *fastmap.SegmentInt64Map[*RowVersion] // Using high-performance concurrent map
+	tableName string                                // The name of the table this store belongs to
 
 	indexes    map[string]storage.Index
 	indexMutex sync.RWMutex
@@ -43,17 +43,17 @@ type VersionStore struct {
 	engine *MVCCEngine // Engine that owns this version store
 
 	// Hot/Cold data management
-	accessTimes *fastmap.SyncInt64Map[int64] // Maps rowID -> last access timestamp
+	accessTimes *fastmap.SegmentInt64Map[int64] // Maps rowID -> last access timestamp
 }
 
 // NewVersionStore creates a new version store
 func NewVersionStore(tableName string, engine *MVCCEngine) *VersionStore {
 	vs := &VersionStore{
-		versions:    fastmap.NewSyncInt64Map[*RowVersion](16), // Start with reasonable capacity
+		versions:    fastmap.NewSegmentInt64Map[*RowVersion](8, 1000), // Start with reasonable capacity
 		tableName:   tableName,
 		indexes:     make(map[string]storage.Index),
 		engine:      engine,
-		accessTimes: fastmap.NewSyncInt64Map[int64](16), // Initialize access times tracking
+		accessTimes: fastmap.NewSegmentInt64Map[int64](8, 1000), // Initialize access times tracking
 	}
 	// Initialize atomic.Bool to false (not closed)
 	vs.closed.Store(false)
@@ -215,8 +215,7 @@ func (vs *VersionStore) QuickCheckRowExistence(rowID int64) bool {
 	}
 
 	// Check in-memory store first - no lock needed with haxmap
-	_, exists := vs.versions.Get(rowID)
-	if exists {
+	if vs.versions.Has(rowID) {
 		return true
 	}
 
@@ -488,76 +487,40 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) *fastmap.Int64Map[*Ro
 		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
-	// If we detect we're in the middle of a bulk delete, and in READ COMMITTED mode (the default),
-	// we can safely return an empty map since none of the versions matter for the operation
-	isBulkDeleteOp := false
-	hasSpecificTxnVersions := false
-
-	// Only need to check a small sample to detect bulk operations
-	// For single-version approach, we sample a few rows to determine the operation type
-	sampleSize := 0
-	vs.versions.ForEach(func(k int64, versionPtr *RowVersion) bool {
-		// Check if closed during the iteration
-		if vs.closed.Load() {
-			return false // Stop iteration
-		}
-
-		sampleSize++
-		if versionPtr.TxnID == txnID {
-			hasSpecificTxnVersions = true
-			if versionPtr.IsDeleted {
-				isBulkDeleteOp = true
-			}
-		}
-		// Return false to break the iteration when we've seen enough samples
-		return sampleSize < 5 // Continue only if we haven't reached 5 samples
-	})
-
 	// Check if closed after the sampling
 	if vs.closed.Load() {
 		return &fastmap.Int64Map[*RowVersion]{}
 	}
 
-	// If this looks like a bulk delete in READ COMMITTED mode, return empty map
-	if vs.engine.registry.GetIsolationLevel() == ReadCommitted && isBulkDeleteOp && hasSpecificTxnVersions {
-		return &fastmap.Int64Map[*RowVersion]{}
-	}
-
 	result := GetVisibleVersionMap()
-
-	// Check if the version store is closed
-	if vs.closed.Load() {
-		// Return empty result if closed
-		ReturnVisibleVersionMap(result)
-		return &fastmap.Int64Map[*RowVersion]{}
-	}
 
 	// For bulk operations in READ COMMITTED, optimize the common case
 	if vs.engine.registry.GetIsolationLevel() == ReadCommitted {
 		vs.versions.ForEach(func(rowID int64, versionPtr *RowVersion) bool {
 			// Check if closed during iteration
 			if vs.closed.Load() {
-				return false // Stop iteration
+				return false
 			}
 
 			// Skip if it's owned by the current txn (likely being deleted)
 			if versionPtr.TxnID == txnID {
-				return true // Continue iteration
+				return true
 			}
 
 			// Skip if it's deleted - delete markers aren't visible in queries
 			if versionPtr.IsDeleted {
-				return true // Continue iteration
+				return true
 			}
 
 			// Skip if it's not committed (only for other txns)
 			if !vs.engine.registry.IsDirectlyVisible(versionPtr.TxnID) {
-				return true // Continue iteration
+				return true
 			}
 
 			// Visible row - add a copy to result
 			result.Put(rowID, versionPtr)
-			return true // Continue iteration
+
+			return true
 		})
 
 		// Check if closed after processing in-memory versions
@@ -604,21 +567,22 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) *fastmap.Int64Map[*Ro
 	vs.versions.ForEach(func(rowID int64, versionPtr *RowVersion) bool {
 		// Check if closed during iteration
 		if vs.closed.Load() {
-			return false // Stop iteration
+			return false
 		}
 
 		// No need to track rowIDs separately - we'll check result map directly
 
 		// Skip deleted versions
 		if versionPtr.IsDeleted {
-			return true // Continue iteration
+			return true
 		}
 
 		// Check for visibility based on isolation level rules
 		if vs.engine.registry.IsVisible(versionPtr.TxnID, txnID) {
 			result.Put(rowID, versionPtr)
 		}
-		return true // Continue iteration
+
+		return true
 	})
 
 	// Final check if closed after in-memory processing
@@ -852,48 +816,20 @@ func (tvs *TransactionVersionStore) GetAllVisibleRows() *fastmap.Int64Map[storag
 		txnID := tvs.txnID
 		registry := tvs.parentStore.engine.registry
 
-		// Process in-memory versions first
-		// Fast path for small-medium tables, direct iteration is more efficient
-		if txnID > 0 && registry != nil && vs.versions.Len() < 10000 {
-			// Create a simple callback function that avoids closure allocation
-			process := func(rowID int64, versionPtr *RowVersion) bool {
-				// Skip deleted versions
-				if versionPtr.IsDeleted {
-					return true // Continue iteration
-				}
-
-				// Fast visibility check for common patterns
-				// Most common case: our transaction seeing committed data
-				if versionPtr.TxnID != txnID && registry.IsDirectlyVisible(versionPtr.TxnID) {
-					result.Put(rowID, versionPtr.Data)
-				} else if versionPtr.TxnID == txnID {
-					// Direct access to our own transaction's data
-					result.Put(rowID, versionPtr.Data)
-				} else if registry.IsVisible(versionPtr.TxnID, txnID) {
-					// Full visibility check for complex cases
-					result.Put(rowID, versionPtr.Data)
-				}
-				return true // Continue iteration
+		vs.versions.ForEach(func(rowID int64, versionPtr *RowVersion) bool {
+			// Skip deleted versions
+			if versionPtr.IsDeleted {
+				return true
 			}
 
-			// Use the non-closure function to avoid allocations
-			vs.versions.ForEach(process)
-		} else {
-			// Legacy path for larger tables
-			vs.versions.ForEach(func(rowID int64, versionPtr *RowVersion) bool {
-				// Skip deleted versions
-				if versionPtr.IsDeleted {
-					return true // Continue iteration
-				}
+			// Check visibility
+			if registry.IsVisible(versionPtr.TxnID, txnID) {
+				// Add directly to result
+				result.Put(rowID, versionPtr.Data)
+			}
 
-				// Check visibility
-				if registry.IsVisible(versionPtr.TxnID, txnID) {
-					// Add directly to result
-					result.Put(rowID, versionPtr.Data)
-				}
-				return true // Continue iteration
-			})
-		}
+			return true
+		})
 
 		// Check for disk-stored rows if persistence is enabled
 		if vs.engine.persistence != nil && vs.engine.persistence.IsEnabled() {
@@ -1162,13 +1098,14 @@ func (vs *VersionStore) EvictColdData(coldPeriod time.Duration, maxRowsToEvict i
 		// Remove from access times tracking
 		vs.accessTimes.Del(rowID)
 
-		// CRITICAL: Remove from the newest DiskReader's LoadedRowIDs to allow reloading later
 		// This allows the row to be loaded again from disk when it's next accessed
 		if len(diskStore.readers) > 0 {
 			// Only update the newest reader, which is the one we load from
 			newestReader := diskStore.readers[len(diskStore.readers)-1]
 			if newestReader.LoadedRowIDs != nil {
+				newestReader.mu.Lock()
 				newestReader.LoadedRowIDs.Del(rowID)
+				newestReader.mu.Unlock()
 			}
 		}
 	}

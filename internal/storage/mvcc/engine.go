@@ -145,7 +145,6 @@ func (e *MVCCEngine) Open() error {
 
 // Close closes the storage engine and cleans up resources with robust timeout protection
 func (e *MVCCEngine) Close() error {
-	fmt.Printf("Closing MVCCEngine at path: %s\n", e.path)
 	// Skip if already closed - use atomic operation for thread safety
 	if !e.open.CompareAndSwap(true, false) {
 		return nil
@@ -783,8 +782,6 @@ func (e *MVCCEngine) DropTable(name string) error {
 			tableDir := filepath.Join(e.persistence.path, name)
 			if err := os.RemoveAll(tableDir); err != nil {
 				fmt.Printf("Warning: Failed to remove snapshot directory for table %s: %v\n", name, err)
-			} else {
-				fmt.Printf("Removed snapshot directory for dropped table %s\n", name)
 			}
 
 		}

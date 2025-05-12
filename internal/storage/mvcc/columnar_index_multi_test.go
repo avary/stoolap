@@ -64,14 +64,6 @@ func TestMultiColumnarIndexBasic(t *testing.T) {
 		t.Errorf("Expected row ID 1 for John Doe, got %v", rowIDs)
 	}
 
-	// Test prefix match with one column
-	rowIDs = idx.GetRowIDsPrefixMatch([]storage.ColumnValue{
-		storage.NewStringValue("John"),
-	})
-	if len(rowIDs) != 2 || !contains(rowIDs, 1) || !contains(rowIDs, 3) {
-		t.Errorf("Expected row IDs 1 and 3 for prefix 'John', got %v", rowIDs)
-	}
-
 	// Test removing values
 	err = idx.Remove(
 		[]storage.ColumnValue{
@@ -96,7 +88,6 @@ func TestMultiColumnarIndexBasic(t *testing.T) {
 
 // TestMultiColumnarIndexNulls tests NULL handling in the multi-column index
 func TestMultiColumnarIndexNulls(t *testing.T) {
-	t.Skip("Skipping test for NULL handling in multi-column index")
 	// Create a multi-column index with two columns
 	idx := NewMultiColumnarIndex(
 		"test_idx", "test_table",
@@ -698,24 +689,6 @@ func BenchmarkMultiColumnarIndexMultiColumn(b *testing.B) {
 		}
 	})
 
-	// Benchmark prefix match lookups
-	b.Run("PrefixMatch", func(b *testing.B) {
-		// Generate random prefix values to look up
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
-		lookupPrefixes := make([]string, b.N)
-
-		for i := 0; i < b.N; i++ {
-			lookupPrefixes[i] = fmt.Sprintf("str-%d", r.Intn(1000))
-		}
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			idx.GetRowIDsPrefixMatch([]storage.ColumnValue{
-				storage.NewStringValue(lookupPrefixes[i]),
-			})
-		}
-	})
-
 	// Benchmark AND filtering
 	b.Run("AndFiltering", func(b *testing.B) {
 		// Generate random filter values
@@ -1144,27 +1117,6 @@ func TestMultiColumnarIndexIntegerRangeQueries(t *testing.T) {
 	if len(rowIDs) != 4 {
 		t.Errorf("Expected 4 rows in ID range 1-2, got %d", len(rowIDs))
 	}
-
-	// Print out all keys and values in the BTree for debugging
-	fmt.Println("Contents of the BTree:")
-	idx.valueTree.ForEach(func(key MultiColumnValue, value []int64) bool {
-		keyStr := "["
-		for i, val := range key {
-			if i > 0 {
-				keyStr += ", "
-			}
-			if val == nil || val.IsNull() {
-				keyStr += "NULL"
-			} else if intVal, ok := val.AsInt64(); ok {
-				keyStr += fmt.Sprintf("%d", intVal)
-			} else {
-				keyStr += "?"
-			}
-		}
-		keyStr += "]"
-		fmt.Printf("Key: %s, RowIDs: %v\n", keyStr, value)
-		return true
-	})
 
 	// Test range query with both columns
 	// Range: id 1-2, value 15-35

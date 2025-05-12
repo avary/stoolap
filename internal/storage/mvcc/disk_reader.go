@@ -13,7 +13,7 @@ import (
 
 // DiskReader handles reading row versions from disk
 type DiskReader struct {
-	mu       sync.RWMutex
+	mu       sync.Mutex
 	file     *os.File
 	filePath string
 
@@ -27,7 +27,7 @@ type DiskReader struct {
 	index *btree.Int64BTree[int64] // B-Tree index for fast lookups
 
 	// Loaded rowids tracking
-	LoadedRowIDs *fastmap.SyncInt64Map[struct{}] // Maps loaded rowIDs
+	LoadedRowIDs *fastmap.Int64Map[struct{}] // Maps loaded rowIDs
 
 	// Read buffers to reduce allocations in hot paths
 	lenBuffer []byte // Buffer for reading length prefix
@@ -51,8 +51,8 @@ func NewDiskReader(filePath string) (*DiskReader, error) {
 		file:         file,
 		filePath:     filePath,
 		fileSize:     stat.Size(),
-		lenBuffer:    make([]byte, 4),                      // Pre-allocate buffer for length prefix
-		LoadedRowIDs: fastmap.NewSyncInt64Map[struct{}](8), // Initialize loaded rowids map
+		lenBuffer:    make([]byte, 4),                     // Pre-allocate buffer for length prefix
+		LoadedRowIDs: fastmap.NewInt64Map[struct{}](1000), // Initialize loaded rowids map
 	}
 
 	// Read header
@@ -187,10 +187,10 @@ func (r *DiskReader) readSchema() error {
 
 // GetRow retrieves a row version by rowID
 func (r *DiskReader) GetRow(rowID int64) (RowVersion, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	if _, ok := r.LoadedRowIDs.Get(rowID); ok {
+	if r.LoadedRowIDs.Has(rowID) {
 		return RowVersion{}, false // Already loaded
 	}
 
@@ -220,15 +220,15 @@ func (r *DiskReader) GetRow(rowID int64) (RowVersion, bool) {
 	}
 
 	// Mark this rowID as loaded
-	r.LoadedRowIDs.Set(rowID, struct{}{})
+	r.LoadedRowIDs.Put(rowID, struct{}{})
 
 	return version, true
 }
 
 // GetRowBatch retrieves multiple row versions by rowIDs
 func (r *DiskReader) GetRowBatch(rowIDs []int64) map[int64]RowVersion {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	if len(rowIDs) == 0 {
 		return nil
@@ -266,7 +266,7 @@ func (r *DiskReader) GetRowBatch(rowIDs []int64) map[int64]RowVersion {
 		}
 
 		// Mark this rowID as loaded
-		r.LoadedRowIDs.Set(rowID, struct{}{})
+		r.LoadedRowIDs.Put(rowID, struct{}{})
 
 		result[rowID] = version
 	}
@@ -277,8 +277,8 @@ func (r *DiskReader) GetRowBatch(rowIDs []int64) map[int64]RowVersion {
 // ForEach iterates through all rows in the file and calls the provided function for each row
 // This is more memory-efficient than GetAllRows as it doesn't create a map of all rows
 func (r *DiskReader) ForEach(callback func(rowID int64, version RowVersion) bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	if callback == nil || r.index == nil {
 		return
@@ -288,18 +288,16 @@ func (r *DiskReader) ForEach(callback func(rowID int64, version RowVersion) bool
 	processed := 0
 	errors := 0
 
-	// Iterate through all entries in the index
-	r.index.ForEach(func(rowID int64, offset int64) bool {
+	for rowID, offset := range r.index.GetAll() {
 		// Check if we've already loaded this rowID
-		_, alreadyLoaded := r.LoadedRowIDs.Get(rowID)
-		if alreadyLoaded {
-			return true // Skip rows we've already loaded into memory
+		if r.LoadedRowIDs.Has(rowID) {
+			continue
 		}
 
 		// Read length prefix using pre-allocated buffer
 		if _, err := r.file.ReadAt(r.lenBuffer, offset); err != nil {
 			errors++
-			return true // Continue on error
+			continue
 		}
 		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
 
@@ -307,24 +305,24 @@ func (r *DiskReader) ForEach(callback func(rowID int64, version RowVersion) bool
 		rowBytes := make([]byte, rowLen)
 		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
 			errors++
-			return true // Continue on error
+			continue
 		}
 
 		// Deserialize row version
 		version, err := deserializeRowVersion(rowBytes)
 		if err != nil {
 			errors++
-			return true // Continue on error
+			continue
 		}
 
 		processed++
 
 		// Mark this rowID as processed
-		r.LoadedRowIDs.Set(rowID, struct{}{})
+		r.LoadedRowIDs.Put(rowID, struct{}{})
 
 		// Call the callback with the rowID and version
-		return callback(rowID, version)
-	})
+		callback(rowID, version)
+	}
 
 	// Optional debug info if needed
 	if errors > 0 {
@@ -369,7 +367,7 @@ func (r *DiskReader) GetAllRows() map[int64]RowVersion {
 
 // GetSchema returns the schema
 func (r *DiskReader) GetSchema() *storage.Schema {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.schema
 }

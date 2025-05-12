@@ -66,6 +66,7 @@ func (t *Tx) Rollback() error {
 }
 
 // Exec executes a query that doesn't return rows within the transaction
+// Deprecated: Use ExecContext instead
 func (t *Tx) Exec(query string, args []driver.Value) (driver.Result, error) {
 	return t.ExecContext(t.ctx, query, convertValues(args))
 }
@@ -96,6 +97,7 @@ func (t *Tx) ExecContext(ctx context.Context, query string, args []driver.NamedV
 }
 
 // Query executes a query that returns rows within the transaction
+// Deprecated: Use QueryContext instead
 func (t *Tx) Query(query string, args []driver.Value) (driver.Rows, error) {
 	return t.QueryContext(t.ctx, query, convertValues(args))
 }
@@ -184,7 +186,7 @@ func (s *txStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (dr
 	return s.stmt.QueryContext(ctx, args)
 }
 
-// convertValues converts driver.Value to driver.NamedValue - moved from stmt.go
+// convertValues converts driver.Value to driver.NamedValue
 func convertValues(vals []driver.Value) []driver.NamedValue {
 	result := make([]driver.NamedValue, len(vals))
 	for i, val := range vals {

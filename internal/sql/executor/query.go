@@ -531,10 +531,6 @@ func isAsterisk(expr parser.Expression) bool {
 	return false
 }
 
-// These functions have been moved to their respective files:
-// - executeSelectWithAggregation moved to aggregations.go
-// - executeSelectWithScalarFunctions moved to scalar.go
-
 // executeSelectWithJoins executes a SELECT query with JOINs
 func (e *Executor) executeSelectWithJoins(ctx context.Context, tx storage.Transaction, stmt *parser.SelectStatement) (storage.Result, error) {
 	_ = tx // Unused for now, but could be used for transaction management

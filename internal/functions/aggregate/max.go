@@ -1,8 +1,7 @@
 package aggregate
 
 import (
-	"fmt"
-	"reflect"
+	"time"
 
 	"github.com/stoolap/stoolap/internal/functions/contract"
 	"github.com/stoolap/stoolap/internal/functions/registry"
@@ -105,68 +104,81 @@ func isEqual(a, b interface{}) bool {
 		return false
 	}
 
-	// Get reflection values
-	va := reflect.ValueOf(a)
-	vb := reflect.ValueOf(b)
+	// Handle time.Time specifically (common case)
+	if aTime, aOk := a.(time.Time); aOk {
+		if bTime, bOk := b.(time.Time); bOk {
+			return aTime.Equal(bTime)
+		}
+		return false // time.Time != other types
+	} else if _, bOk := b.(time.Time); bOk {
+		return false // other types != time.Time
+	}
 
-	// Handle different types
-	switch va.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		aInt := va.Int()
-
-		switch vb.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return aInt == vb.Int()
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			if aInt < 0 {
-				return false // Negative int can't equal unsigned int
-			}
-			return uint64(aInt) == vb.Uint()
-		case reflect.Float32, reflect.Float64:
-			return float64(aInt) == vb.Float()
+	// Use type assertions for specific comparisons
+	switch a.(type) {
+	case bool:
+		if bBool, ok := b.(bool); ok {
+			return a.(bool) == bBool
 		}
 
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		aUint := va.Uint()
-
-		switch vb.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			bInt := vb.Int()
-			if bInt < 0 {
-				return false // Unsigned int can't equal negative int
-			}
-			return aUint == uint64(bInt)
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return aUint == vb.Uint()
-		case reflect.Float32, reflect.Float64:
-			return float64(aUint) == vb.Float()
+	case int:
+		if bInt, ok := b.(int); ok {
+			return a.(int) == bInt
+		}
+	case int8:
+		if bInt, ok := b.(int8); ok {
+			return a.(int8) == bInt
+		}
+	case int16:
+		if bInt, ok := b.(int16); ok {
+			return a.(int16) == bInt
+		}
+	case int32:
+		if bInt, ok := b.(int32); ok {
+			return a.(int32) == bInt
+		}
+	case int64:
+		if bInt, ok := b.(int64); ok {
+			return a.(int64) == bInt
 		}
 
-	case reflect.Float32, reflect.Float64:
-		aFloat := va.Float()
-
-		switch vb.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return aFloat == float64(vb.Int())
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return aFloat == float64(vb.Uint())
-		case reflect.Float32, reflect.Float64:
-			return aFloat == vb.Float()
+	case uint:
+		if bUint, ok := b.(uint); ok {
+			return a.(uint) == bUint
+		}
+	case uint8:
+		if bUint, ok := b.(uint8); ok {
+			return a.(uint8) == bUint
+		}
+	case uint16:
+		if bUint, ok := b.(uint16); ok {
+			return a.(uint16) == bUint
+		}
+	case uint32:
+		if bUint, ok := b.(uint32); ok {
+			return a.(uint32) == bUint
+		}
+	case uint64:
+		if bUint, ok := b.(uint64); ok {
+			return a.(uint64) == bUint
 		}
 
-	case reflect.String:
-		// String comparison
-		if vb.Kind() == reflect.String {
-			return va.String() == vb.String()
+	case float32:
+		if bFloat, ok := b.(float32); ok {
+			return a.(float32) == bFloat
+		}
+	case float64:
+		if bFloat, ok := b.(float64); ok {
+			return a.(float64) == bFloat
 		}
 
-	case reflect.Bool:
-		// Boolean comparison
-		if vb.Kind() == reflect.Bool {
-			return va.Bool() == vb.Bool()
+	case string:
+		if bStr, ok := b.(string); ok {
+			return a.(string) == bStr
 		}
 	}
 
-	// If we can't compare directly, use string representation
-	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+	// Different types or non-primitive types that are not directly comparable
+	// are not equal
+	return false
 }

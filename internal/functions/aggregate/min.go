@@ -1,9 +1,9 @@
 package aggregate
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/stoolap/stoolap/internal/functions/contract"
 	"github.com/stoolap/stoolap/internal/functions/registry"
@@ -98,67 +98,633 @@ func init() {
 
 // isLessThan compares two values and returns true if a < b
 func isLessThan(a, b interface{}) bool {
-	// Get reflection values
-	va := reflect.ValueOf(a)
-	vb := reflect.ValueOf(b)
+	// Handle nil cases
+	if a == nil && b == nil {
+		return false // equal, not less than
+	}
+	if a == nil {
+		return true // nil is less than any non-nil value
+	}
+	if b == nil {
+		return false // no value is less than nil
+	}
 
-	// Handle different types (numeric types are comparable across types)
-	switch va.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		// Convert both to int64 for comparison
-		aInt := va.Int()
+	// Handle time.Time specifically (common case)
+	if aTime, aOk := a.(time.Time); aOk {
+		if bTime, bOk := b.(time.Time); bOk {
+			return aTime.Before(bTime)
+		}
+		// time.Time is considered less than other types
+		return true
+	} else if _, bOk := b.(time.Time); bOk {
+		// Other types are greater than time.Time
+		return false
+	}
 
-		switch vb.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return aInt < vb.Int()
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			if aInt < 0 {
-				return true // Negative int is less than any uint
+	// Compare numeric types with proper type conversion
+	// Integer types
+	switch a := a.(type) {
+	case int:
+		switch b := b.(type) {
+		case int:
+			return a < b
+		case int8:
+			return int8(a) < b
+		case int16:
+			return int16(a) < b
+		case int32:
+			return int32(a) < b
+		case int64:
+			return int64(a) < b
+		case uint:
+			if a < 0 {
+				return true
 			}
-			return uint64(aInt) < vb.Uint()
-		case reflect.Float32, reflect.Float64:
-			return float64(aInt) < vb.Float()
-		}
-
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		// Convert both to uint64 for comparison
-		aUint := va.Uint()
-
-		switch vb.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			bInt := vb.Int()
-			if bInt < 0 {
-				return false // Any uint is greater than negative int
+			return uint(a) < b
+		case uint8:
+			if a < 0 {
+				return true
 			}
-			return aUint < uint64(bInt)
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return aUint < vb.Uint()
-		case reflect.Float32, reflect.Float64:
-			return float64(aUint) < vb.Float()
+			return uint8(a) < b
+		case uint16:
+			if a < 0 {
+				return true
+			}
+			return uint16(a) < b
+		case uint32:
+			if a < 0 {
+				return true
+			}
+			return uint32(a) < b
+		case uint64:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // ints > bools
+		case string:
+			return false // ints < strings
 		}
-
-	case reflect.Float32, reflect.Float64:
-		// Convert both to float64 for comparison
-		aFloat := va.Float()
-
-		switch vb.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return aFloat < float64(vb.Int())
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return aFloat < float64(vb.Uint())
-		case reflect.Float32, reflect.Float64:
-			return aFloat < vb.Float()
+	case int8:
+		switch b := b.(type) {
+		case int:
+			return int(a) < b
+		case int8:
+			return a < b
+		case int16:
+			return int16(a) < b
+		case int32:
+			return int32(a) < b
+		case int64:
+			return int64(a) < b
+		case uint:
+			if a < 0 {
+				return true
+			}
+			return uint(a) < b
+		case uint8:
+			if a < 0 {
+				return true
+			}
+			return uint8(a) < b
+		case uint16:
+			if a < 0 {
+				return true
+			}
+			return uint16(a) < b
+		case uint32:
+			if a < 0 {
+				return true
+			}
+			return uint32(a) < b
+		case uint64:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // ints > bools
+		case string:
+			return false // ints < strings
 		}
-
-	case reflect.String:
-		// String comparison
-		if vb.Kind() == reflect.String {
-			return strings.Compare(va.String(), vb.String()) < 0
+	case int16:
+		switch b := b.(type) {
+		case int:
+			return int(a) < b
+		case int8:
+			return a < int16(b)
+		case int16:
+			return a < b
+		case int32:
+			return int32(a) < b
+		case int64:
+			return int64(a) < b
+		case uint:
+			if a < 0 {
+				return true
+			}
+			return uint(a) < b
+		case uint8:
+			if a < 0 {
+				return true
+			}
+			return uint8(a) < b
+		case uint16:
+			if a < 0 {
+				return true
+			}
+			return uint16(a) < b
+		case uint32:
+			if a < 0 {
+				return true
+			}
+			return uint32(a) < b
+		case uint64:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // ints > bools
+		case string:
+			return false // ints < strings
+		}
+	case int32:
+		switch b := b.(type) {
+		case int:
+			return int(a) < b
+		case int8:
+			return a < int32(b)
+		case int16:
+			return a < int32(b)
+		case int32:
+			return a < b
+		case int64:
+			return int64(a) < b
+		case uint:
+			if a < 0 {
+				return true
+			}
+			return uint(a) < b
+		case uint8:
+			if a < 0 {
+				return true
+			}
+			return uint8(a) < b
+		case uint16:
+			if a < 0 {
+				return true
+			}
+			return uint16(a) < b
+		case uint32:
+			if a < 0 {
+				return true
+			}
+			return uint32(a) < b
+		case uint64:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // ints > bools
+		case string:
+			return false // ints < strings
+		}
+	case int64:
+		switch b := b.(type) {
+		case int:
+			return a < int64(b)
+		case int8:
+			return a < int64(b)
+		case int16:
+			return a < int64(b)
+		case int32:
+			return a < int64(b)
+		case int64:
+			return a < b
+		case uint:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < uint64(b)
+		case uint8:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < uint64(b)
+		case uint16:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < uint64(b)
+		case uint32:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < uint64(b)
+		case uint64:
+			if a < 0 {
+				return true
+			}
+			return uint64(a) < b
+		case float32:
+			return float64(a) < float64(b)
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // ints > bools
+		case string:
+			return false // ints < strings
+		}
+	// Unsigned integer types
+	case uint:
+		switch b := b.(type) {
+		case int:
+			if b < 0 {
+				return false
+			}
+			return a < uint(b)
+		case int8:
+			if b < 0 {
+				return false
+			}
+			return a < uint(b)
+		case int16:
+			if b < 0 {
+				return false
+			}
+			return a < uint(b)
+		case int32:
+			if b < 0 {
+				return false
+			}
+			return a < uint(b)
+		case int64:
+			if b < 0 {
+				return false
+			}
+			return uint64(a) < uint64(b)
+		case uint:
+			return a < b
+		case uint8:
+			return a < uint(b)
+		case uint16:
+			return a < uint(b)
+		case uint32:
+			return a < uint(b)
+		case uint64:
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // uints > bools
+		case string:
+			return false // uints < strings
+		}
+	case uint8:
+		switch b := b.(type) {
+		case int:
+			if b < 0 {
+				return false
+			}
+			return a < uint8(b)
+		case int8:
+			if b < 0 {
+				return false
+			}
+			return a < uint8(b)
+		case int16:
+			if b < 0 {
+				return false
+			}
+			return a < uint8(b)
+		case int32:
+			if b < 0 {
+				return false
+			}
+			return a < uint8(b)
+		case int64:
+			if b < 0 {
+				return false
+			}
+			return uint64(a) < uint64(b)
+		case uint:
+			return uint(a) < b
+		case uint8:
+			return a < b
+		case uint16:
+			return uint16(a) < b
+		case uint32:
+			return uint32(a) < b
+		case uint64:
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // uints > bools
+		case string:
+			return false // uints < strings
+		}
+	case uint16:
+		switch b := b.(type) {
+		case int:
+			if b < 0 {
+				return false
+			}
+			return a < uint16(b)
+		case int8:
+			if b < 0 {
+				return false
+			}
+			return a < uint16(b)
+		case int16:
+			if b < 0 {
+				return false
+			}
+			return a < uint16(b)
+		case int32:
+			if b < 0 {
+				return false
+			}
+			return a < uint16(b)
+		case int64:
+			if b < 0 {
+				return false
+			}
+			return uint64(a) < uint64(b)
+		case uint:
+			return uint(a) < b
+		case uint8:
+			return a < uint16(b)
+		case uint16:
+			return a < b
+		case uint32:
+			return uint32(a) < b
+		case uint64:
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // uints > bools
+		case string:
+			return false // uints < strings
+		}
+	case uint32:
+		switch b := b.(type) {
+		case int:
+			if b < 0 {
+				return false
+			}
+			return a < uint32(b)
+		case int8:
+			if b < 0 {
+				return false
+			}
+			return a < uint32(b)
+		case int16:
+			if b < 0 {
+				return false
+			}
+			return a < uint32(b)
+		case int32:
+			if b < 0 {
+				return false
+			}
+			return a < uint32(b)
+		case int64:
+			if b < 0 {
+				return false
+			}
+			return uint64(a) < uint64(b)
+		case uint:
+			return uint(a) < b
+		case uint8:
+			return a < uint32(b)
+		case uint16:
+			return a < uint32(b)
+		case uint32:
+			return a < b
+		case uint64:
+			return uint64(a) < b
+		case float32:
+			return float32(a) < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // uints > bools
+		case string:
+			return false // uints < strings
+		}
+	case uint64:
+		switch b := b.(type) {
+		case int:
+			if b < 0 {
+				return false
+			}
+			return a < uint64(b)
+		case int8:
+			if b < 0 {
+				return false
+			}
+			return a < uint64(b)
+		case int16:
+			if b < 0 {
+				return false
+			}
+			return a < uint64(b)
+		case int32:
+			if b < 0 {
+				return false
+			}
+			return a < uint64(b)
+		case int64:
+			if b < 0 {
+				return false
+			}
+			return a < uint64(b)
+		case uint:
+			return a < uint64(b)
+		case uint8:
+			return a < uint64(b)
+		case uint16:
+			return a < uint64(b)
+		case uint32:
+			return a < uint64(b)
+		case uint64:
+			return a < b
+		case float32:
+			return float64(a) < float64(b)
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // uints > bools
+		case string:
+			return false // uints < strings
+		}
+	// Floating-point types
+	case float32:
+		switch b := b.(type) {
+		case int:
+			return a < float32(b)
+		case int8:
+			return a < float32(b)
+		case int16:
+			return a < float32(b)
+		case int32:
+			return a < float32(b)
+		case int64:
+			return float64(a) < float64(b)
+		case uint:
+			return a < float32(b)
+		case uint8:
+			return a < float32(b)
+		case uint16:
+			return a < float32(b)
+		case uint32:
+			return a < float32(b)
+		case uint64:
+			return float64(a) < float64(b)
+		case float32:
+			return a < b
+		case float64:
+			return float64(a) < b
+		case bool:
+			return false // floats > bools
+		case string:
+			return false // floats < strings
+		}
+	case float64:
+		switch b := b.(type) {
+		case int:
+			return a < float64(b)
+		case int8:
+			return a < float64(b)
+		case int16:
+			return a < float64(b)
+		case int32:
+			return a < float64(b)
+		case int64:
+			return a < float64(b)
+		case uint:
+			return a < float64(b)
+		case uint8:
+			return a < float64(b)
+		case uint16:
+			return a < float64(b)
+		case uint32:
+			return a < float64(b)
+		case uint64:
+			return a < float64(b)
+		case float32:
+			return a < float64(b)
+		case float64:
+			return a < b
+		case bool:
+			return false // floats > bools
+		case string:
+			return false // floats < strings
+		}
+	// Other basic types
+	case bool:
+		switch b := b.(type) {
+		case bool:
+			// false < true
+			return !a && b
+		default:
+			// bools come before other types (except time.Time)
+			return true
+		}
+	case string:
+		switch b := b.(type) {
+		case string:
+			return strings.Compare(a, b) < 0
+		case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			// strings come after numeric and bool types
+			return false
+		default:
+			// strings come before other complex types
+			return true
 		}
 	}
 
-	// If types are incomparable, use string representation as a fallback
-	return fmt.Sprintf("%v", a) < fmt.Sprintf("%v", b)
+	// For different types that don't have specific comparisons,
+	// we use type name string comparison for a stable order
+	aType := typeNameOf(a)
+	bType := typeNameOf(b)
+	if aType != bType {
+		return aType < bType
+	}
+
+	// Final fallback - should rarely get here
+	return false
+}
+
+// typeNameOf returns the type name as a string without using fmt.Sprintf
+func typeNameOf(v interface{}) string {
+	if v == nil {
+		return "nil"
+	}
+
+	switch v.(type) {
+	case bool:
+		return "bool"
+	case int:
+		return "int"
+	case int8:
+		return "int8"
+	case int16:
+		return "int16"
+	case int32:
+		return "int32"
+	case int64:
+		return "int64"
+	case uint:
+		return "uint"
+	case uint8:
+		return "uint8"
+	case uint16:
+		return "uint16"
+	case uint32:
+		return "uint32"
+	case uint64:
+		return "uint64"
+	case float32:
+		return "float32"
+	case float64:
+		return "float64"
+	case string:
+		return "string"
+	case time.Time:
+		return "time.Time"
+	}
+
+	// For custom types, use reflection as a last resort
+	// This is only used for the fallback case
+	return reflect.TypeOf(v).String()
 }
 
 // getDataType determines the data type of a value

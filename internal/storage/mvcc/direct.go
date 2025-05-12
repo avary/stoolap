@@ -99,7 +99,8 @@ func (s *MVCCDirectScanner) collectVisibleRowIDs() {
 				if !version.IsDeleted && s.registry.IsVisible(version.TxnID, s.txnID) {
 					s.rowIDs = append(s.rowIDs, rowID)
 				}
-				return true // Continue iteration
+
+				return true
 			})
 
 			// Sort row IDs for consistent order using SIMD-optimized sorting
@@ -122,7 +123,7 @@ func (s *MVCCDirectScanner) collectVisibleRowIDs() {
 	s.versionStore.versions.ForEach(func(rowID int64, version *RowVersion) bool {
 		// Skip deleted or invisible versions
 		if version.IsDeleted || !s.registry.IsVisible(version.TxnID, s.txnID) {
-			return true // Continue iteration
+			return true
 		}
 
 		// Apply filter if provided
@@ -130,16 +131,17 @@ func (s *MVCCDirectScanner) collectVisibleRowIDs() {
 			matches, err := s.whereExpr.Evaluate(version.Data)
 			if err != nil {
 				s.err = err
-				return false // Stop iteration on error
+				return false
 			}
 			if !matches {
-				return true // Continue iteration if no match
+				return true
 			}
 		}
 
 		// Add matching row ID
 		s.rowIDs = append(s.rowIDs, rowID)
-		return true // Continue iteration
+
+		return true
 	})
 
 	// Sort row IDs for consistent order using SIMD-optimized sorting

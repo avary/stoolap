@@ -1042,10 +1042,6 @@ func loadBitmapsFromManifest(indexDir string, idx *Index) error {
 	return nil
 }
 
-// Legacy comment - this function has been moved to like_pattern.go
-// This implementation has been moved to a separate file
-// to improve maintainability
-
 // ShouldCreateBitmapIndex determines if a bitmap index should be created
 // for this column based on cardinality analysis
 func ShouldCreateBitmapIndex(values []interface{}, threshold float64) bool {

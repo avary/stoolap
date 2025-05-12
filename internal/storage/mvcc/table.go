@@ -147,8 +147,14 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 		return fmt.Errorf("version store not available")
 	}
 
-	// Get all unique indexes
+	// Quick check for empty indexes
 	mt.versionStore.indexMutex.RLock()
+	if len(mt.versionStore.indexes) == 0 {
+		mt.versionStore.indexMutex.RUnlock()
+		return nil
+	}
+
+	// Get all unique indexes
 	uniqueIndexes := make([]storage.Index, 0)
 
 	// Collect all unique indexes regardless of index implementation (ColumnarIndex or MultiColumnarIndex)
@@ -636,23 +642,30 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 					updateCount++
 				}
 
+				var err error
 				// Process global rows that weren't in local cache
-				for id, version := range globalRows.All() {
-					if _, isLocal := localRows[id]; !isLocal && !version.IsDeleted {
+				globalRows.ForEach(func(rowID int64, version *RowVersion) bool {
+					if _, isLocal := localRows[rowID]; !isLocal && !version.IsDeleted {
 						// Apply the setter function
 						updatedRow, uniqueCheck := setter(version.Data)
 
 						// Check unique columnar index constraints
 						if uniqueCheck {
-							if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-								return 0, err
+							if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+								return false
 							}
 						}
 
 						// Store the updated row
-						mt.txnVersions.Put(id, updatedRow, false)
+						mt.txnVersions.Put(rowID, updatedRow, false)
 						updateCount++
 					}
+
+					return true
+				})
+
+				if err != nil {
+					return 0, err
 				}
 
 				return updateCount, nil
@@ -705,16 +718,17 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 				batchIDs := rowIDs[i:end]
 				versions := mt.versionStore.GetVisibleVersionsByIDs(batchIDs, mt.txnID)
 
+				var err error
 				// Process each visible row in this batch
-				for rowID, version := range versions.All() {
+				versions.ForEach(func(rowID int64, version *RowVersion) bool {
 					if !version.IsDeleted {
 						// Apply the setter function
 						updatedRow, uniqueCheck := setter(version.Data)
 
 						// Check unique columnar index constraints
 						if uniqueCheck {
-							if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-								return 0, err
+							if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+								return false
 							}
 						}
 
@@ -722,10 +736,16 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 						mt.txnVersions.Put(rowID, updatedRow, false)
 						updateCount++
 					}
-				}
+
+					return true
+				})
 
 				// Free the versions map
 				ReturnVisibleVersionMap(versions)
+
+				if err != nil {
+					return 0, err
+				}
 			}
 
 			return updateCount, nil
@@ -766,20 +786,22 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 	if updateCount < 100 {
 		// Skip this step for large updates to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
-		for rowID, row := range allRows.All() {
+
+		var err error
+		allRows.ForEach(func(rowID int64, row storage.Row) bool {
 			// Skip already processed rows
 			if processedKeys.Has(rowID) {
-				continue
+				return true
 			}
 
 			// Skip if already marked as deleted locally
 			if localVersion, exists := mt.txnVersions.localVersions.Get(rowID); exists && localVersion.IsDeleted {
-				continue
+				return true
 			}
 
 			// Apply filter if specified
 			if !mt.matchesFilter(filterExpr, row) {
-				continue
+				return true
 			}
 
 			// Apply the setter function
@@ -787,8 +809,8 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 			// Check unique columnar index constraints
 			if uniqueCheck {
-				if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
-					return 0, err
+				if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+					return false
 				}
 			}
 
@@ -796,10 +818,16 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 			mt.txnVersions.Put(rowID, updatedRow, false)
 
 			updateCount++
-		}
+
+			return true
+		})
 
 		// Return the map to the pool
 		PutRowMap(allRows)
+
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	return updateCount, nil
@@ -863,38 +891,45 @@ func (mt *MVCCTable) processGlobalVersions(
 
 	processCount := 0
 
+	var err error
 	// Process matching versions
-	for rowID, version := range globalVersions.All() {
+	globalVersions.ForEach(func(rowID int64, version *RowVersion) bool {
 		// Skip if already processed
 		if processedKeys.Has(rowID) {
-			continue
+			return true
 		}
 
 		// Skip deleted rows
 		if version.IsDeleted {
-			continue
+			return true
 		}
 
 		// Apply filter
 		if !mt.matchesFilter(filter, version.Data) {
-			continue
+			return true
 		}
 
 		// Mark as processed
 		processedKeys.Put(rowID, struct{}{})
 
 		// Process this row
-		err := processor(rowID, version.Data)
+		err = processor(rowID, version.Data)
 		if err != nil {
-			return 0, err
+			return false
 		}
 
 		processCount++
 
 		// Check batch size limit
 		if batchSize > 0 && processCount >= batchSize {
-			break
+			return true
 		}
+
+		return true
+	})
+
+	if err != nil {
+		return 0, err
 	}
 
 	return processCount, nil
@@ -984,13 +1019,15 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				globalRows := mt.versionStore.GetVisibleVersionsByIDs(visibleIDs, mt.txnID)
 				defer ReturnVisibleVersionMap(globalRows)
 
-				for id, version := range globalRows.All() {
+				globalRows.ForEach(func(rowID int64, version *RowVersion) bool {
 					if !version.IsDeleted {
 						// Mark as deleted
-						mt.txnVersions.Put(id, version.Data, true)
+						mt.txnVersions.Put(rowID, version.Data, true)
 						deleteCount++
 					}
-				}
+
+					return true
+				})
 
 				return deleteCount, nil
 			}
@@ -1058,13 +1095,15 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				// Then check global versions in bulk
 				globalRows := mt.versionStore.GetVisibleVersionsByIDs(batchIDs, mt.txnID)
 
-				for id, version := range globalRows.All() {
+				globalRows.ForEach(func(rowID int64, version *RowVersion) bool {
 					if !version.IsDeleted {
 						// Mark as deleted
-						mt.txnVersions.Put(id, version.Data, true)
+						mt.txnVersions.Put(rowID, version.Data, true)
 						deleteCount++
 					}
-				}
+
+					return true
+				})
 
 				// Free the versions map
 				ReturnVisibleVersionMap(globalRows)
@@ -1110,26 +1149,28 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 	if deleteCount < 100 {
 		// Skip this step for large deletes to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
-		for rowID, row := range allRows.All() {
+		allRows.ForEach(func(rowID int64, row storage.Row) bool {
 			// Skip already processed rows
 			if processedKeys.Has(rowID) {
-				continue
+				return true
 			}
 
 			// Skip if already marked as deleted locally
 			if localVersion, exists := mt.txnVersions.localVersions.Get(rowID); exists && localVersion.IsDeleted {
-				continue
+				return true
 			}
 
 			// Apply filter if specified
 			if !mt.matchesFilter(filterExpr, row) {
-				continue
+				return true
 			}
 
 			// Mark as deleted
 			mt.txnVersions.Put(rowID, row, true)
 			deleteCount++
-		}
+
+			return true
+		})
 
 		// Return the map to the pool
 		PutRowMap(allRows)
@@ -1798,16 +1839,17 @@ func (mt *MVCCTable) RowCount() int {
 	// First grab visible versions from the version store
 	// We don't need the full data, just how many rows are visible
 	visibleVersions := mt.versionStore.GetAllVisibleVersions(mt.txnID)
-	for rowID, version := range visibleVersions.All() {
+	visibleVersions.ForEach(func(rowID int64, version *RowVersion) bool {
 		if !version.IsDeleted {
 			processedKeys.Put(rowID, struct{}{})
 			rowCount++
 		}
-	}
+		return true
+	})
 	ReturnVisibleVersionMap(visibleVersions)
 
 	// Apply local changes that might override global versions
-	for rowID, version := range mt.txnVersions.localVersions.All() {
+	mt.txnVersions.localVersions.ForEach(func(rowID int64, version RowVersion) bool {
 		if version.IsDeleted {
 			// If deleted locally, remove from count
 			if processedKeys.Has(rowID) {
@@ -1819,7 +1861,9 @@ func (mt *MVCCTable) RowCount() int {
 			processedKeys.Put(rowID, struct{}{})
 			rowCount++
 		}
-	}
+
+		return true
+	})
 
 	return rowCount
 }
@@ -2273,11 +2317,13 @@ func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) *fastmap.Int64Ma
 			defer ReturnVisibleVersionMap(versions)
 
 			// Process the visible versions
-			for rowID, version := range versions.All() {
+			versions.ForEach(func(rowID int64, version *RowVersion) bool {
 				if !version.IsDeleted {
 					result.Put(rowID, version.Data)
 				}
-			}
+
+				return true
+			})
 		} else {
 			// For smaller sets, get rows individually
 			for _, rowID := range matchingRowIDs {

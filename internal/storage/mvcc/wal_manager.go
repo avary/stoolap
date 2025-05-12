@@ -96,8 +96,8 @@ type WALManager struct {
 	syncIntervalNano int64        // Minimum time between syncs in nanoseconds (for SyncNormal)
 
 	// Track active transactions at the time of the last checkpoint
-	// Using SyncInt64Map for thread-safe, lock-free access
-	activeTransactions *fastmap.SyncInt64Map[bool]
+	// Using SegmentInt64Map for thread-safe, lock-free access
+	activeTransactions *fastmap.SegmentInt64Map[bool]
 }
 
 // NewWALManager creates a new WAL manager
@@ -229,8 +229,8 @@ func NewWALManager(path string, syncMode SyncMode, config *storage.PersistenceCo
 		maxWALSize:         DefaultWALMaxSize,      // Default max WAL size
 		lastCheckpoint:     initialLSN,             // Start with current LSN as checkpoint
 		syncMode:           syncMode,
-		config:             config,                           // Reference to persistence config
-		activeTransactions: fastmap.NewSyncInt64Map[bool](8), // 2^8 = 256 buckets for concurrent access
+		config:             config,                                     // Reference to persistence config
+		activeTransactions: fastmap.NewSegmentInt64Map[bool](8, 10000), // 2^16 = 65536 buckets for concurrent access
 
 		// Optimization for SyncNormal mode
 		commitBatchSize:  commitBatchSize,
@@ -717,9 +717,6 @@ func (wm *WALManager) AppendEntryLocked(entry WALEntry) (uint64, error) {
 	return entry.LSN, nil
 }
 
-// NOTE: needsRotation function has been removed as WAL truncation
-// is now handled directly after checkpoints in the Snapshotter.TakeSnapshot method
-
 // serializeEntry serializes a WAL entry to binary format with improved performance
 func (wm *WALManager) serializeEntry(entry WALEntry) ([]byte, error) {
 	// Pre-calculate rough size to avoid reallocations
@@ -1106,9 +1103,6 @@ func (wm *WALManager) deserializeEntry(lsn uint64, data []byte) (WALEntry, error
 
 	return entry, nil
 }
-
-// NOTE: rotateWAL function has been removed as WAL truncation
-// is now handled directly after checkpoints in the Snapshotter.TakeSnapshot method
 
 // UpdateActiveTransactions tracks active transactions for checkpoint validation
 func (wm *WALManager) UpdateActiveTransactions(txnID int64, isActive bool) {

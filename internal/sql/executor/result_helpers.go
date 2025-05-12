@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/stoolap/stoolap/internal/common"
 	"github.com/stoolap/stoolap/internal/functions/contract"
 	"github.com/stoolap/stoolap/internal/functions/registry"
 	"github.com/stoolap/stoolap/internal/parser"
@@ -691,7 +692,8 @@ func (r *AggregateResult) initialize() error {
 		}
 
 		// Create a copy of the current row to avoid issues with row map reuse
-		rowCopy := make(map[string]storage.ColumnValue, len(row))
+		rowCopy := common.GetColumnValueMap(len(row))
+		defer common.PutColumnValueMap(rowCopy, len(row))
 		for k, v := range row {
 			rowCopy[k] = v
 		}

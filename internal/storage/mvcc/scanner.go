@@ -344,22 +344,24 @@ func NewMVCCScanner(rows *fastmap.Int64Map[storage.Row], schema storage.Schema, 
 	scanner.projectedRow = make(storage.Row, len(columnIndices))
 
 	// Filtering phase - apply where expression
-	for rowID, row := range rows.All() {
+	rows.ForEach(func(rowID int64, row storage.Row) bool {
 		// Skip rows that don't match the filter
 		if where != nil {
 			matches, err := where.Evaluate(row)
 			if err != nil {
 				scanner.err = err
-				return scanner
+				return false
 			}
 			if !matches {
-				continue
+				return true
 			}
 		}
 
 		// Add the matching row ID to the list
 		scanner.rowIDs = append(scanner.rowIDs, rowID)
-	}
+
+		return true
+	})
 
 	// For most database operations, we want rows sorted by ID
 	// Use our SIMD-optimized sorting algorithm for int64 slices

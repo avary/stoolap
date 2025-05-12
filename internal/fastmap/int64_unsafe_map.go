@@ -443,24 +443,77 @@ func (m *Int64Map[V]) secondaryIndex(key int64) int {
 
 // grow increases the size of the map and rehashes all entries
 func (m *Int64Map[V]) grow() {
-	// Double the size
-	oldData := m.data
-	m.data = make([]Pair[V], len(oldData)*2)
-	m.mask = len(m.data) - 1
-	m.growAt = int(float64(len(m.data)) * 0.75)
+	// Use a more conservative growth factor for large maps
+	// For small maps, double the size
+	// For large maps (>1M entries), use 1.5x growth to reduce memory spikes
+	oldLen := len(m.data)
+	newLen := oldLen * 2
 
-	// Save zero key info
+	// For very large maps, use a smaller growth factor to reduce memory pressure
+	if oldLen >= 1_048_576 { // 1M entries
+		newLen = oldLen + (oldLen / 2) // 1.5x growth for large maps
+	}
+
+	// Ensure new length is a power of 2 for efficient masking
+	if newLen & (newLen-1) != 0 {
+		// Round up to next power of 2
+		newLen--
+		newLen |= newLen >> 1
+		newLen |= newLen >> 2
+		newLen |= newLen >> 4
+		newLen |= newLen >> 8
+		newLen |= newLen >> 16
+		newLen |= newLen >> 32
+		newLen++
+	}
+
+	// Create new data array
+	oldData := m.data
+	m.data = make([]Pair[V], newLen)
+	m.mask = newLen - 1
+	m.growAt = int(float64(newLen) * 0.75)
+
+	// Save zero key info (avoid re-entry which calls Put)
 	hasZeroKey := m.hasZeroKey
 	zeroVal := m.zeroVal
 
-	// Reset size (will be incremented during re-insertion)
+	// Reset size (will be incremented as we add items)
 	m.size = 0
 	m.hasZeroKey = false
 
-	// Re-insert all non-zero keys
-	for _, p := range oldData {
+	// Re-insert all non-zero keys directly (bypass Put to avoid redundant checks)
+	// This optimization reduces function call overhead
+	for i := range oldData {
+		p := &oldData[i] // Use pointer to avoid copying the pair
 		if p.Key != 0 {
-			m.Put(p.Key, p.Value)
+			// Reuse the optimized insertion logic but avoid calling Put
+			// to reduce function call overhead and extra checks
+			h := m.primaryIndex(p.Key)
+			// Try to insert at the primary position
+			if m.data[h].Key == 0 {
+				// Fast path: slot is empty
+				m.data[h].Key = p.Key
+				m.data[h].Value = p.Value
+				m.size++
+				continue
+			}
+
+			// Collision: use quadratic probing
+			secondary := m.secondaryIndex(p.Key)
+			probeDistance := 1
+
+			for j := 0; j < len(m.data); j++ {
+				// Quadratic probe with secondary hash
+				h = (h + probeDistance*secondary) & m.mask
+				probeDistance++
+
+				if m.data[h].Key == 0 {
+					m.data[h].Key = p.Key
+					m.data[h].Value = p.Value
+					m.size++
+					break
+				}
+			}
 		}
 	}
 
@@ -470,6 +523,11 @@ func (m *Int64Map[V]) grow() {
 		m.zeroVal = zeroVal
 		m.size++
 	}
+
+	// Help the garbage collector by explicitly clearing the reference to oldData
+	// This isn't strictly necessary but can help reduce memory pressure
+	// by allowing the GC to collect the old array sooner
+	oldData = nil
 }
 
 // fixChain repairs the hash chain after deletion

@@ -1,6 +1,7 @@
 package fastmap
 
 import (
+	"iter"
 	"math/bits"
 	"sync/atomic"
 	"unsafe"
@@ -209,6 +210,10 @@ func (m *SyncInt64Map[V]) Len() int64 {
 	return m.count.Load()
 }
 
+func (m *SyncInt64Map[V]) All() iter.Seq2[int64, V] {
+	return m.ForEach
+}
+
 // ForEach iterates through all key-value pairs
 func (m *SyncInt64Map[V]) ForEach(f func(int64, V) bool) {
 	// For each bucket
@@ -238,11 +243,18 @@ func (m *SyncInt64Map[V]) ForEach(f func(int64, V) bool) {
 	}
 }
 
-// GetUnderlyingMap returns the underlying map if it's directly backed by a map
-// This is used for identity comparison in the scanner to detect if a row map
-// is a version store map. Returns (nil, false) if not available/applicable.
-func (m *SyncInt64Map[V]) GetUnderlyingMap() (map[int64]V, bool) {
-	// This is not a real implementation since SyncInt64Map doesn't use a map internally
-	// It's just a utility method to support the scanner's optimization checks
-	return nil, false
+// Has checks if a key exists in the map without retrieving its value
+func (m *SyncInt64Map[V]) Has(key int64) bool {
+	hash := hashFast(key)
+	bucket := &m.buckets[hash&m.mask]
+
+	// Search in the linked list
+	for node := (*fnode[V])(atomic.LoadPointer(&bucket.head)); node != nil; node = (*fnode[V])(atomic.LoadPointer(&node.next)) {
+		if node.key == key && atomic.LoadUint32(&node.deleted) == 0 {
+			// Found non-deleted node with matching key
+			return true
+		}
+	}
+
+	return false
 }

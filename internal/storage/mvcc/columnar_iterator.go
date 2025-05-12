@@ -114,6 +114,7 @@ func (it *ColumnarIndexIterator) Next() bool {
 				it.prefetchMap.Put(rowID, version.Data)
 				foundAny = true
 			}
+
 			return true
 		})
 

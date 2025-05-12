@@ -20,6 +20,13 @@ var (
 			return &sp
 		},
 	}
+
+	// Map pools for column names
+	columnNamePool = &sync.Pool{
+		New: func() interface{} {
+			return make(map[string]int, 8)
+		},
+	}
 )
 
 // FilteredResult represents a result set that filters rows based on a WHERE clause
@@ -199,6 +206,21 @@ func fastToLower(s string) string {
 	return result
 }
 
+func getColumnNamePool() map[string]int {
+	// Get a map from the pool
+	m := columnNamePool.Get().(map[string]int)
+
+	return m
+}
+
+func putColumnNamePool(m map[string]int) {
+	// Clear the map before putting it back
+	clear(m)
+
+	// Return the map to the pool
+	columnNamePool.Put(m)
+}
+
 // analyzeWhereClause collects information about columns and functions used in the WHERE clause
 func (f *FilteredResult) analyzeWhereClause(expr parser.Expression) {
 	if expr == nil {
@@ -368,7 +390,9 @@ func (f *FilteredResult) Next() bool {
 
 		if len(row) > 0 {
 			// Build a mapping from column names to positions
-			columnMap := make(map[string]int, len(f.columnNames))
+			columnMap := getColumnNamePool()
+			defer putColumnNamePool(columnMap)
+
 			for i, col := range f.columnNames {
 				columnMap[col] = i
 
