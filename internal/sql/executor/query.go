@@ -63,39 +63,30 @@ func (e *Executor) executeCountStar(ctx context.Context, tx storage.Transaction,
 
 	// The key issue is that WHERE clauses in DELETE operations are handled at the storage level,
 	// but in COUNT(*) they're handled at the SQL level. Let's convert the SQL WHERE to a storage condition.
-	var condition *storage.Condition
+	var whereExpr storage.Expression
 	if stmt.Where != nil {
-		whereExpr := createWhereExpression(ctx, stmt.Where, e.functionRegistry)
-		if whereExpr != nil {
-			if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
-				// For SimpleExpression, create a direct condition
-				condition = &storage.Condition{
-					ColumnName: simpleExpr.Column,
-					Operator:   simpleExpr.Operator,
-					Value:      simpleExpr.Value,
-				}
-			}
-		} else {
+		whereExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
+		if whereExpr == nil {
 			// Handle simple column comparisons
 			if infix, ok := stmt.Where.(*parser.InfixExpression); ok {
 				if isSimpleComparison(ctx, infix) {
 					// Regular comparison
 					colName, op, val := extractComparisonComponents(ctx, infix)
-					if colName != "" {
-						// Create a direct storage condition
-						condition = &storage.Condition{
-							ColumnName: colName,
-							Operator:   op,
-							Value:      val,
-						}
-					}
+					whereExpr = expression.NewSimpleExpression(colName, op, val)
 				}
 			}
 		}
 	}
 
+	if whereExpr != nil {
+		if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
+			// If it's a simple expression, we need to prepare it for the schema
+			simpleExpr.PrepareForSchema(schema)
+		}
+	}
+
 	// Execute the query with the condition pushed down to storage layer
-	result, err := tx.Select(tableName, columns, condition)
+	result, err := tx.SelectWithAliases(tableName, columns, whereExpr, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -355,12 +346,14 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 
 	// Extract column references
 	var columns []string
+
+	schema, err := e.engine.GetTableSchema(tableName)
+	if err != nil {
+		return nil, err
+	}
+
 	if len(stmt.Columns) == 1 && isAsterisk(stmt.Columns[0]) {
 		// For SELECT *, get all columns from the schema
-		schema, err := e.engine.GetTableSchema(tableName)
-		if err != nil {
-			return nil, err
-		}
 		columns = make([]string, len(schema.Columns))
 		for i, col := range schema.Columns {
 			columns[i] = col.Name
@@ -423,17 +416,18 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 
 		// Determine if we need additional filtering based on storage capabilities
 		needsFiltering := true
-		var whereCondition *storage.Condition
+		var whereExpr storage.Expression
 
 		if stmt.Where != nil {
 			// Convert the WHERE clause to a storage expression
-			whereExpr := createWhereExpression(ctx, stmt.Where, e.functionRegistry)
+			whereExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
 
 			// Decide if this expression can be pushed down
 			canPushDown := false
 
 			switch expr := whereExpr.(type) {
 			case *expression.SimpleExpression:
+				expr.PrepareForSchema(schema)
 				// Simple expressions are always safe to push down
 				canPushDown = true
 
@@ -442,9 +436,12 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 				if len(expr.Expressions) <= 3 {
 					allSimple := true
 					for _, childExpr := range expr.Expressions {
-						if _, isSimple := childExpr.(*expression.SimpleExpression); !isSimple {
+						if simpleExpr, isSimple := childExpr.(*expression.SimpleExpression); !isSimple {
 							allSimple = false
 							break
+						} else {
+							// Prepare the simple expression for the schema
+							simpleExpr.PrepareForSchema(schema)
 						}
 					}
 					canPushDown = allSimple
@@ -455,9 +452,12 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 				if len(expr.Expressions) <= 3 {
 					allSimple := true
 					for _, childExpr := range expr.Expressions {
-						if _, isSimple := childExpr.(*expression.SimpleExpression); !isSimple {
+						if simpleExpr, isSimple := childExpr.(*expression.SimpleExpression); !isSimple {
 							allSimple = false
 							break
+						} else {
+							// Prepare the simple expression for the schema
+							simpleExpr.PrepareForSchema(schema)
 						}
 					}
 					canPushDown = allSimple
@@ -465,12 +465,8 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 			}
 
 			if canPushDown {
-				schema, err := e.engine.GetTableSchema(tableName)
-				if err != nil {
-					return nil, err
-				}
 				saExpr := expression.NewSchemaAwareExpression(whereExpr, schema)
-				result, err = tx.SelectWithExpression(tableName, columns, saExpr, columnAliases)
+				result, err = tx.SelectWithAliases(tableName, columns, saExpr, columnAliases)
 				if err != nil {
 					return nil, err
 				}
@@ -480,7 +476,7 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 		}
 
 		if needsFiltering {
-			result, err = tx.SelectWithAliases(tableName, columnsToFetch, whereCondition, columnAliases)
+			result, err = tx.SelectWithAliases(tableName, columnsToFetch, whereExpr, columnAliases)
 			if err != nil {
 				return nil, err
 			}
@@ -751,7 +747,7 @@ func parseInt64(str string) (int64, error) {
 }
 
 // isSimpleComparison checks if an expression is a simple binary comparison
-// that can be directly converted to a storage.Condition
+// that can be directly converted to a storage.Expression
 func isSimpleComparison(ctx context.Context, expr *parser.InfixExpression) bool {
 	// Handle operators we can convert
 	switch expr.Operator {

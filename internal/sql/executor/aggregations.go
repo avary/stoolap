@@ -629,8 +629,7 @@ func (e *Executor) executeSelectWithAggregation(ctx context.Context, tx storage.
 	// Get the base result - all rows that match the WHERE condition
 	var baseResult storage.Result
 
-	// First, try to convert WHERE to a storage condition
-	var condition *storage.Condition
+	// First, try to convert WHERE to a storage expression
 	if whereExpr != nil {
 		whereColumns := getColumnsFromWhereClause(whereExpr)
 
@@ -650,7 +649,7 @@ func (e *Executor) executeSelectWithAggregation(ctx context.Context, tx storage.
 	}
 
 	// Execute the base query
-	baseResult, err = tx.Select(tableName, projectColumns, condition)
+	baseResult, err = tx.Select(tableName, projectColumns, nil)
 	if err != nil {
 		return nil, err
 	}

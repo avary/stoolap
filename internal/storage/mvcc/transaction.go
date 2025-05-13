@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/stoolap/stoolap/internal/storage"
-	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
 var (
@@ -378,7 +376,7 @@ func (t *MVCCTransaction) RenameTable(oldName, newName string) error {
 }
 
 // Select performs a selection query on a table
-func (t *MVCCTransaction) Select(tableName string, columnsToFetch []string, where *storage.Condition, originalColumns ...string) (storage.Result, error) {
+func (t *MVCCTransaction) Select(tableName string, columnsToFetch []string, expr storage.Expression, originalColumns ...string) (storage.Result, error) {
 	// We don't acquire locks here since GetTable handles its own locking
 
 	if !t.active {
@@ -393,13 +391,6 @@ func (t *MVCCTransaction) Select(tableName string, columnsToFetch []string, wher
 
 	// Get the table schema
 	schema := table.Schema()
-
-	// Convert the condition to an Expression with schema awareness
-	var expr storage.Expression
-	if where != nil {
-		// Convert the Condition to a SchemaAwareExpression
-		expr = t.conditionToSchemaAwareExpression(where, table)
-	}
 
 	// Find the column indices in the schema
 	var columnIndices []int
@@ -432,86 +423,9 @@ func (t *MVCCTransaction) Select(tableName string, columnsToFetch []string, wher
 	return NewTableResult(t.ctx, scanner, schema, columnIndices, originalColumns...), nil
 }
 
-// SelectWithAliases performs a selection query with column aliases
-func (t *MVCCTransaction) SelectWithAliases(tableName string, columnsToFetch []string, where *storage.Condition, aliases map[string]string, originalColumns ...string) (storage.Result, error) {
-	// We don't acquire locks here since GetTable handles its own locking
-
-	if !t.active {
-		return nil, ErrTransactionClosed
-	}
-
-	// Get the table
-	table, err := t.GetTable(tableName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get the table schema
-	schema := table.Schema()
-
-	// Convert the condition to an Expression with alias handling and schema awareness
-	var expr storage.Expression
-	if where != nil {
-		// Check if the condition has a complex expression attached
-		if where.Expression != nil {
-			// Use the expression directly, with aliases applied
-			if len(aliases) > 0 {
-				expr = where.Expression.WithAliases(aliases)
-			} else {
-				expr = where.Expression
-			}
-		} else {
-			// Apply aliases to the condition
-			aliasedCondition := where.WithAliases(aliases)
-
-			// Convert the Condition to a SchemaAwareExpression
-			expr = t.conditionToSchemaAwareExpression(aliasedCondition, table)
-		}
-	}
-
-	// Find the column indices in the schema, resolving aliases
-	var columnIndices []int
-	if len(columnsToFetch) > 0 {
-		columnIndices = make([]int, 0, len(columnsToFetch))
-
-		// Map column names to indices
-		colMap := make(map[string]int)
-		for i, col := range schema.Columns {
-			colMap[col.Name] = i
-		}
-
-		// Look up each requested column
-		for _, colName := range columnsToFetch {
-			// If colName is an alias, use the original column name
-			actualColName := colName
-			if origCol, isAlias := aliases[colName]; isAlias {
-				actualColName = origCol
-			}
-
-			if idx, ok := colMap[actualColName]; ok {
-				columnIndices = append(columnIndices, idx)
-			} else {
-				return nil, fmt.Errorf("column not found: %s", colName)
-			}
-		}
-	}
-
-	// Scan the table with the column indices and expression
-	scanner, err := table.Scan(columnIndices, expr)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a base result
-	baseResult := NewTableResult(t.ctx, scanner, schema, columnIndices, originalColumns...)
-
-	// Wrap the result with alias handling
-	return NewAliasedResult(baseResult, aliases), nil
-}
-
-// SelectWithExpression executes a SELECT query with a complex expression filter
+// SelectWithAliases executes a SELECT query with a complex expression filter
 // This allows pushing complex expressions (including AND/OR combinations) down to the storage layer
-func (t *MVCCTransaction) SelectWithExpression(tableName string, columnsToFetch []string, filter storage.Expression, aliases map[string]string, originalColumns ...string) (storage.Result, error) {
+func (t *MVCCTransaction) SelectWithAliases(tableName string, columnsToFetch []string, filter storage.Expression, aliases map[string]string, originalColumns ...string) (storage.Result, error) {
 	if !t.active {
 		return nil, ErrTransactionClosed
 	}
@@ -571,81 +485,6 @@ func (t *MVCCTransaction) SelectWithExpression(tableName string, columnsToFetch 
 
 	// Wrap the result with alias handling
 	return NewAliasedResult(baseResult, aliases), nil
-}
-
-// conditionToExpression converts a Condition to an Expression
-func (t *MVCCTransaction) conditionToExpression(cond *storage.Condition) storage.Expression {
-	var expr storage.Expression
-
-	// Special handling for IS NULL and IS NOT NULL
-	if cond.Operator == storage.ISNULL || cond.Operator == storage.ISNOTNULL {
-		// For IS NULL/IS NOT NULL, we should use a NullCheckExpression
-		if cond.Operator == storage.ISNULL {
-			expr = expression.NewIsNullExpression(cond.ColumnName)
-		} else {
-			expr = expression.NewIsNotNullExpression(cond.ColumnName)
-		}
-	} else {
-		// For other operators, use SimpleExpression
-		expr = &expression.SimpleExpression{
-			Column:   cond.ColumnName,
-			Operator: cond.Operator,
-			Value:    cond.Value,
-		}
-	}
-
-	// If the condition had aliases applied, preserve that information
-	if aliases := cond.GetAliases(); aliases != nil {
-		// Check if we need to preserve original name for simple expressions
-		if originalName := cond.GetOriginalName(); originalName != "" {
-			if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
-				// Store the original alias name so we can reference it later
-				simpleExpr.SetOriginalColumn(originalName)
-			}
-		}
-		// Apply aliases to the expression
-		expr = expr.WithAliases(aliases)
-	}
-
-	return expr
-}
-
-// conditionToSchemaAwareExpression converts a Condition to a SchemaAwareExpression
-// using the given table's schema for column name resolution
-func (t *MVCCTransaction) conditionToSchemaAwareExpression(cond *storage.Condition, table storage.Table) storage.Expression {
-	// First convert to regular expression
-	expr := t.conditionToExpression(cond)
-
-	// Then apply schema awareness if possible
-	if table != nil {
-		schema := table.Schema()
-		if len(schema.Columns) > 0 {
-			// Create a column name -> index mapping (single allocation)
-			columnMap := make(map[string]int, len(schema.Columns))
-			for i, col := range schema.Columns {
-				columnMap[col.Name] = i
-				// Also add lowercase version for case-insensitive lookups
-				lowerName := strings.ToLower(col.Name)
-				if _, exists := columnMap[lowerName]; !exists {
-					columnMap[lowerName] = i
-				}
-			}
-
-			// Wrap the expression with schema awareness
-			if schemaExpr, ok := expr.(storage.SchemaAwareExpression); ok {
-				// If the expression already supports schema awareness, use it
-				expr = schemaExpr.WithSchema(columnMap)
-			} else {
-				// Otherwise, wrap it with a SchemaAwareExpression
-				saExpr := expression.NewSchemaAwareExpression(expr, schema)
-				expr = saExpr
-				// Note: This is a less frequently called path, so the object leakage
-				// will be minimal compared to the Delete/Update methods
-			}
-		}
-	}
-
-	return expr
 }
 
 // CreateTable creates a new table

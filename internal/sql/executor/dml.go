@@ -628,7 +628,7 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 		return nil
 	}
 
-	// For binary comparison operations, we can optimize by creating direct storage.Condition expressions
+	// For binary comparison operations, we can optimize by creating direct storage expressions
 	if binaryExpr, ok := expr.(*parser.InfixExpression); ok {
 		// Special handling for CAST expressions in comparisons
 		if castExpr, ok := binaryExpr.Left.(*parser.CastExpression); ok {

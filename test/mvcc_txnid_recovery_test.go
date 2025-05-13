@@ -143,7 +143,7 @@ func TestTransactionIDsVisibilityAfterRecovery(t *testing.T) {
 	}
 
 	// Query all rows from the table
-	result, err := newTx.SelectWithExpression(
+	result, err := newTx.SelectWithAliases(
 		"test_table",
 		[]string{"id", "value", "txn_info"},
 		nil, // No filter

@@ -336,7 +336,7 @@ func TestMVCCRecoveryFromWAL(t *testing.T) {
 	}
 
 	// Verify data from both before and after the checkpoint
-	result, err := tx.SelectWithExpression(
+	result, err := tx.SelectWithAliases(
 		"test_table",
 		[]string{"id", "name"},
 		nil, // No filter

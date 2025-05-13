@@ -139,15 +139,11 @@ func (m *mockTransaction) RenameTableColumn(tableName, oldName, newName string) 
 	return nil
 }
 
-func (m *mockTransaction) Select(tableName string, columns []string, where *storage.Condition, originalColumns ...string) (storage.Result, error) {
+func (m *mockTransaction) Select(tableName string, columns []string, expr storage.Expression, originalColumns ...string) (storage.Result, error) {
 	return nil, nil
 }
 
-func (m *mockTransaction) SelectWithAliases(tableName string, columns []string, where *storage.Condition, aliases map[string]string, originalColumns ...string) (storage.Result, error) {
-	return nil, nil
-}
-
-func (m *mockTransaction) SelectWithExpression(tableName string, columns []string, where storage.Expression, expressions map[string]string, originalColumns ...string) (storage.Result, error) {
+func (m *mockTransaction) SelectWithAliases(tableName string, columns []string, where storage.Expression, aliases map[string]string, originalColumns ...string) (storage.Result, error) {
 	return nil, nil
 }
 

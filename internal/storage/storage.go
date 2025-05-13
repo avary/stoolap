@@ -331,13 +331,10 @@ type Transaction interface {
 	// Table operations
 	RenameTable(oldName, newName string) error
 	// Query operations
-	Select(tableName string, columnsToFetch []string, where *Condition, originalColumns ...string) (Result, error)
+	Select(tableName string, columnsToFetch []string, expr Expression, originalColumns ...string) (Result, error)
 	// SelectWithAliases executes a SELECT query with column aliases
 	// The aliases parameter maps from alias names to original column names
-	SelectWithAliases(tableName string, columnsToFetch []string, where *Condition, aliases map[string]string, originalColumns ...string) (Result, error)
-	// SelectWithExpression executes a SELECT query with a complex expression filter
-	// This allows pushing complex expressions (including AND/OR combinations) down to the storage layer
-	SelectWithExpression(tableName string, columnsToFetch []string, expr Expression, aliases map[string]string, originalColumns ...string) (Result, error)
+	SelectWithAliases(tableName string, columnsToFetch []string, expr Expression, aliases map[string]string, originalColumns ...string) (Result, error)
 }
 
 // Engine represents the storage engine

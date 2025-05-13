@@ -1,8 +1,6 @@
 package expression
 
 import (
-	"fmt"
-
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
@@ -29,7 +27,6 @@ func (e *EvalExpression) Evaluate(row storage.Row) (bool, error) {
 		return false, nil
 	}
 
-	fmt.Printf("Evaluating function expression with row: %v\n", row)
 	return e.evalFn(row)
 }
 

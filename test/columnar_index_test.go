@@ -72,11 +72,9 @@ func TestColumnarIndex(t *testing.T) {
 	}
 
 	// Create a filter for age = 25
-	ageExpr := &expression.SimpleExpression{
-		Column:   "age",
-		Operator: storage.EQ,
-		Value:    25,
-	}
+	ageExpr := expression.NewSimpleExpression("age", storage.EQ, 25)
+	ageExpr.PrepareForSchema(schema)
+
 	ageSchemaExpr := expression.NewSchemaAwareExpression(ageExpr, schema)
 
 	// Test querying with columnar index
@@ -109,11 +107,9 @@ func TestColumnarIndex(t *testing.T) {
 	}
 
 	// Test with enabled = true
-	enabledExpr := &expression.SimpleExpression{
-		Column:   "enabled",
-		Operator: storage.EQ,
-		Value:    true,
-	}
+	enabledExpr := expression.NewSimpleExpression("enabled", storage.EQ, true)
+	enabledExpr.PrepareForSchema(schema)
+
 	enabledSchemaExpr := expression.NewSchemaAwareExpression(enabledExpr, schema)
 
 	scanner, err = mvccTable.Scan(nil, enabledSchemaExpr)
@@ -137,11 +133,9 @@ func TestColumnarIndex(t *testing.T) {
 	}
 
 	// Test AND condition (age > 40 AND enabled = true)
-	ageGtExpr := &expression.SimpleExpression{
-		Column:   "age",
-		Operator: storage.GT,
-		Value:    40,
-	}
+	ageGtExpr := expression.NewSimpleExpression("age", storage.GT, 40)
+	ageGtExpr.PrepareForSchema(schema)
+
 	andExpr := &expression.AndExpression{
 		Expressions: []storage.Expression{ageGtExpr, enabledExpr},
 	}
@@ -262,11 +256,9 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	}
 
 	// Create a filter for category = "cat_1"
-	categoryExpr := &expression.SimpleExpression{
-		Column:   "category",
-		Operator: storage.EQ,
-		Value:    storage.NewStringValue("cat_1"),
-	}
+	categoryExpr := expression.NewSimpleExpression("category", storage.EQ, "cat_1")
+	categoryExpr.PrepareForSchema(schema)
+
 	categorySchemaExpr := expression.NewSchemaAwareExpression(categoryExpr, schema)
 
 	// Query using the columnar index
@@ -299,11 +291,9 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	}
 
 	// Update some rows in the second transaction
-	updateExpr := &expression.SimpleExpression{
-		Column:   "category",
-		Operator: storage.EQ,
-		Value:    storage.NewStringValue("cat_1"),
-	}
+	updateExpr := expression.NewSimpleExpression("category", storage.EQ, "cat_1")
+	updateExpr.PrepareForSchema(schema)
+
 	updateSchemaExpr := expression.NewSchemaAwareExpression(updateExpr, schema)
 
 	updatedCount, err := table2.Update(updateSchemaExpr, func(row storage.Row) (storage.Row, bool) {
@@ -323,11 +313,9 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	}
 
 	// Query again for now-updated rows
-	updatedExpr := &expression.SimpleExpression{
-		Column:   "category",
-		Operator: storage.EQ,
-		Value:    storage.NewStringValue("cat_updated"),
-	}
+	updatedExpr := expression.NewSimpleExpression("category", storage.EQ, "cat_updated")
+	updatedExpr.PrepareForSchema(schema)
+
 	updatedSchemaExpr := expression.NewSchemaAwareExpression(updatedExpr, schema)
 
 	scanner, err = table2.Scan(nil, updatedSchemaExpr)
