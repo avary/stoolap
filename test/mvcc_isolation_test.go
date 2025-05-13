@@ -163,7 +163,7 @@ func TestMVCCTransactionIsolation(t *testing.T) {
 	// Concurrent transactions test: Update in tx4 and insert in tx3
 
 	// Update the row in tx4
-	expr := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	expr := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		id, _ := row[0].AsInt64()
 		return id == 1, nil
 	})
@@ -385,7 +385,7 @@ func TestMVCCDeleteVisibility(t *testing.T) {
 	}
 
 	// Delete row with ID=10
-	expr := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	expr := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		id, _ := row[0].AsInt64()
 		match := id == 10
 		t.Logf("Delete filter checking row with ID=%d, match=%v", id, match)

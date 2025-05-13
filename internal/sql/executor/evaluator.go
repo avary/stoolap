@@ -137,7 +137,7 @@ func (e *Evaluator) Evaluate(expr parser.Expression) (storage.ColumnValue, error
 				return storage.StaticNullString, nil
 			case "BOOLEAN", "BOOL":
 				return storage.StaticNullBoolean, nil
-			case "TIMESTAMP":
+			case "TIMESTAMP", "DATE", "TIME":
 				return storage.StaticNullTimestamp, nil
 			case "JSON":
 				return storage.StaticNullJSON, nil

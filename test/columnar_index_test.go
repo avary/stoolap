@@ -75,7 +75,7 @@ func TestColumnarIndex(t *testing.T) {
 	ageExpr := &expression.SimpleExpression{
 		Column:   "age",
 		Operator: storage.EQ,
-		Value:    storage.NewIntegerValue(25),
+		Value:    25,
 	}
 	ageSchemaExpr := expression.NewSchemaAwareExpression(ageExpr, schema)
 
@@ -112,7 +112,7 @@ func TestColumnarIndex(t *testing.T) {
 	enabledExpr := &expression.SimpleExpression{
 		Column:   "enabled",
 		Operator: storage.EQ,
-		Value:    storage.NewBooleanValue(true),
+		Value:    true,
 	}
 	enabledSchemaExpr := expression.NewSchemaAwareExpression(enabledExpr, schema)
 
@@ -140,7 +140,7 @@ func TestColumnarIndex(t *testing.T) {
 	ageGtExpr := &expression.SimpleExpression{
 		Column:   "age",
 		Operator: storage.GT,
-		Value:    storage.NewIntegerValue(40),
+		Value:    40,
 	}
 	andExpr := &expression.AndExpression{
 		Expressions: []storage.Expression{ageGtExpr, enabledExpr},

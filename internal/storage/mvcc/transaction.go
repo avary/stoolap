@@ -573,24 +573,6 @@ func (t *MVCCTransaction) SelectWithExpression(tableName string, columnsToFetch 
 	return NewAliasedResult(baseResult, aliases), nil
 }
 
-// GetFilterCapabilities returns capabilities information about what types of filters
-// the storage engine can handle directly
-func (t *MVCCTransaction) GetFilterCapabilities() storage.FilterCapabilities {
-	return storage.FilterCapabilities{
-		SupportsComplexExpressions:  true,
-		SupportsFunctionExpressions: true,
-		SupportedOperators: []storage.Operator{
-			storage.EQ, storage.NE, storage.GT, storage.GTE, storage.LT, storage.LTE,
-			storage.LIKE, storage.IN, storage.NOTIN, storage.ISNULL, storage.ISNOTNULL,
-		},
-		SupportsBetween:                true,
-		SupportsIn:                     true,
-		SupportsJSONPath:               true,
-		SupportsMultiColumnExpressions: true,
-		SupportsNullChecks:             true,
-	}
-}
-
 // conditionToExpression converts a Condition to an Expression
 func (t *MVCCTransaction) conditionToExpression(cond *storage.Condition) storage.Expression {
 	var expr storage.Expression

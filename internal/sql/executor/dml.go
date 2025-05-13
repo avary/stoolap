@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -315,12 +316,9 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 						// Find primary key column to create the search expression
 						for _, col := range schema.Columns {
 							if col.PrimaryKey {
-								searchExpr = &expression.SimpleExpression{
-									Column:   col.Name,
-									Operator: storage.EQ,
-									Value:    pkErr.RowID,
-								}
-								searchExpr = expression.NewSchemaAwareExpression(searchExpr, schema)
+								simpleExpr := expression.NewSimpleExpression(col.Name, storage.EQ, pkErr.RowID)
+								simpleExpr.PrepareForSchema(schema)
+								searchExpr = expression.NewSchemaAwareExpression(simpleExpr, schema)
 								break
 							}
 						}
@@ -328,12 +326,9 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 					// Case 2: Unique constraint violation - we have column name and value
 					if searchExpr == nil && errors.As(err, &uniqueErr) {
-						searchExpr = &expression.SimpleExpression{
-							Column:   uniqueErr.Column,
-							Operator: storage.EQ,
-							Value:    uniqueErr.Value.AsInterface(),
-						}
-						searchExpr = expression.NewSchemaAwareExpression(searchExpr, schema)
+						simpleExpr := expression.NewSimpleExpression(uniqueErr.Column, storage.EQ, uniqueErr.Value.AsInterface())
+						simpleExpr.PrepareForSchema(schema)
+						searchExpr = expression.NewSchemaAwareExpression(simpleExpr, schema)
 					}
 
 					// If we found a valid search expression, find and update the row
@@ -545,57 +540,18 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 		return row, true
 	}
 
-	// IMPROVED IMPLEMENTATION: Use the enhanced Update method directly with WHERE expression
-	// instead of selecting and updating rows one by one
-
-	// OPTIMIZED: Directly convert WHERE clause to storage-level expression.
-	// This is a more efficient approach that treats UPDATE as a set-based operation
-	// rather than relying on row-by-row PK lookups.
-
 	// Create a storage-level expression from the SQL WHERE clause
 	var updateExpr storage.Expression
 	if stmt.Where != nil {
-		// Check storage engine capabilities
-		filterCapabilities := tx.GetFilterCapabilities()
-
 		// Convert the SQL WHERE expression to a storage-level expression
-		whereExpr := createWhereExpression(ctx, stmt.Where, e.functionRegistry)
-
-		// If complex expressions are supported, use the expression directly
-		if filterCapabilities.SupportsComplexExpressions {
-			updateExpr = whereExpr
-		} else if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
-			// For simple expressions, check if the operator is supported
-			operatorSupported := false
-			for _, op := range filterCapabilities.SupportedOperators {
-				if op == simpleExpr.GetOperator() {
-					operatorSupported = true
-					break
-				}
-			}
-
-			if operatorSupported {
-				updateExpr = simpleExpr
-			} else {
-				// If the operator isn't supported, create a wrapper that always applies
-				// the filter at the SQL layer
-				updateExpr = expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
-					match, err := whereExpr.Evaluate(row)
-					return match, err
-				})
-			}
-		} else {
-			// For complex expressions that aren't directly supported, create a wrapper
-			updateExpr = expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
-				match, err := whereExpr.Evaluate(row)
-				return match, err
-			})
+		updateExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
+		if simpleExpr, ok := updateExpr.(*expression.SimpleExpression); ok {
+			// Prepare the expression for the schema
+			simpleExpr.PrepareForSchema(schema)
 		}
 	} else {
 		// If no WHERE clause, update all rows - use a simple expression that always returns true
-		updateExpr = expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
-			return true, nil
-		})
+		updateExpr = nil
 	}
 
 	// Execute a single UPDATE operation with the WHERE expression
@@ -636,53 +592,24 @@ func (e *Executor) executeDeleteWithContext(ctx context.Context, tx storage.Tran
 		return 0, err
 	}
 
-	// OPTIMIZED: Directly create a storage-level expression from the WHERE clause
-	// and push it down to the storage layer for direct deletion without materializing rows
+	// Get the schema to know the column types
+	schema, err := e.engine.GetTableSchema(tableName)
+	if err != nil {
+		return 0, err
+	}
 
 	// Create a WHERE expression directly from the SQL WHERE clause
 	var deleteExpr storage.Expression
 	if stmt.Where != nil {
-		// Check storage engine capabilities
-		filterCapabilities := tx.GetFilterCapabilities()
-
 		// Convert the SQL WHERE expression to a storage-level expression
-		whereExpr := createWhereExpression(ctx, stmt.Where, e.functionRegistry)
-
-		// If complex expressions are supported, use the expression directly
-		if filterCapabilities.SupportsComplexExpressions {
-			deleteExpr = whereExpr
-		} else if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
-			// For simple expressions, check if the operator is supported
-			operatorSupported := false
-			for _, op := range filterCapabilities.SupportedOperators {
-				if op == simpleExpr.GetOperator() {
-					operatorSupported = true
-					break
-				}
-			}
-
-			if operatorSupported {
-				deleteExpr = simpleExpr
-			} else {
-				// If the operator isn't supported, create a wrapper that always applies
-				// the filter at the SQL layer
-				deleteExpr = expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
-					match, err := whereExpr.Evaluate(row)
-					return match, err
-				})
-			}
-		} else {
-			// For complex expressions that aren't directly supported, create a wrapper
-			deleteExpr = expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
-				match, err := whereExpr.Evaluate(row)
-				return match, err
-			})
+		deleteExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
+		if simpleExpr, ok := deleteExpr.(*expression.SimpleExpression); ok {
+			// Prepare the expression for the schema
+			simpleExpr.PrepareForSchema(schema)
 		}
 	} else {
 		// If no WHERE clause, delete all rows - use a simple expression that always returns true
-		deleteExpr = expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
-			return true, nil
-		})
+		deleteExpr = nil
 	}
 
 	// Execute the deletion directly using the WHERE expression at the storage layer
@@ -770,48 +697,23 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 			}
 		}
 		if binaryExpr.Operator == ">" && isColumnAndLiteral(ctx, binaryExpr) {
-			// id > 5 => storage.SimpleExpression(Column: "id", Operator: GT, Value: 5)
 			colName, value := extractColumnAndValue(ctx, binaryExpr)
-			return &expression.SimpleExpression{
-				Column:   colName,
-				Operator: storage.GT,
-				Value:    value,
-			}
+			return expression.NewSimpleExpression(colName, storage.GT, value)
 		} else if binaryExpr.Operator == ">=" && isColumnAndLiteral(ctx, binaryExpr) {
 			colName, value := extractColumnAndValue(ctx, binaryExpr)
-			return &expression.SimpleExpression{
-				Column:   colName,
-				Operator: storage.GTE,
-				Value:    value,
-			}
+			return expression.NewSimpleExpression(colName, storage.GTE, value)
 		} else if binaryExpr.Operator == "<" && isColumnAndLiteral(ctx, binaryExpr) {
 			colName, value := extractColumnAndValue(ctx, binaryExpr)
-			return &expression.SimpleExpression{
-				Column:   colName,
-				Operator: storage.LT,
-				Value:    value,
-			}
+			return expression.NewSimpleExpression(colName, storage.LT, value)
 		} else if binaryExpr.Operator == "<=" && isColumnAndLiteral(ctx, binaryExpr) {
 			colName, value := extractColumnAndValue(ctx, binaryExpr)
-			return &expression.SimpleExpression{
-				Column:   colName,
-				Operator: storage.LTE,
-				Value:    value,
-			}
+			return expression.NewSimpleExpression(colName, storage.LTE, value)
 		} else if binaryExpr.Operator == "=" && isColumnAndLiteral(ctx, binaryExpr) {
 			colName, value := extractColumnAndValue(ctx, binaryExpr)
-			return &expression.SimpleExpression{
-				Column:   colName,
-				Operator: storage.EQ,
-				Value:    value,
-			}
+			return expression.NewSimpleExpression(colName, storage.EQ, value)
 		} else if binaryExpr.Operator == "!=" && isColumnAndLiteral(ctx, binaryExpr) {
 			colName, value := extractColumnAndValue(ctx, binaryExpr)
-			return &expression.SimpleExpression{
-				Column:   colName,
-				Operator: storage.NE,
-				Value:    value,
-			}
+			return expression.NewSimpleExpression(colName, storage.NE, value)
 		} else if binaryExpr.Operator == "BETWEEN" {
 			// Extract column name
 			colName := ""
@@ -982,7 +884,7 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 	evaluator := NewEvaluator(ctx, registry)
 
 	// Return a function expression that evaluates the WHERE clause for each row
-	return expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	return expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		// Convert storage.Row to a map for the evaluator
 		rowMap := make(map[string]storage.ColumnValue, len(row))
 
@@ -995,7 +897,7 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 			}
 
 			// First, add by position (column0, column1, etc.)
-			colByPos := fmt.Sprintf("column%d", i)
+			colByPos := "column" + strconv.Itoa(i)
 			rowMap[colByPos] = val
 		}
 

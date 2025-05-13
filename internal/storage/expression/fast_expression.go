@@ -302,6 +302,221 @@ func (e *FastSimpleExpression) evaluateTime(colVal storage.ColumnValue) (bool, e
 	return false, nil
 }
 
+// EvaluateFast is an ultra-optimized version of Evaluate that avoids interface method calls
+// and type assertions where possible, for the critical path in query processing
+func (e *FastSimpleExpression) EvaluateFast(row storage.Row) bool {
+	// Use cached column index if available
+	colIdx := e.ColIndex
+	if !e.IndexPrepped || colIdx < 0 || colIdx >= len(row) {
+		// Fallback to slower path
+		result, _ := e.Evaluate(row)
+		return result
+	}
+
+	// Get the column value
+	colVal := row[colIdx]
+	if colVal == nil {
+		// Handle NULL checks
+		if e.Operator == storage.ISNULL {
+			return true
+		} else if e.Operator == storage.ISNOTNULL {
+			return false
+		}
+		return false
+	}
+
+	// Handle NULL check operators
+	if e.Operator == storage.ISNULL {
+		return colVal.IsNull()
+	} else if e.Operator == storage.ISNOTNULL {
+		return !colVal.IsNull()
+	}
+
+	// Skip processing if the column value is NULL (except for NULL checks)
+	if colVal.IsNull() {
+		return false
+	}
+
+	// Early return for fast equality check without type conversion
+	// This is a critical optimization for primary key lookups
+	if e.Operator == storage.EQ && e.ValueType == colVal.Type() {
+		if dv, ok := colVal.(*storage.DirectValue); ok && dv != nil {
+			// Direct comparison for DirectValue objects - no type conversion required
+			switch e.ValueType {
+			case storage.TypeInteger:
+				return dv.AsInterface() == e.Int64Value
+			case storage.TypeFloat:
+				return dv.AsInterface() == e.Float64Value
+			case storage.TypeString:
+				return dv.AsInterface() == e.StringValue
+			case storage.TypeBoolean:
+				return dv.AsInterface() == e.BoolValue
+			}
+		}
+	}
+
+	// Fast path for integer comparisons (most common case)
+	if e.ValueType == storage.TypeInteger && colVal.Type() == storage.TypeInteger {
+		v, ok := colVal.AsInt64()
+		if !ok {
+			return false
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.Int64Value
+		case storage.NE:
+			return v != e.Int64Value
+		case storage.GT:
+			return v > e.Int64Value
+		case storage.GTE:
+			return v >= e.Int64Value
+		case storage.LT:
+			return v < e.Int64Value
+		case storage.LTE:
+			return v <= e.Int64Value
+		}
+		return false
+	}
+
+	// Fast path for float comparisons
+	if e.ValueType == storage.TypeFloat && colVal.Type() == storage.TypeFloat {
+		v, ok := colVal.AsFloat64()
+		if !ok {
+			return false
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.Float64Value
+		case storage.NE:
+			return v != e.Float64Value
+		case storage.GT:
+			return v > e.Float64Value
+		case storage.GTE:
+			return v >= e.Float64Value
+		case storage.LT:
+			return v < e.Float64Value
+		case storage.LTE:
+			return v <= e.Float64Value
+		}
+		return false
+	}
+
+	// Fast path for string comparisons
+	if e.ValueType == storage.TypeString && colVal.Type() == storage.TypeString {
+		v, ok := colVal.AsString()
+		if !ok {
+			return false
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.StringValue
+		case storage.NE:
+			return v != e.StringValue
+		case storage.GT:
+			return v > e.StringValue
+		case storage.GTE:
+			return v >= e.StringValue
+		case storage.LT:
+			return v < e.StringValue
+		case storage.LTE:
+			return v <= e.StringValue
+		}
+		return false
+	}
+
+	// Fast path for boolean comparisons
+	if e.ValueType == storage.TypeBoolean && colVal.Type() == storage.TypeBoolean {
+		v, ok := colVal.AsBoolean()
+		if !ok {
+			return false
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.BoolValue
+		case storage.NE:
+			return v != e.BoolValue
+		}
+		return false
+	}
+
+	// Fast path for timestamp comparisons
+	if e.ValueType == storage.TypeTimestamp && colVal.Type() == storage.TypeTimestamp {
+		v, ok := colVal.AsTimestamp()
+		if !ok {
+			return false
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v.Equal(e.TimeValue)
+		case storage.NE:
+			return !v.Equal(e.TimeValue)
+		case storage.GT:
+			return v.After(e.TimeValue)
+		case storage.GTE:
+			return v.After(e.TimeValue) || v.Equal(e.TimeValue)
+		case storage.LT:
+			return v.Before(e.TimeValue)
+		case storage.LTE:
+			return v.Before(e.TimeValue) || v.Equal(e.TimeValue)
+		}
+		return false
+	}
+
+	// Optimized handling for mixed numeric types
+	if (e.ValueType == storage.TypeInteger || e.ValueType == storage.TypeFloat) &&
+		(colVal.Type() == storage.TypeInteger || colVal.Type() == storage.TypeFloat) {
+
+		var colFloat, constFloat float64
+		var ok bool
+
+		// Convert column value to float
+		if colVal.Type() == storage.TypeInteger {
+			var intVal int64
+			intVal, ok = colVal.AsInt64()
+			colFloat = float64(intVal)
+		} else {
+			colFloat, ok = colVal.AsFloat64()
+		}
+
+		if !ok {
+			return false
+		}
+
+		// Convert expression value to float
+		if e.ValueType == storage.TypeInteger {
+			constFloat = float64(e.Int64Value)
+		} else {
+			constFloat = e.Float64Value
+		}
+
+		// Compare as floats
+		switch e.Operator {
+		case storage.EQ:
+			return colFloat == constFloat
+		case storage.NE:
+			return colFloat != constFloat
+		case storage.GT:
+			return colFloat > constFloat
+		case storage.GTE:
+			return colFloat >= constFloat
+		case storage.LT:
+			return colFloat < constFloat
+		case storage.LTE:
+			return colFloat <= constFloat
+		}
+		return false
+	}
+
+	// Fall back to the standard evaluation for other types or mixed-type operations
+	result, _ := e.Evaluate(row)
+	return result
+}
+
 // GetColumnName returns the column name for this expression
 func (e *FastSimpleExpression) GetColumnName() string {
 	return e.Column

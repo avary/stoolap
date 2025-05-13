@@ -2,120 +2,124 @@ package expression
 
 import (
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
-// Make sure FunctionExpression implements IndexableExpression interface
-var _ IndexableExpression = (*FunctionExpression)(nil)
-
-// FunctionExpression represents an expression implemented as a Go function
-type FunctionExpression struct {
-	evalFn func(row storage.Row) (bool, error)
-
-	// FunctionExpression doesn't directly support aliases since it's
-	// a black box function. However, the function inside could potentially
-	// handle aliases if it's designed to do so.
-}
-
-// NewSimpleExpression creates a new simple expression using a function
-func NewSimpleExpression(evalFn func(row storage.Row) (bool, error)) *FunctionExpression {
-	return &FunctionExpression{
-		evalFn: evalFn,
-	}
-}
-
-// Evaluate implements the storage.Expression interface
-func (e *FunctionExpression) Evaluate(row storage.Row) (bool, error) {
-	// If evalFn is nil, always return false
-	if e.evalFn == nil {
-		return false, nil
-	}
-
-	return e.evalFn(row)
-}
-
-// Implement IndexableExpression interface for FunctionExpression
-// This doesn't actually enable index usage since we don't have that metadata,
-// but allows the optimizer to handle FunctionExpressions without type assertion errors
-
-// GetColumnName returns an empty string since we don't know which column is used
-func (e *FunctionExpression) GetColumnName() string {
-	return ""
-}
-
-// GetValue returns nil since we don't know what value is being compared
-func (e *FunctionExpression) GetValue() interface{} {
-	return nil
-}
-
-// GetOperator returns an unknown operator
-func (e *FunctionExpression) GetOperator() storage.Operator {
-	return storage.EQ // Arbitrary default
-}
-
-// CanUseIndex returns false since we can't optimize function expressions directly
-func (e *FunctionExpression) CanUseIndex() bool {
-	return false
-}
-
-// WithAliases implements the Expression interface
-// For FunctionExpression, we can't modify the internal function, so we return a wrapper
-// that applies alias handling around the original function
-func (e *FunctionExpression) WithAliases(aliases map[string]string) storage.Expression {
-	// Create a function wrapper that will attempt to convert alias names to real column names
-	aliasedFn := func(row storage.Row) (bool, error) {
-		// Just pass through to the original function for now
-		// A more sophisticated implementation could try to intercept column lookups
-		// but that would require more complex function composition
-		return e.evalFn(row)
-	}
-
-	return &FunctionExpression{
-		evalFn: aliasedFn,
-	}
-}
-
 // SimpleExpression is a basic implementation of a boolean expression
 type SimpleExpression struct {
 	Column   string           // Name of the column
 	Operator storage.Operator // Comparison operator
-	Value    interface{}      // Value to compare against
+	Value    interface{}      // Value to compare against (for backward compatibility)
+
+	// Optimized typed value storage to avoid interface{} overhead
+	Int64Value   int64
+	Float64Value float64
+	StringValue  string
+	BoolValue    bool
+	TimeValue    time.Time
+
+	// Type information and optimization flags
+	ValueType    storage.DataType // Type of the value for fast paths
+	ValueIsNil   bool             // Whether the value is nil
+	ColIndex     int              // Column index for fast lookup
+	IndexPrepped bool             // Whether we've prepared column index mapping
 
 	aliases        map[string]string // Column aliases (alias -> original)
 	originalColumn string            // Original column name if Column is an alias
 }
 
-// Evaluate implements the Expression interface
-func (e *SimpleExpression) Evaluate(row storage.Row) (bool, error) {
-	// Find the column index
-	colIdx := -1
+// NewSimpleExpression creates a new SimpleExpression
+func NewSimpleExpression(column string, operator storage.Operator, value interface{}) *SimpleExpression {
+	expr := &SimpleExpression{
+		Column:       column,
+		Operator:     operator,
+		Value:        value,
+		IndexPrepped: false,
+		ColIndex:     -1,
+		ValueIsNil:   value == nil,
+		aliases:      make(map[string]string),
+	}
 
-	for i, val := range row {
-		if val != nil {
-			// FIXME: This is a workaround for the fact that we don't have a schema
-			// We don't have a way to know the column name directly from some row implementations
-			// so we'd need to pass in the schema or do lookup elsewhere
-			// For now, we'll just use the first non-nil column as a fallback
-			colIdx = i
-			break
+	// Pre-process the value to avoid repeated type assertions during evaluation
+	if !expr.ValueIsNil {
+		switch v := value.(type) {
+		case int:
+			expr.ValueType = storage.TypeInteger
+			expr.Int64Value = int64(v)
+		case int64:
+			expr.ValueType = storage.TypeInteger
+			expr.Int64Value = v
+		case float64:
+			expr.ValueType = storage.TypeFloat
+			expr.Float64Value = v
+		case string:
+			expr.ValueType = storage.TypeString
+			expr.StringValue = v
+		case bool:
+			expr.ValueType = storage.TypeBoolean
+			expr.BoolValue = v
+		case time.Time:
+			expr.ValueType = storage.TypeTimestamp
+			expr.TimeValue = v
+		default:
+			// Fall back to string for other types
+			expr.ValueType = storage.TypeString
+			expr.StringValue = fmt.Sprintf("%v", value)
 		}
 	}
 
-	if colIdx == -1 || colIdx >= len(row) {
-		return false, fmt.Errorf("column %s not found in row", e.Column)
+	return expr
+}
+
+// Evaluate implements the Expression interface
+func (e *SimpleExpression) Evaluate(row storage.Row) (bool, error) {
+	// Quick validations
+	if len(row) == 0 {
+		return false, nil
 	}
 
-	// Get the column value
-	colVal := row[colIdx]
-	if colVal == nil {
-		// Special handling for NULL values
-		return e.evaluateNull(colVal)
+	// Use cached column index if prepared
+	if e.IndexPrepped && e.ColIndex >= 0 && e.ColIndex < len(row) {
+		colVal := row[e.ColIndex]
+		if colVal == nil {
+			return e.evaluateNull()
+		}
+		if colVal.IsNull() {
+			return e.evaluateNull()
+		}
+		return e.evaluateComparison(colVal)
 	}
-	// Check if the column value is of the expected type
-	return e.compareValues(colVal)
+
+	// Fall back to column name lookup
+	for i, colVal := range row {
+		// Skip nil values
+		if colVal == nil {
+			continue
+		}
+
+		// Handle NULL checks differently
+		if colVal.IsNull() {
+			// If this is the column we're looking for, evaluate NULL check
+			if i == e.ColIndex {
+				return e.evaluateNull()
+			}
+			// Otherwise continue searching
+			continue
+		}
+
+		// Cache the column index for future evaluations
+		if !e.IndexPrepped {
+			e.ColIndex = i
+			e.IndexPrepped = true
+		}
+
+		return e.evaluateComparison(colVal)
+	}
+
+	// Column not found
+	return false, fmt.Errorf("column %s not found", e.Column)
 }
 
 // IsEquality returns true if this is an equality expression
@@ -152,10 +156,19 @@ func (e *SimpleExpression) CanUseIndex() bool {
 func (e *SimpleExpression) WithAliases(aliases map[string]string) storage.Expression {
 	// Create a copy of the expression with aliases
 	expr := &SimpleExpression{
-		Column:   e.Column,
-		Operator: e.Operator,
-		Value:    e.Value,
-		aliases:  aliases,
+		Column:       e.Column,
+		Operator:     e.Operator,
+		Value:        e.Value,
+		Int64Value:   e.Int64Value,
+		Float64Value: e.Float64Value,
+		StringValue:  e.StringValue,
+		BoolValue:    e.BoolValue,
+		TimeValue:    e.TimeValue,
+		ValueType:    e.ValueType,
+		ValueIsNil:   e.ValueIsNil,
+		IndexPrepped: false, // Reset index preparation as column names might change
+		ColIndex:     -1,    // Reset column index
+		aliases:      aliases,
 	}
 
 	// If the column name is an alias, resolve it to the original column name
@@ -172,102 +185,118 @@ func (e *SimpleExpression) SetOriginalColumn(col string) {
 	e.originalColumn = col
 }
 
-// evaluateNull handles comparing against NULL values
-func (e *SimpleExpression) evaluateNull(colVal storage.ColumnValue) (bool, error) {
-	// First, check if the column value is actually NULL
-	isNull := colVal == nil || colVal.IsNull()
-
-	// Then evaluate based on the operator
+// evaluateNull handles comparisons against NULL values
+func (e *SimpleExpression) evaluateNull() (bool, error) {
 	switch e.Operator {
 	case storage.ISNULL:
-		// For IS NULL, return true if the value is NULL
-		return isNull, nil
+		return true, nil
 	case storage.ISNOTNULL:
-		// For IS NOT NULL, return true if the value is NOT NULL
-		return !isNull, nil
+		return false, nil
 	default:
 		// NULL comparisons with other operators return false
 		return false, nil
 	}
 }
 
-// compareValues compares the column value with the expression value
-func (e *SimpleExpression) compareValues(colVal storage.ColumnValue) (bool, error) {
-	switch colVal.Type() {
+// evaluateComparison evaluates a comparison between a column value and expression value
+func (e *SimpleExpression) evaluateComparison(colValue storage.ColumnValue) (bool, error) {
+	// Fast path for direct type comparisons - most common case
+	if e.ValueType == colValue.Type() {
+		return e.evaluateTypedComparison(colValue)
+	}
+
+	// Fast path for numeric types (INTEGER vs FLOAT)
+	if (e.ValueType == storage.TypeInteger || e.ValueType == storage.TypeFloat) &&
+		(colValue.Type() == storage.TypeInteger || colValue.Type() == storage.TypeFloat) {
+		return e.evaluateNumericComparison(colValue)
+	}
+
+	// Fall back to original implementation for more complex type conversions
+	switch colValue.Type() {
 	case storage.INTEGER:
-		v, ok := colVal.AsInt64()
+		v, ok := colValue.AsInt64()
 		if !ok {
 			return false, nil
 		}
 
-		// Convert value to int64 for comparison
+		// Use pre-calculated value when possible
 		var compareValue int64
-		switch value := e.Value.(type) {
-		case int:
-			compareValue = int64(value)
-		case int64:
-			compareValue = value
-		case float64:
-			compareValue = int64(value)
-		case string:
-			// Try to parse string as number
-			parsed, err := strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				return false, fmt.Errorf("cannot compare integer with string: %s", value)
+		if e.ValueType == storage.TypeInteger {
+			compareValue = e.Int64Value
+		} else {
+			// Use the legacy path for other types
+			switch val := e.Value.(type) {
+			case int:
+				compareValue = int64(val)
+			case int64:
+				compareValue = val
+			case float64:
+				compareValue = int64(val)
+			default:
+				// Special handling for mvcc.IntegerValue and other custom types
+				if intVal, ok := e.Value.(interface{ AsInt64() (int64, bool) }); ok {
+					if i64, ok := intVal.AsInt64(); ok {
+						compareValue = i64
+					} else {
+						return false, fmt.Errorf("failed to convert %T to int64", e.Value)
+					}
+				} else {
+					return false, fmt.Errorf("cannot compare integer with %T", e.Value)
+				}
 			}
-			compareValue = parsed
-		default:
-			return false, fmt.Errorf("unsupported value type for integer comparison: %T", value)
 		}
 
 		// Apply the operator
 		switch e.Operator {
 		case storage.EQ:
-			result := v == compareValue
-			return result, nil
+			return v == compareValue, nil
 		case storage.NE:
-			result := v != compareValue
-			return result, nil
+			return v != compareValue, nil
 		case storage.GT:
-			result := v > compareValue
-			return result, nil
+			return v > compareValue, nil
 		case storage.GTE:
-			result := v >= compareValue
-			return result, nil
+			return v >= compareValue, nil
 		case storage.LT:
-			result := v < compareValue
-			return result, nil
+			return v < compareValue, nil
 		case storage.LTE:
-			result := v <= compareValue
-			return result, nil
+			return v <= compareValue, nil
 		default:
 			return false, fmt.Errorf("unsupported operator for integer: %v", e.Operator)
 		}
 
 	case storage.FLOAT:
-		v, ok := colVal.AsFloat64()
+		v, ok := colValue.AsFloat64()
 		if !ok {
 			return false, nil
 		}
 
-		// Convert value to float64 for comparison
+		// Use pre-calculated value when possible
 		var compareValue float64
-		switch value := e.Value.(type) {
-		case int:
-			compareValue = float64(value)
-		case int64:
-			compareValue = float64(value)
-		case float64:
-			compareValue = value
-		case string:
-			// Try to parse string as number
-			parsed, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return false, fmt.Errorf("cannot compare float with string: %s", value)
+		if e.ValueType == storage.TypeFloat {
+			compareValue = e.Float64Value
+		} else if e.ValueType == storage.TypeInteger {
+			compareValue = float64(e.Int64Value)
+		} else {
+			// Use the legacy path for other types
+			switch val := e.Value.(type) {
+			case int:
+				compareValue = float64(val)
+			case int64:
+				compareValue = float64(val)
+			case float64:
+				compareValue = val
+			default:
+				// Special handling for mvcc.FloatValue and other custom types
+				if floatVal, ok := e.Value.(interface{ AsFloat64() (float64, bool) }); ok {
+					if f64, ok := floatVal.AsFloat64(); ok {
+						compareValue = f64
+					} else {
+						return false, fmt.Errorf("failed to convert %T to float64", e.Value)
+					}
+				} else {
+					return false, fmt.Errorf("cannot compare float with %T", e.Value)
+				}
 			}
-			compareValue = parsed
-		default:
-			return false, fmt.Errorf("unsupported value type for float comparison: %T", value)
 		}
 
 		// Apply the operator
@@ -289,20 +318,32 @@ func (e *SimpleExpression) compareValues(colVal storage.ColumnValue) (bool, erro
 		}
 
 	case storage.TEXT:
-		v, ok := colVal.AsString()
+		v, ok := colValue.AsString()
 		if !ok {
 			return false, nil
 		}
 
-		// Convert value to string for comparison
+		// Use pre-calculated value when possible
 		var compareValue string
-		switch value := e.Value.(type) {
-		case string:
-			compareValue = value
-		case int, int64, float64, bool:
-			compareValue = fmt.Sprintf("%v", value)
-		default:
-			return false, fmt.Errorf("unsupported value type for string comparison: %T", value)
+		if e.ValueType == storage.TypeString {
+			compareValue = e.StringValue
+		} else {
+			// Use the legacy path for other types
+			switch val := e.Value.(type) {
+			case string:
+				compareValue = val
+			default:
+				// Special handling for mvcc.StringValue and other custom types
+				if strVal, ok := e.Value.(interface{ AsString() (string, bool) }); ok {
+					if str, ok := strVal.AsString(); ok {
+						compareValue = str
+					} else {
+						compareValue = fmt.Sprintf("%v", e.Value)
+					}
+				} else {
+					compareValue = fmt.Sprintf("%v", val)
+				}
+			}
 		}
 
 		// Apply the operator
@@ -320,32 +361,48 @@ func (e *SimpleExpression) compareValues(colVal storage.ColumnValue) (bool, erro
 		case storage.LTE:
 			return v <= compareValue, nil
 		case storage.LIKE:
-			// LIKE operator would need implementation of pattern matching
-			return false, fmt.Errorf("LIKE operator not implemented for string")
+			// LIKE pattern matching would need more implementation
+			return false, fmt.Errorf("LIKE operator not implemented yet")
 		default:
 			return false, fmt.Errorf("unsupported operator for string: %v", e.Operator)
 		}
 
 	case storage.BOOLEAN:
-		v, ok := colVal.AsBoolean()
+		v, ok := colValue.AsBoolean()
 		if !ok {
 			return false, nil
 		}
 
-		// For boolean, only equality and inequality make sense
-		compareValue, ok := e.Value.(bool)
-		if !ok {
-			// Try to convert from string
-			if strValue, isStr := e.Value.(string); isStr {
-				compareValue = strValue == "true" || strValue == "1"
-				ok = true
-			}
-
-			if !ok {
-				return false, fmt.Errorf("unsupported value type for boolean comparison: %T", e.Value)
+		// Use pre-calculated value when possible
+		var compareValue bool
+		if e.ValueType == storage.TypeBoolean {
+			compareValue = e.BoolValue
+		} else {
+			// Use the legacy path for other types
+			switch val := e.Value.(type) {
+			case bool:
+				compareValue = val
+			case string:
+				compareValue = val == "true" || val == "1"
+			case int:
+				compareValue = val != 0
+			case int64:
+				compareValue = val != 0
+			default:
+				// Special handling for mvcc.BooleanValue and other custom types
+				if boolVal, ok := e.Value.(interface{ AsBoolean() (bool, bool) }); ok {
+					if b, ok := boolVal.AsBoolean(); ok {
+						compareValue = b
+					} else {
+						return false, fmt.Errorf("failed to convert %T to boolean", e.Value)
+					}
+				} else {
+					return false, fmt.Errorf("cannot compare boolean with %T", e.Value)
+				}
 			}
 		}
 
+		// Apply the operator
 		switch e.Operator {
 		case storage.EQ:
 			return v == compareValue, nil
@@ -356,62 +413,421 @@ func (e *SimpleExpression) compareValues(colVal storage.ColumnValue) (bool, erro
 		}
 
 	case storage.TIMESTAMP:
-		// Timestamp comparisons
-		v, ok := colVal.AsTimestamp()
+		// For timestamps, use a similar approach to date but with full precision
+		timestamp, ok := colValue.AsTimestamp()
 		if !ok {
 			return false, nil
 		}
 
-		var compareValue time.Time
-		switch value := e.Value.(type) {
-		case time.Time:
-			compareValue = value
-		case string:
-			// Try to parse as time
-			parsed, err := storage.ParseTimestamp(value)
-			if err != nil {
-				return false, fmt.Errorf("cannot parse timestamp string: %s", value)
+		// Use pre-calculated value when possible
+		var compareTime time.Time
+		if e.ValueType == storage.TypeTimestamp {
+			compareTime = e.TimeValue
+		} else {
+			// Use the legacy path for other types
+			switch val := e.Value.(type) {
+			case time.Time:
+				compareTime = val
+			case string:
+				var err error
+				compareTime, err = storage.ParseTimestamp(val)
+				if err != nil {
+					return false, fmt.Errorf("could not parse timestamp string: %v", err)
+				}
+			default:
+				return false, fmt.Errorf("cannot compare timestamp with %T", e.Value)
 			}
-			compareValue = parsed
+		}
+
+		// Apply the operator to the timestamps
+		switch e.Operator {
+		case storage.EQ:
+			return timestamp.Equal(compareTime), nil
+		case storage.NE:
+			return !timestamp.Equal(compareTime), nil
+		case storage.GT:
+			return timestamp.After(compareTime), nil
+		case storage.GTE:
+			return timestamp.After(compareTime) || timestamp.Equal(compareTime), nil
+		case storage.LT:
+			return timestamp.Before(compareTime), nil
+		case storage.LTE:
+			return timestamp.Before(compareTime) || timestamp.Equal(compareTime), nil
 		default:
-			return false, fmt.Errorf("unsupported value type for timestamp comparison: %T", value)
+			return false, fmt.Errorf("unsupported operator for timestamp: %v", e.Operator)
+		}
+	}
+
+	// Default case - type not supported for comparison
+	return false, fmt.Errorf("unsupported column type for comparison: %v", colValue.Type())
+}
+
+// evaluateTypedComparison provides a fast path for comparing values of the same type
+func (e *SimpleExpression) evaluateTypedComparison(colValue storage.ColumnValue) (bool, error) {
+	switch e.ValueType {
+	case storage.TypeInteger:
+		v, ok := colValue.AsInt64()
+		if !ok {
+			return false, nil
 		}
 
 		switch e.Operator {
 		case storage.EQ:
-			return v.Equal(compareValue), nil
+			return v == e.Int64Value, nil
 		case storage.NE:
-			return !v.Equal(compareValue), nil
+			return v != e.Int64Value, nil
 		case storage.GT:
-			return v.After(compareValue), nil
+			return v > e.Int64Value, nil
 		case storage.GTE:
-			return v.After(compareValue) || v.Equal(compareValue), nil
+			return v >= e.Int64Value, nil
 		case storage.LT:
-			return v.Before(compareValue), nil
+			return v < e.Int64Value, nil
 		case storage.LTE:
-			return v.Before(compareValue) || v.Equal(compareValue), nil
+			return v <= e.Int64Value, nil
 		default:
-			return false, fmt.Errorf("unsupported operator for timestamp: %v", e.Operator)
+			return false, fmt.Errorf("unsupported operator for integer: %v", e.Operator)
 		}
 
-	case storage.JSON:
-		// For JSON, we only support equality for now
-		v, ok := colVal.AsJSON()
+	case storage.TypeFloat:
+		v, ok := colValue.AsFloat64()
 		if !ok {
 			return false, nil
 		}
 
-		switch value := e.Value.(type) {
-		case string:
-			if e.Operator == storage.EQ {
-				return v == value, nil
-			} else if e.Operator == storage.NE {
-				return v != value, nil
-			}
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.Float64Value, nil
+		case storage.NE:
+			return v != e.Float64Value, nil
+		case storage.GT:
+			return v > e.Float64Value, nil
+		case storage.GTE:
+			return v >= e.Float64Value, nil
+		case storage.LT:
+			return v < e.Float64Value, nil
+		case storage.LTE:
+			return v <= e.Float64Value, nil
+		default:
+			return false, fmt.Errorf("unsupported operator for float: %v", e.Operator)
 		}
-		return false, fmt.Errorf("unsupported operator for JSON: %v", e.Operator)
 
-	default:
-		return false, fmt.Errorf("unsupported column type for comparison: %v", colVal.Type())
+	case storage.TypeString:
+		v, ok := colValue.AsString()
+		if !ok {
+			return false, nil
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.StringValue, nil
+		case storage.NE:
+			return v != e.StringValue, nil
+		case storage.GT:
+			return v > e.StringValue, nil
+		case storage.GTE:
+			return v >= e.StringValue, nil
+		case storage.LT:
+			return v < e.StringValue, nil
+		case storage.LTE:
+			return v <= e.StringValue, nil
+		case storage.LIKE:
+			// LIKE pattern matching would need more implementation
+			return false, fmt.Errorf("LIKE operator not implemented yet")
+		default:
+			return false, fmt.Errorf("unsupported operator for string: %v", e.Operator)
+		}
+
+	case storage.TypeBoolean:
+		v, ok := colValue.AsBoolean()
+		if !ok {
+			return false, nil
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v == e.BoolValue, nil
+		case storage.NE:
+			return v != e.BoolValue, nil
+		default:
+			return false, fmt.Errorf("unsupported operator for boolean: %v", e.Operator)
+		}
+
+	case storage.TypeTimestamp:
+		v, ok := colValue.AsTimestamp()
+		if !ok {
+			return false, nil
+		}
+
+		switch e.Operator {
+		case storage.EQ:
+			return v.Equal(e.TimeValue), nil
+		case storage.NE:
+			return !v.Equal(e.TimeValue), nil
+		case storage.GT:
+			return v.After(e.TimeValue), nil
+		case storage.GTE:
+			return v.After(e.TimeValue) || v.Equal(e.TimeValue), nil
+		case storage.LT:
+			return v.Before(e.TimeValue), nil
+		case storage.LTE:
+			return v.Before(e.TimeValue) || v.Equal(e.TimeValue), nil
+		default:
+			return false, fmt.Errorf("unsupported operator for timestamp: %v", e.Operator)
+		}
 	}
+
+	return false, fmt.Errorf("unsupported value type: %v", e.ValueType)
+}
+
+// evaluateNumericComparison provides a fast path for numeric comparisons between integer and float types
+func (e *SimpleExpression) evaluateNumericComparison(colValue storage.ColumnValue) (bool, error) {
+	// Convert both values to float64 for comparison
+	var colFloat float64
+
+	// Get column value as float
+	if colValue.Type() == storage.TypeInteger {
+		intVal, ok := colValue.AsInt64()
+		if !ok {
+			return false, nil
+		}
+		colFloat = float64(intVal)
+	} else {
+		var ok bool
+		colFloat, ok = colValue.AsFloat64()
+		if !ok {
+			return false, nil
+		}
+	}
+
+	// Get expression value as float
+	var exprFloat float64
+	if e.ValueType == storage.TypeInteger {
+		exprFloat = float64(e.Int64Value)
+	} else {
+		exprFloat = e.Float64Value
+	}
+
+	// Perform the comparison
+	switch e.Operator {
+	case storage.EQ:
+		return colFloat == exprFloat, nil
+	case storage.NE:
+		return colFloat != exprFloat, nil
+	case storage.GT:
+		return colFloat > exprFloat, nil
+	case storage.GTE:
+		return colFloat >= exprFloat, nil
+	case storage.LT:
+		return colFloat < exprFloat, nil
+	case storage.LTE:
+		return colFloat <= exprFloat, nil
+	default:
+		return false, fmt.Errorf("unsupported operator for numeric comparison: %v", e.Operator)
+	}
+}
+
+// PrepareForSchema optimizes the expression for a specific schema by calculating
+// column indices in advance for fast evaluation
+func (e *SimpleExpression) PrepareForSchema(schema storage.Schema) {
+	// Find the column index to optimize lookup
+	for i, col := range schema.Columns {
+		if col.Name == e.Column {
+			e.ColIndex = i
+			break
+		}
+	}
+	e.IndexPrepped = true
+}
+
+// EvaluateFast is an ultra-optimized version of Evaluate that avoids interface method calls
+// and type assertions where possible, for the critical path in query processing
+func (e *SimpleExpression) EvaluateFast(row storage.Row) bool {
+	// Use cached column index if available
+	colIdx := e.ColIndex
+	if !e.IndexPrepped || colIdx < 0 || colIdx >= len(row) {
+		// Fallback to slower path
+		result, _ := e.Evaluate(row)
+		return result
+	}
+
+	// Get the column value
+	colVal := row[colIdx]
+	if colVal == nil {
+		// Handle NULL checks
+		if e.Operator == storage.ISNULL {
+			return true
+		} else if e.Operator == storage.ISNOTNULL {
+			return false
+		}
+		return false
+	}
+
+	// Handle NULL check operators
+	if e.Operator == storage.ISNULL {
+		return colVal.IsNull()
+	} else if e.Operator == storage.ISNOTNULL {
+		return !colVal.IsNull()
+	}
+
+	// Skip processing if the column value is NULL (except for NULL checks)
+	if colVal.IsNull() {
+		return false
+	}
+
+	// Fast path for direct value comparisons
+	if e.ValueType == colVal.Type() {
+		// Direct comparison using pre-processed values
+		switch e.ValueType {
+		case storage.TypeInteger:
+			v, ok := colVal.AsInt64()
+			if !ok {
+				return false
+			}
+
+			switch e.Operator {
+			case storage.EQ:
+				return v == e.Int64Value
+			case storage.NE:
+				return v != e.Int64Value
+			case storage.GT:
+				return v > e.Int64Value
+			case storage.GTE:
+				return v >= e.Int64Value
+			case storage.LT:
+				return v < e.Int64Value
+			case storage.LTE:
+				return v <= e.Int64Value
+			}
+			return false
+
+		case storage.TypeFloat:
+			v, ok := colVal.AsFloat64()
+			if !ok {
+				return false
+			}
+
+			switch e.Operator {
+			case storage.EQ:
+				return v == e.Float64Value
+			case storage.NE:
+				return v != e.Float64Value
+			case storage.GT:
+				return v > e.Float64Value
+			case storage.GTE:
+				return v >= e.Float64Value
+			case storage.LT:
+				return v < e.Float64Value
+			case storage.LTE:
+				return v <= e.Float64Value
+			}
+			return false
+
+		case storage.TypeString:
+			v, ok := colVal.AsString()
+			if !ok {
+				return false
+			}
+
+			switch e.Operator {
+			case storage.EQ:
+				return v == e.StringValue
+			case storage.NE:
+				return v != e.StringValue
+			case storage.GT:
+				return v > e.StringValue
+			case storage.GTE:
+				return v >= e.StringValue
+			case storage.LT:
+				return v < e.StringValue
+			case storage.LTE:
+				return v <= e.StringValue
+			}
+			return false
+
+		case storage.TypeBoolean:
+			v, ok := colVal.AsBoolean()
+			if !ok {
+				return false
+			}
+
+			switch e.Operator {
+			case storage.EQ:
+				return v == e.BoolValue
+			case storage.NE:
+				return v != e.BoolValue
+			}
+			return false
+
+		case storage.TypeTimestamp:
+			v, ok := colVal.AsTimestamp()
+			if !ok {
+				return false
+			}
+
+			switch e.Operator {
+			case storage.EQ:
+				return v.Equal(e.TimeValue)
+			case storage.NE:
+				return !v.Equal(e.TimeValue)
+			case storage.GT:
+				return v.After(e.TimeValue)
+			case storage.GTE:
+				return v.After(e.TimeValue) || v.Equal(e.TimeValue)
+			case storage.LT:
+				return v.Before(e.TimeValue)
+			case storage.LTE:
+				return v.Before(e.TimeValue) || v.Equal(e.TimeValue)
+			}
+			return false
+		}
+	}
+
+	// Fast path for mixed numeric types
+	if (e.ValueType == storage.TypeInteger || e.ValueType == storage.TypeFloat) &&
+		(colVal.Type() == storage.TypeInteger || colVal.Type() == storage.TypeFloat) {
+
+		var colFloat, exprFloat float64
+		var ok bool
+
+		// Get column value as float
+		if colVal.Type() == storage.TypeInteger {
+			var intVal int64
+			intVal, ok = colVal.AsInt64()
+			colFloat = float64(intVal)
+		} else {
+			colFloat, ok = colVal.AsFloat64()
+		}
+
+		if !ok {
+			return false
+		}
+
+		// Get expression value as float
+		if e.ValueType == storage.TypeInteger {
+			exprFloat = float64(e.Int64Value)
+		} else {
+			exprFloat = e.Float64Value
+		}
+
+		// Compare as floats
+		switch e.Operator {
+		case storage.EQ:
+			return colFloat == exprFloat
+		case storage.NE:
+			return colFloat != exprFloat
+		case storage.GT:
+			return colFloat > exprFloat
+		case storage.GTE:
+			return colFloat >= exprFloat
+		case storage.LT:
+			return colFloat < exprFloat
+		case storage.LTE:
+			return colFloat <= exprFloat
+		}
+		return false
+	}
+
+	// Fallback to standard path
+	result, _ := e.evaluateComparison(colVal)
+	return result
 }

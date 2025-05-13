@@ -187,7 +187,7 @@ func TestMVCCTable(t *testing.T) {
 	}
 
 	// Test 7: Delete a row
-	filter := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	filter := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		// Delete Alice
 		id, ok := row[0].AsInt64()
 		return ok && id == 1, nil

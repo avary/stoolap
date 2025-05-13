@@ -8,9 +8,9 @@ import (
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
-// RegistryFunctionExpression is an expression type that uses the function registry
+// RegistryEvalExpression is an expression type that uses the function registry
 // It represents SQL function calls like UPPER(column) = 'VALUE'
-type RegistryFunctionExpression struct {
+type RegistryEvalExpression struct {
 	functionName   string            // The function name from registry (e.g., "UPPER")
 	columnName     string            // The column name to apply the function to
 	value          interface{}       // The value to compare against
@@ -19,14 +19,14 @@ type RegistryFunctionExpression struct {
 	originalColumn string            // Original column name if Column is an alias
 }
 
-// NewRegistryFunctionExpression creates a new function expression using the registry
-func NewRegistryFunctionExpression(
+// NewRegistryEvalExpression creates a new function expression using the registry
+func NewRegistryEvalExpression(
 	functionName string,
 	columnName string,
 	operator storage.Operator,
 	value interface{}) storage.Expression {
 
-	return &RegistryFunctionExpression{
+	return &RegistryEvalExpression{
 		functionName: strings.ToUpper(functionName),
 		columnName:   columnName,
 		operator:     operator,
@@ -35,7 +35,7 @@ func NewRegistryFunctionExpression(
 }
 
 // Evaluate evaluates the function expression against a row
-func (e *RegistryFunctionExpression) Evaluate(row storage.Row) (bool, error) {
+func (e *RegistryEvalExpression) Evaluate(row storage.Row) (bool, error) {
 	// Get global function registry
 	funcRegistry := registry.GetGlobal()
 
@@ -343,36 +343,36 @@ func compareWithOperator(left, right interface{}, operator storage.Operator) (bo
 }
 
 // GetColumnName returns the column name this expression operates on
-func (e *RegistryFunctionExpression) GetColumnName() string {
+func (e *RegistryEvalExpression) GetColumnName() string {
 	return e.columnName
 }
 
 // GetValue returns the value this expression compares against
-func (e *RegistryFunctionExpression) GetValue() interface{} {
+func (e *RegistryEvalExpression) GetValue() interface{} {
 	return e.value
 }
 
 // GetOperator returns the operator this expression uses
-func (e *RegistryFunctionExpression) GetOperator() storage.Operator {
+func (e *RegistryEvalExpression) GetOperator() storage.Operator {
 	return e.operator
 }
 
 // GetFunctionName returns the name of the function being applied
-func (e *RegistryFunctionExpression) GetFunctionName() string {
+func (e *RegistryEvalExpression) GetFunctionName() string {
 	return e.functionName
 }
 
 // CanUseIndex returns true if this expression can use an index
-func (e *RegistryFunctionExpression) CanUseIndex() bool {
+func (e *RegistryEvalExpression) CanUseIndex() bool {
 	// For now, function expressions can't use indexes directly
 	// In a full implementation, some functions could use functional indexes
 	return false
 }
 
 // WithAliases implements the storage.Expression interface
-func (e *RegistryFunctionExpression) WithAliases(aliases map[string]string) storage.Expression {
+func (e *RegistryEvalExpression) WithAliases(aliases map[string]string) storage.Expression {
 	// Create a copy of the expression with aliases
-	expr := &RegistryFunctionExpression{
+	expr := &RegistryEvalExpression{
 		functionName: e.functionName,
 		columnName:   e.columnName,
 		operator:     e.operator,
@@ -388,6 +388,3 @@ func (e *RegistryFunctionExpression) WithAliases(aliases map[string]string) stor
 
 	return expr
 }
-
-// Ensure RegistryFunctionExpression implements IndexableExpression
-var _ IndexableExpression = (*RegistryFunctionExpression)(nil)

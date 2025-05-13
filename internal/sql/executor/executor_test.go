@@ -151,10 +151,6 @@ func (m *mockTransaction) SelectWithExpression(tableName string, columns []strin
 	return nil, nil
 }
 
-func (m *mockTransaction) GetFilterCapabilities() storage.FilterCapabilities {
-	return storage.FilterCapabilities{}
-}
-
 func (m *mockTransaction) Context() context.Context {
 	return context.Background()
 }

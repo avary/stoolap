@@ -18,9 +18,6 @@ type InListExpression struct {
 	originalColumn string            // Original column name if Column is an alias
 }
 
-// Make sure InListExpression implements IndexableExpression
-var _ IndexableExpression = (*InListExpression)(nil)
-
 // Evaluate implements the Expression interface
 func (e *InListExpression) Evaluate(row storage.Row) (bool, error) {
 	// Find the column in the row

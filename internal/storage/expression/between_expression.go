@@ -20,8 +20,14 @@ type BetweenExpression struct {
 	originalColumn string            // Original column name if Column is an alias
 }
 
-// Make sure BetweenExpression implements IndexableExpression
-var _ IndexableExpression = (*BetweenExpression)(nil)
+func NewBetweenExpression(column string, lowerBound, upperBound interface{}, inclusive bool) *BetweenExpression {
+	return &BetweenExpression{
+		Column:     column,
+		LowerBound: lowerBound,
+		UpperBound: upperBound,
+		Inclusive:  inclusive,
+	}
+}
 
 // Evaluate implements the Expression interface for BetweenExpression
 func (e *BetweenExpression) Evaluate(row storage.Row) (bool, error) {

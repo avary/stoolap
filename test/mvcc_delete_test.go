@@ -79,7 +79,7 @@ func TestMVCCDeleteWithComplexWhere(t *testing.T) {
 	}
 
 	// Delete where category = 'A'
-	expr1 := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	expr1 := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		category, _ := row[1].AsString()
 		return category == "A", nil
 	})
@@ -131,7 +131,7 @@ func TestMVCCDeleteWithComplexWhere(t *testing.T) {
 	}
 
 	// Delete where category = 'B' AND value > 30
-	expr2 := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	expr2 := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		category, _ := row[1].AsString()
 		value, _ := row[2].AsInt64()
 		return category == "B" && value > 30, nil
@@ -210,7 +210,7 @@ func TestMVCCDeleteWithComplexWhere(t *testing.T) {
 	t.Logf("Starting with %d rows before last delete", startRowCount)
 
 	// Delete where (category = 'C' OR active = false)
-	expr3 := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	expr3 := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		category, _ := row[1].AsString()
 		active, _ := row[3].AsBoolean()
 		shouldDelete := category == "C" || !active

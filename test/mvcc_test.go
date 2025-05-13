@@ -265,7 +265,7 @@ func TestMVCCDataOverwrite(t *testing.T) {
 	}
 
 	// Update the row in transaction 4
-	expr := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	expr := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		id, _ := row[0].AsInt64()
 		return id == 1, nil
 	})

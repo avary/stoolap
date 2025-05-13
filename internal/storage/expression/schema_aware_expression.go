@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/stoolap/stoolap/internal/storage"
 )
@@ -14,11 +13,14 @@ import (
 // SchemaAwareExpression wraps an Expression with schema information for efficient evaluation
 // This allows expressions to work with column names instead of just positions in the row
 type SchemaAwareExpression struct {
-	Expr        storage.Expression // The original expression
-	Schema      storage.Schema     // Schema information
-	ColumnNames []string           // Column names for the wrapped expression
-	ColumnMap   map[string]int     // Pre-computed column index mapping
-	aliases     map[string]string  // Column aliases (alias -> original column name)
+	Expr           storage.Expression // The original expression
+	Schema         storage.Schema     // Schema information
+	ColumnNames    []string           // Column names for the wrapped expression
+	ColumnMap      map[string]int     // Pre-computed column index mapping
+	DirectIndices  []int              // Direct array of column indices by position for fast lookups
+	DirectColumns  []string           // Corresponding column names for the direct indices
+	IndicesPrepped bool               // Flag indicating if direct indices are prepared
+	aliases        map[string]string  // Column aliases (alias -> original column name)
 }
 
 // Pool for SchemaAwareExpression objects to reduce allocations
@@ -40,15 +42,29 @@ func NewSchemaAwareExpression(expr storage.Expression, schema storage.Schema) *S
 	if !ok || sae == nil {
 		// Fallback if something went wrong with the pool
 		sae = &SchemaAwareExpression{
-			ColumnNames: make([]string, len(schema.Columns)),
-			ColumnMap:   make(map[string]int, len(schema.Columns)),
+			ColumnNames:   make([]string, len(schema.Columns)),
+			ColumnMap:     make(map[string]int, len(schema.Columns)),
+			DirectIndices: make([]int, len(schema.Columns)),
+			DirectColumns: make([]string, len(schema.Columns)),
 		}
 	} else {
-		// Reset and resize the string slice
+		// Reset and resize the slices
 		if cap(sae.ColumnNames) >= len(schema.Columns) {
 			sae.ColumnNames = sae.ColumnNames[:len(schema.Columns)]
 		} else {
 			sae.ColumnNames = make([]string, len(schema.Columns))
+		}
+
+		if cap(sae.DirectIndices) >= len(schema.Columns) {
+			sae.DirectIndices = sae.DirectIndices[:len(schema.Columns)]
+		} else {
+			sae.DirectIndices = make([]int, len(schema.Columns))
+		}
+
+		if cap(sae.DirectColumns) >= len(schema.Columns) {
+			sae.DirectColumns = sae.DirectColumns[:len(schema.Columns)]
+		} else {
+			sae.DirectColumns = make([]string, len(schema.Columns))
 		}
 
 		// Clear the map
@@ -58,12 +74,18 @@ func NewSchemaAwareExpression(expr storage.Expression, schema storage.Schema) *S
 	// Set fields
 	sae.Expr = expr
 	sae.Schema = schema
-	sae.aliases = nil // Reset any aliases
+	sae.aliases = nil         // Reset any aliases
+	sae.IndicesPrepped = true // Mark indices as prepared
 
 	// Pre-compute column mappings (single allocation for the map)
 	for i, col := range schema.Columns {
 		sae.ColumnNames[i] = col.Name
 		sae.ColumnMap[col.Name] = i // Map column name to its index
+
+		// Also populate direct indices for faster lookups
+		sae.DirectIndices[i] = i
+		sae.DirectColumns[i] = col.Name
+
 		// Also add lowercase version of column name for case-insensitive lookups
 		lowerName := strings.ToLower(col.Name)
 		if _, exists := sae.ColumnMap[lowerName]; !exists {
@@ -84,9 +106,58 @@ func ReturnSchemaAwereExpressionPool(sae *SchemaAwareExpression) {
 	sae.Expr = nil
 	sae.Schema = storage.Schema{}
 	sae.aliases = nil
+	sae.IndicesPrepped = false
 
 	// Return to the pool
 	schemaAwareExprPool.Put(sae)
+}
+
+// PrepareDirectIndices initializes the direct indices for faster column lookups
+func (sae *SchemaAwareExpression) PrepareDirectIndices() {
+	if sae.IndicesPrepped {
+		return
+	}
+
+	// Initialize direct indices array if needed
+	if sae.DirectIndices == nil || len(sae.DirectIndices) != len(sae.Schema.Columns) {
+		sae.DirectIndices = make([]int, len(sae.Schema.Columns))
+		sae.DirectColumns = make([]string, len(sae.Schema.Columns))
+	}
+
+	// Populate direct indices lookup
+	for i, col := range sae.Schema.Columns {
+		sae.DirectIndices[i] = i
+		sae.DirectColumns[i] = col.Name
+	}
+
+	sae.IndicesPrepped = true
+}
+
+// FindColumnIndex finds a column index using the fastest lookup method available
+func (sae *SchemaAwareExpression) FindColumnIndex(columnName string) int {
+	// Ensure direct indices are prepared
+	if !sae.IndicesPrepped {
+		sae.PrepareDirectIndices()
+	}
+
+	// Try direct lookup first (fastest)
+	for i, col := range sae.DirectColumns {
+		if col == columnName {
+			return sae.DirectIndices[i]
+		}
+	}
+
+	// Fall back to map lookup (slower but handles aliases)
+	if idx, ok := sae.ColumnMap[columnName]; ok {
+		return idx
+	}
+
+	// Try case-insensitive lookup as final fallback
+	if idx, ok := sae.ColumnMap[strings.ToLower(columnName)]; ok {
+		return idx
+	}
+
+	return -1 // Column not found
 }
 
 // Evaluate implements the Expression interface with schema awareness
@@ -129,19 +200,40 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 		return false, nil
 	}
 
+	// Fast path for SimpleExpression - most common case
+	if simpleExpr, ok := sae.Expr.(*SimpleExpression); ok {
+		if !simpleExpr.IndexPrepped {
+			// Attempt direct lookup first
+			for i := 0; i < len(sae.DirectColumns); i++ {
+				if sae.DirectColumns[i] == simpleExpr.Column {
+					simpleExpr.ColIndex = sae.DirectIndices[i]
+					simpleExpr.IndexPrepped = true
+					break
+				}
+			}
+
+			// Fallback to map lookup if not found
+			if !simpleExpr.IndexPrepped {
+				if idx, ok := sae.ColumnMap[simpleExpr.Column]; ok {
+					simpleExpr.ColIndex = idx
+					simpleExpr.IndexPrepped = true
+				} else if idx, ok := sae.ColumnMap[strings.ToLower(simpleExpr.Column)]; ok {
+					simpleExpr.ColIndex = idx
+					simpleExpr.IndexPrepped = true
+				}
+			}
+		}
+
+		if simpleExpr.IndexPrepped {
+			return simpleExpr.Evaluate(row)
+		}
+	}
+
 	// Handle different expression types
 	switch expr := sae.Expr.(type) {
 	case *NullCheckExpression:
-		// Find the column index by name using the map
-		colIndex, ok := sae.ColumnMap[expr.GetColumnName()]
-		if !ok {
-			// Try lowercase version for case-insensitive match
-			colIndex, ok = sae.ColumnMap[strings.ToLower(expr.GetColumnName())]
-			if !ok {
-				// Column not found in schema, set to -1 as fallback
-				colIndex = -1
-			}
-		}
+		// Use the optimized direct lookup method for column index
+		colIndex := sae.FindColumnIndex(expr.GetColumnName())
 
 		// If column not found or out of range, default to treating as NULL
 		if colIndex == -1 || colIndex >= len(row) {
@@ -163,16 +255,8 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 		}
 
 	case *BetweenExpression:
-		// Find the column index by name using the map
-		colIndex, ok := sae.ColumnMap[expr.Column]
-		if !ok {
-			// Try lowercase version for case-insensitive match
-			colIndex, ok = sae.ColumnMap[strings.ToLower(expr.Column)]
-			if !ok {
-				// Column not found in schema, set to -1 as fallback
-				colIndex = -1
-			}
-		}
+		// Use the optimized direct lookup method
+		colIndex := sae.FindColumnIndex(expr.Column)
 
 		// Column not found in schema
 		if colIndex == -1 || colIndex >= len(row) {
@@ -188,7 +272,7 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 
 		// Try to use the appropriate type comparison based on column type
 		switch colValue.Type() {
-		case storage.TypeInteger:
+		case storage.INTEGER:
 			// For integers, convert and compare numerically
 			colInt, ok := colValue.AsInt64()
 			if !ok {
@@ -242,7 +326,7 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 			}
 			return colInt > lowerInt && colInt < upperInt, nil
 
-		case storage.TypeFloat:
+		case storage.FLOAT:
 			// For floats, convert and compare numerically
 			colFloat, ok := colValue.AsFloat64()
 			if !ok {
@@ -327,16 +411,8 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 			return colStrVal > lowerStr && colStrVal < upperStr, nil
 		}
 	case *InListExpression:
-		// Find the column index by name using the map
-		colIndex, ok := sae.ColumnMap[expr.Column]
-		if !ok {
-			// Try case-insensitive lookup
-			colIndex, ok = sae.ColumnMap[strings.ToLower(expr.Column)]
-			if !ok {
-				// Column not found in schema, set to -1 as fallback
-				colIndex = -1
-			}
-		}
+		// Use the optimized direct lookup method
+		colIndex := sae.FindColumnIndex(expr.Column)
 
 		// Column not found in schema
 		if colIndex == -1 || colIndex >= len(row) {
@@ -353,7 +429,7 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 
 		// Try to use the appropriate type comparison based on column type
 		switch colValue.Type() {
-		case storage.TypeInteger:
+		case storage.INTEGER:
 			// For integers, convert and compare numerically
 			colInt, ok := colValue.AsInt64()
 			if !ok {
@@ -390,7 +466,7 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 				}
 			}
 
-		case storage.TypeFloat:
+		case storage.FLOAT:
 			// For floats, convert and compare numerically
 			colFloat, ok := colValue.AsFloat64()
 			if !ok {
@@ -462,33 +538,62 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 			return true, nil
 		}
 		return false, nil
+	case *FastSimpleExpression:
+		expr.PrepareForSchema(sae.Schema)
+		return expr.Evaluate(row)
 	case *SimpleExpression:
-		// Find column index by name using the direct map lookup
-		// colIndex, ok := sae.ColumnMap[expr.Column]
-		colIndex := slices.Index(sae.ColumnNames, expr.Column)
+		// Ultra-fast path: try to use the cached column index if already prepped
+		if expr.IndexPrepped && expr.ColIndex >= 0 && expr.ColIndex < len(row) {
+			// Fast path - use the high-performance evaluation
+			return expr.Evaluate(row)
+		}
+
+		// Fast path preparation: use direct index lookup (no string comparisons)
+		if !expr.IndexPrepped {
+			// Use our new optimized column lookup
+			colIndex := sae.FindColumnIndex(expr.Column)
+
+			if colIndex >= 0 {
+				expr.ColIndex = colIndex
+				expr.IndexPrepped = true
+
+				if colIndex < len(row) {
+					// We found the column - use the fast path immediately
+					return expr.Evaluate(row)
+				}
+			}
+		}
+
+		// Fallback to slice index lookup (still faster than map for small columns)
+		colIndex := -1
+		if len(sae.DirectColumns) > 0 && sae.IndicesPrepped {
+			// Use direct arrays which are faster than slice.Index
+			for i, col := range sae.DirectColumns {
+				if col == expr.Column {
+					colIndex = sae.DirectIndices[i]
+					break
+				}
+			}
+		} else {
+			colIndex = slices.Index(sae.ColumnNames, expr.Column)
+		}
+
 		if colIndex == -1 {
-			// Try case-insensitive lookup
+			// Try case-insensitive lookup as last resort
 			var ok bool
 			colIndex, ok = sae.ColumnMap[strings.ToLower(expr.Column)]
 			if !ok {
-				// Column not found in schema, set to -1 as fallback
 				colIndex = -1
 			}
 		}
 
 		if colIndex >= 0 && colIndex < len(row) {
-			// We found the column - now evaluate the condition
-			colValue := row[colIndex]
-			if colValue == nil || colValue.IsNull() {
-				// Handle NULL values - properly check both nil and IsNull() interface
-				return evaluateNull(expr.Operator)
-			}
+			// Cache the column index for future evaluations
+			expr.ColIndex = colIndex
+			expr.IndexPrepped = true
 
-			result, err := evaluateComparison(colValue, expr.Operator, expr.Value)
-			if err != nil {
-				return false, err
-			}
-			return result, nil
+			// We found the column - now evaluate the condition using the optimized path
+			return expr.Evaluate(row)
 		} else {
 			return false, fmt.Errorf("column '%s' not found in row", expr.Column)
 		}
@@ -618,23 +723,15 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 		orCachePool.Put(cacheObj)
 		return false, nil
 
-	case *FunctionExpression:
-		// For FunctionExpression, simply delegate to the original implementation
+	case *EvalExpression:
+		// For EvalExpression, simply delegate to the original implementation
 		// This preserves existing behavior and works with tests that rely on specific
 		// row structure
 		return expr.Evaluate(row)
 
 	case *CastExpression:
-		// Find the column index by name using direct map lookup
-		colIndex, ok := sae.ColumnMap[expr.Column]
-		if !ok {
-			// Try case-insensitive lookup
-			colIndex, ok = sae.ColumnMap[strings.ToLower(expr.Column)]
-			if !ok {
-				// Column not found in schema, set to -1 as fallback
-				colIndex = -1
-			}
-		}
+		// Use the optimized direct lookup method for column index
+		colIndex := sae.FindColumnIndex(expr.Column)
 
 		// Column not found in schema
 		if colIndex == -1 || colIndex >= len(row) {
@@ -668,251 +765,6 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 	}
 }
 
-// evaluateNull handles comparisons against NULL values
-func evaluateNull(operator storage.Operator) (bool, error) {
-	switch operator {
-	case storage.ISNULL:
-		return true, nil
-	case storage.ISNOTNULL:
-		return false, nil
-	default:
-		// NULL comparisons with other operators return false
-		return false, nil
-	}
-}
-
-// evaluateComparison evaluates a comparison between a column value and expression value
-func evaluateComparison(colValue storage.ColumnValue, operator storage.Operator, value interface{}) (bool, error) {
-	// Switch on the column type
-	switch colValue.Type() {
-	case storage.TypeInteger: // TypeInteger and INTEGER are the same constant
-		v, ok := colValue.AsInt64()
-		if !ok {
-			return false, nil
-		}
-
-		// Convert value to int64 for comparison
-		var compareValue int64
-		switch val := value.(type) {
-		case int:
-			compareValue = int64(val)
-		case int64:
-			compareValue = val
-		case float64:
-			compareValue = int64(val)
-		default:
-			// Special handling for mvcc.IntegerValue and other custom types
-			if intVal, ok := value.(interface{ AsInt64() (int64, bool) }); ok {
-				if i64, ok := intVal.AsInt64(); ok {
-					compareValue = i64
-				} else {
-					return false, fmt.Errorf("failed to convert %T to int64", value)
-				}
-			} else {
-				return false, fmt.Errorf("cannot compare integer with %T", value)
-			}
-		}
-
-		// Apply the operator
-		switch operator {
-		case storage.EQ:
-			result := v == compareValue
-			return result, nil
-		case storage.NE:
-			result := v != compareValue
-			return result, nil
-		case storage.GT:
-			result := v > compareValue
-			return result, nil
-		case storage.GTE:
-			result := v >= compareValue
-			return result, nil
-		case storage.LT:
-			result := v < compareValue
-			return result, nil
-		case storage.LTE:
-			result := v <= compareValue
-			return result, nil
-		default:
-			return false, fmt.Errorf("unsupported operator for integer: %v", operator)
-		}
-
-	case storage.TypeFloat: // TypeFloat and FLOAT are the same constant
-		v, ok := colValue.AsFloat64()
-		if !ok {
-			return false, nil
-		}
-
-		// Convert value to float64 for comparison
-		var compareValue float64
-		switch val := value.(type) {
-		case int:
-			compareValue = float64(val)
-		case int64:
-			compareValue = float64(val)
-		case float64:
-			compareValue = val
-		default:
-			// Special handling for mvcc.FloatValue and other custom types
-			if floatVal, ok := value.(interface{ AsFloat64() (float64, bool) }); ok {
-				if f64, ok := floatVal.AsFloat64(); ok {
-					compareValue = f64
-				} else {
-					return false, fmt.Errorf("failed to convert %T to float64", value)
-				}
-			} else {
-				return false, fmt.Errorf("cannot compare float with %T", value)
-			}
-		}
-
-		// Apply the operator
-		switch operator {
-		case storage.EQ:
-			return v == compareValue, nil
-		case storage.NE:
-			return v != compareValue, nil
-		case storage.GT:
-			return v > compareValue, nil
-		case storage.GTE:
-			return v >= compareValue, nil
-		case storage.LT:
-			return v < compareValue, nil
-		case storage.LTE:
-			return v <= compareValue, nil
-		default:
-			return false, fmt.Errorf("unsupported operator for float: %v", operator)
-		}
-
-	case storage.TypeString: // TypeString and TEXT are the same constant
-		v, ok := colValue.AsString()
-		if !ok {
-			return false, nil
-		}
-
-		// Convert value to string for comparison
-		var compareValue string
-		switch val := value.(type) {
-		case string:
-			compareValue = val
-		default:
-			// Special handling for mvcc.StringValue and other custom types
-			if strVal, ok := value.(interface{ AsString() (string, bool) }); ok {
-				if str, ok := strVal.AsString(); ok {
-					compareValue = str
-				} else {
-					compareValue = fmt.Sprintf("%v", value)
-				}
-			} else {
-				compareValue = fmt.Sprintf("%v", val)
-			}
-		}
-
-		// Apply the operator
-		switch operator {
-		case storage.EQ:
-			return v == compareValue, nil
-		case storage.NE:
-			return v != compareValue, nil
-		case storage.GT:
-			return v > compareValue, nil
-		case storage.GTE:
-			return v >= compareValue, nil
-		case storage.LT:
-			return v < compareValue, nil
-		case storage.LTE:
-			return v <= compareValue, nil
-		case storage.LIKE:
-			// LIKE pattern matching would need more implementation
-			return false, fmt.Errorf("LIKE operator not implemented yet")
-		default:
-			return false, fmt.Errorf("unsupported operator for string: %v", operator)
-		}
-
-	case storage.TypeBoolean: // TypeBoolean and BOOLEAN are the same constant
-		v, ok := colValue.AsBoolean()
-		if !ok {
-			return false, nil
-		}
-
-		// Convert value to boolean for comparison
-		var compareValue bool
-		switch val := value.(type) {
-		case bool:
-			compareValue = val
-		case string:
-			compareValue = val == "true" || val == "1"
-		case int:
-			compareValue = val != 0
-		case int64:
-			compareValue = val != 0
-		default:
-			// Special handling for mvcc.BooleanValue and other custom types
-			if boolVal, ok := value.(interface{ AsBoolean() (bool, bool) }); ok {
-				if b, ok := boolVal.AsBoolean(); ok {
-					compareValue = b
-				} else {
-					return false, fmt.Errorf("failed to convert %T to boolean", value)
-				}
-			} else {
-				return false, fmt.Errorf("cannot compare boolean with %T", value)
-			}
-		}
-
-		// Apply the operator
-		switch operator {
-		case storage.EQ:
-			return v == compareValue, nil
-		case storage.NE:
-			return v != compareValue, nil
-		default:
-			return false, fmt.Errorf("unsupported operator for boolean: %v", operator)
-		}
-
-	case storage.TypeTimestamp:
-		// For timestamps, use a similar approach to date but with full precision
-		timestamp, ok := colValue.AsTimestamp()
-		if !ok {
-			return false, nil
-		}
-
-		// Convert value to time.Time for comparison
-		var compareTime time.Time
-		switch val := value.(type) {
-		case time.Time:
-			compareTime = val
-		case string:
-			var err error
-			compareTime, err = storage.ParseTimestamp(val)
-			if err != nil {
-				return false, fmt.Errorf("could not parse timestamp string: %v", err)
-			}
-		default:
-			return false, fmt.Errorf("cannot compare timestamp with %T", value)
-		}
-
-		// Apply the operator to the timestamps
-		switch operator {
-		case storage.EQ:
-			return timestamp.Equal(compareTime), nil
-		case storage.NE:
-			return !timestamp.Equal(compareTime), nil
-		case storage.GT:
-			return timestamp.After(compareTime), nil
-		case storage.GTE:
-			return timestamp.After(compareTime) || timestamp.Equal(compareTime), nil
-		case storage.LT:
-			return timestamp.Before(compareTime), nil
-		case storage.LTE:
-			return timestamp.Before(compareTime) || timestamp.Equal(compareTime), nil
-		default:
-			return false, fmt.Errorf("unsupported operator for timestamp: %v", operator)
-		}
-	}
-
-	// Default case - type not supported for comparison
-	return false, fmt.Errorf("unsupported column type for comparison: %v", colValue.Type())
-}
-
 // WithAliases implements the storage.Expression interface
 func (sae *SchemaAwareExpression) WithAliases(aliases map[string]string) storage.Expression {
 	// Apply aliases to the wrapped expression if it supports them
@@ -930,15 +782,20 @@ func (sae *SchemaAwareExpression) WithAliases(aliases map[string]string) storage
 
 	// Create a new SchemaAwareExpression with the aliased inner expression
 	result := &SchemaAwareExpression{
-		Expr:        newExpr,
-		Schema:      sae.Schema,
-		ColumnNames: make([]string, len(sae.ColumnNames)),
-		ColumnMap:   make(map[string]int, len(sae.ColumnMap)),
-		aliases:     aliases,
+		Expr:           newExpr,
+		Schema:         sae.Schema,
+		ColumnNames:    make([]string, len(sae.ColumnNames)),
+		ColumnMap:      make(map[string]int, len(sae.ColumnMap)),
+		DirectIndices:  make([]int, len(sae.ColumnNames)),
+		DirectColumns:  make([]string, len(sae.ColumnNames)),
+		IndicesPrepped: true,
+		aliases:        aliases,
 	}
 
-	// Copy the column names
+	// Copy the column names and direct indices
 	copy(result.ColumnNames, sae.ColumnNames)
+	copy(result.DirectIndices, sae.DirectIndices)
+	copy(result.DirectColumns, sae.DirectColumns)
 
 	// Copy the column mapping
 	for k, v := range sae.ColumnMap {
@@ -952,11 +809,14 @@ func (sae *SchemaAwareExpression) WithAliases(aliases map[string]string) storage
 func (sae *SchemaAwareExpression) WithSchema(columnMap map[string]int) storage.Expression {
 	// Create a new SchemaAwareExpression with updated column mapping
 	result := &SchemaAwareExpression{
-		Expr:        sae.Expr,
-		Schema:      sae.Schema,
-		ColumnNames: make([]string, len(sae.ColumnNames)),
-		ColumnMap:   make(map[string]int, len(columnMap)),
-		aliases:     sae.aliases,
+		Expr:           sae.Expr,
+		Schema:         sae.Schema,
+		ColumnNames:    make([]string, len(sae.ColumnNames)),
+		ColumnMap:      make(map[string]int, len(columnMap)),
+		DirectIndices:  make([]int, len(sae.ColumnNames)),
+		DirectColumns:  make([]string, len(sae.ColumnNames)),
+		aliases:        sae.aliases,
+		IndicesPrepped: false, // Need to rebuild indices based on new columnMap
 	}
 
 	// Copy the column names
@@ -965,6 +825,21 @@ func (sae *SchemaAwareExpression) WithSchema(columnMap map[string]int) storage.E
 	// Use the provided column mapping
 	for k, v := range columnMap {
 		result.ColumnMap[k] = v
+	}
+
+	// Prepare direct indices based on the new column mapping
+	if len(result.ColumnNames) > 0 {
+		for i, colName := range result.ColumnNames {
+			if idx, ok := columnMap[colName]; ok {
+				result.DirectIndices[i] = idx
+				result.DirectColumns[i] = colName
+			} else {
+				// Default to position-based index if not in map
+				result.DirectIndices[i] = i
+				result.DirectColumns[i] = colName
+			}
+		}
+		result.IndicesPrepped = true
 	}
 
 	return result

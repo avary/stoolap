@@ -229,7 +229,7 @@ func TestV3CRUDOperations(t *testing.T) {
 
 	// Create update expressions
 	// 3.1: Update Alice's age to 31 and balance to 1600.00
-	updateAlice := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	updateAlice := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		id, _ := row[0].AsInt64()
 		return id == 1, nil
 	})
@@ -259,7 +259,7 @@ func TestV3CRUDOperations(t *testing.T) {
 
 	t.Logf("Updating inactive users to be active and set balance to 1000.00...")
 	// 3.2: Update all inactive users to be active and set balance to 1000.00
-	updateInactive := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	updateInactive := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		active, _ := row[4].AsBoolean()
 		return !active, nil
 	})
@@ -435,7 +435,7 @@ func TestV3CRUDOperations(t *testing.T) {
 	t.Log("Testing DELETE operations...")
 
 	// 5.1: Delete a single row (David, ID = 4)
-	deleteDavid := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	deleteDavid := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		id, _ := row[0].AsInt64()
 		return id == 4, nil
 	})
@@ -449,7 +449,7 @@ func TestV3CRUDOperations(t *testing.T) {
 	}
 
 	// 5.2: Delete all rows with balance = 1000.00
-	deleteBalance1000 := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	deleteBalance1000 := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		balance, _ := row[3].AsFloat64()
 		return balance == 1000.00, nil
 	})

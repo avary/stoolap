@@ -169,7 +169,7 @@ func TestMVCCScannerFiltering(t *testing.T) {
 	})
 
 	// Create a filter expression for active=true
-	filter := expression.NewSimpleExpression(func(row storage.Row) (bool, error) {
+	filter := expression.NewEvalExpression(func(row storage.Row) (bool, error) {
 		active, ok := row[3].AsBoolean()
 		return ok && active, nil
 	})

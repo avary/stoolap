@@ -169,6 +169,3 @@ func (e *JSONPathExpression) WithAliases(aliases map[string]string) storage.Expr
 
 	return expr
 }
-
-// Ensure JSONPathExpression implements IndexableExpression
-var _ IndexableExpression = (*JSONPathExpression)(nil)

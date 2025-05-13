@@ -228,33 +228,6 @@ type Scanner interface {
 	Close() error
 }
 
-// FilterCapabilities describes what types of filters the storage engine can handle
-type FilterCapabilities struct {
-	// Whether the engine supports complex expressions (AND/OR combinations)
-	SupportsComplexExpressions bool
-
-	// Whether the engine supports function expressions (e.g., UPPER(col) = 'VALUE')
-	SupportsFunctionExpressions bool
-
-	// List of supported operators for simple conditions
-	SupportedOperators []Operator
-
-	// Whether the engine supports BETWEEN expressions
-	SupportsBetween bool
-
-	// Whether the engine supports IN expressions
-	SupportsIn bool
-
-	// Whether the engine supports JSON path expressions
-	SupportsJSONPath bool
-
-	// Whether the engine can optimize multi-column expressions
-	SupportsMultiColumnExpressions bool
-
-	// Whether the engine can handle IS NULL/IS NOT NULL expressions
-	SupportsNullChecks bool
-}
-
 // IndexType represents the type of index
 type IndexType string
 
@@ -365,8 +338,6 @@ type Transaction interface {
 	// SelectWithExpression executes a SELECT query with a complex expression filter
 	// This allows pushing complex expressions (including AND/OR combinations) down to the storage layer
 	SelectWithExpression(tableName string, columnsToFetch []string, expr Expression, aliases map[string]string, originalColumns ...string) (Result, error)
-	// GetFilterCapabilities returns information about what types of filters the storage engine can handle
-	GetFilterCapabilities() FilterCapabilities
 }
 
 // Engine represents the storage engine
