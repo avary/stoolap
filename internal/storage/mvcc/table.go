@@ -787,7 +787,29 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 		// Skip this step for large updates to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
 
-		var err error
+		// Create or reuse optimized batch evaluator if we have a filter
+		var batchEvaluator *expression.BatchExpressionEvaluator
+		if filterExpr != nil {
+			// First check if we already have a batch evaluator
+			if existingEval, ok := filterExpr.(*expression.BatchExpressionEvaluator); ok {
+				// Reuse the existing evaluator
+				batchEvaluator = existingEval
+			} else {
+				// Get schema for batch evaluator
+				schema, schemaErr := mt.versionStore.GetTableSchema()
+				if schemaErr == nil {
+					// Create a new batch evaluator for the expression
+					batchEvaluator = expression.NewBatchExpressionEvaluator(filterExpr, schema)
+				}
+			}
+		}
+
+		// Prepare a batch of rows for processing
+		const batchCapacity = 100
+		var batchRows []storage.Row
+		var batchRowIDs []int64
+
+		// Collect unprocessed rows first
 		allRows.ForEach(func(rowID int64, row storage.Row) bool {
 			// Skip already processed rows
 			if processedKeys.Has(rowID) {
@@ -799,25 +821,14 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 				return true
 			}
 
-			// Apply filter if specified
-			if !mt.matchesFilter(filterExpr, row) {
-				return true
+			// Add to batch
+			if batchRows == nil {
+				batchRows = make([]storage.Row, 0, batchCapacity)
+				batchRowIDs = make([]int64, 0, batchCapacity)
 			}
 
-			// Apply the setter function
-			updatedRow, uniqueCheck := setter(row)
-
-			// Check unique columnar index constraints
-			if uniqueCheck {
-				if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
-					return false
-				}
-			}
-
-			// Store the updated row
-			mt.txnVersions.Put(rowID, updatedRow, false)
-
-			updateCount++
+			batchRows = append(batchRows, row)
+			batchRowIDs = append(batchRowIDs, rowID)
 
 			return true
 		})
@@ -825,8 +836,46 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 		// Return the map to the pool
 		PutRowMap(allRows)
 
-		if err != nil {
-			return 0, err
+		// Process batch of rows
+		if len(batchRows) > 0 {
+			var matches []bool
+			if batchEvaluator != nil {
+				// Use batch evaluation
+				matches = batchEvaluator.EvaluateBatch(batchRows)
+			} else {
+				// No filter, all rows match
+				matches = make([]bool, len(batchRows))
+				for i := range matches {
+					matches[i] = true
+				}
+			}
+
+			// Process matching rows
+			var err error
+			for i, match := range matches {
+				if match {
+					rowID := batchRowIDs[i]
+					row := batchRows[i]
+
+					// Apply the setter function
+					updatedRow, uniqueCheck := setter(row)
+
+					// Check unique columnar index constraints
+					if uniqueCheck {
+						if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+							break
+						}
+					}
+
+					// Store the updated row
+					mt.txnVersions.Put(rowID, updatedRow, false)
+					updateCount++
+				}
+			}
+
+			if err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -865,6 +914,20 @@ func (mt *MVCCTable) matchesFilter(expr storage.Expression, row storage.Row) boo
 		return true // No filter, so everything matches
 	}
 
+	// Try to use BatchExpressionEvaluator for faster evaluation
+	// This check preserves the same behavior for other callers but gives us a fast path
+	if batchExpr, ok := expr.(*expression.BatchExpressionEvaluator); ok {
+		return batchExpr.EvaluateFast(row)
+	} else if _, ok := expr.(*expression.SchemaAwareExpression); ok {
+		// For SchemaAwareExpression, we can create a BatchExpressionEvaluator
+		schema, err := mt.versionStore.GetTableSchema()
+		if err == nil {
+			batchEval := expression.NewBatchExpressionEvaluator(expr, schema)
+			return batchEval.EvaluateFast(row)
+		}
+	}
+
+	// Fall back to standard evaluation
 	matches, err := expr.Evaluate(row)
 	if err != nil {
 		return false // Error in evaluation, consider as non-match
@@ -890,9 +953,92 @@ func (mt *MVCCTable) processGlobalVersions(
 	defer ReturnVisibleVersionMap(globalVersions)
 
 	processCount := 0
-
 	var err error
-	// Process matching versions
+
+	// Create optimized batch evaluator if we have a filter
+	var batchEvaluator *expression.BatchExpressionEvaluator
+	if filter != nil {
+		// Get schema for batch evaluator
+		schema, schemaErr := mt.versionStore.GetTableSchema()
+		if schemaErr == nil {
+			// Check if we already have a batch evaluator
+			if existingEval, ok := filter.(*expression.BatchExpressionEvaluator); ok {
+				// Reuse the existing evaluator
+				batchEvaluator = existingEval
+			} else {
+				// Create a new batch evaluator for the expression
+				batchEvaluator = expression.NewBatchExpressionEvaluator(filter, schema)
+			}
+		}
+	}
+
+	// Prepare a batch of rows for processing
+	// This helps optimize memory locality for evaluation
+	const batchCapacity = 1000
+	batchRows := make([]storage.Row, 0, batchCapacity)
+	batchRowIDs := make([]int64, 0, batchCapacity)
+
+	// Helper function to process a batch of rows
+	processBatch := func() error {
+		if len(batchRows) == 0 {
+			return nil
+		}
+
+		if batchEvaluator != nil {
+			// Use batch evaluation for all rows
+			matches := batchEvaluator.EvaluateBatch(batchRows)
+
+			// Process matching rows
+			for i, match := range matches {
+				if match {
+					rowID := batchRowIDs[i]
+					row := batchRows[i]
+
+					// Mark as processed
+					processedKeys.Put(rowID, struct{}{})
+
+					// Process this row
+					if err = processor(rowID, row); err != nil {
+						return err
+					}
+
+					processCount++
+
+					// Check batch size limit
+					if batchSize > 0 && processCount >= batchSize {
+						return nil
+					}
+				}
+			}
+		} else {
+			// No filter, process all rows
+			for i, row := range batchRows {
+				rowID := batchRowIDs[i]
+
+				// Mark as processed
+				processedKeys.Put(rowID, struct{}{})
+
+				// Process this row
+				if err = processor(rowID, row); err != nil {
+					return err
+				}
+
+				processCount++
+
+				// Check batch size limit
+				if batchSize > 0 && processCount >= batchSize {
+					return nil
+				}
+			}
+		}
+
+		// Clear the batch for reuse
+		batchRows = batchRows[:0]
+		batchRowIDs = batchRowIDs[:0]
+		return nil
+	}
+
+	// Collect rows into batches for efficient evaluation
 	globalVersions.ForEach(func(rowID int64, version *RowVersion) bool {
 		// Skip if already processed
 		if processedKeys.Has(rowID) {
@@ -904,29 +1050,25 @@ func (mt *MVCCTable) processGlobalVersions(
 			return true
 		}
 
-		// Apply filter
-		if !mt.matchesFilter(filter, version.Data) {
-			return true
-		}
+		// Add to batch for processing
+		batchRows = append(batchRows, version.Data)
+		batchRowIDs = append(batchRowIDs, rowID)
 
-		// Mark as processed
-		processedKeys.Put(rowID, struct{}{})
-
-		// Process this row
-		err = processor(rowID, version.Data)
-		if err != nil {
-			return false
-		}
-
-		processCount++
-
-		// Check batch size limit
-		if batchSize > 0 && processCount >= batchSize {
-			return true
+		// Process batch when it reaches capacity
+		if len(batchRows) >= batchCapacity {
+			err = processBatch()
+			if err != nil || (batchSize > 0 && processCount >= batchSize) {
+				return false
+			}
 		}
 
 		return true
 	})
+
+	// Process any remaining rows in the last batch
+	if err == nil && len(batchRows) > 0 {
+		err = processBatch()
+	}
 
 	if err != nil {
 		return 0, err
@@ -1149,6 +1291,30 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 	if deleteCount < 100 {
 		// Skip this step for large deletes to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
+
+		// Create or reuse optimized batch evaluator if we have a filter
+		var batchEvaluator *expression.BatchExpressionEvaluator
+		if filterExpr != nil {
+			// First check if we already have a batch evaluator
+			if existingEval, ok := filterExpr.(*expression.BatchExpressionEvaluator); ok {
+				// Reuse the existing evaluator
+				batchEvaluator = existingEval
+			} else {
+				// Get schema for batch evaluator
+				schema, schemaErr := mt.versionStore.GetTableSchema()
+				if schemaErr == nil {
+					// Create a new batch evaluator for the expression
+					batchEvaluator = expression.NewBatchExpressionEvaluator(filterExpr, schema)
+				}
+			}
+		}
+
+		// Prepare a batch of rows for processing
+		const batchCapacity = 100
+		var batchRows []storage.Row
+		var batchRowIDs []int64
+
+		// Collect unprocessed rows first
 		allRows.ForEach(func(rowID int64, row storage.Row) bool {
 			// Skip already processed rows
 			if processedKeys.Has(rowID) {
@@ -1160,20 +1326,47 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 				return true
 			}
 
-			// Apply filter if specified
-			if !mt.matchesFilter(filterExpr, row) {
-				return true
+			// Add to batch
+			if batchRows == nil {
+				batchRows = make([]storage.Row, 0, batchCapacity)
+				batchRowIDs = make([]int64, 0, batchCapacity)
 			}
 
-			// Mark as deleted
-			mt.txnVersions.Put(rowID, row, true)
-			deleteCount++
+			batchRows = append(batchRows, row)
+			batchRowIDs = append(batchRowIDs, rowID)
 
 			return true
 		})
 
 		// Return the map to the pool
 		PutRowMap(allRows)
+
+		// Process batch of rows
+		if len(batchRows) > 0 {
+			var matches []bool
+			if batchEvaluator != nil {
+				// Use batch evaluation
+				matches = batchEvaluator.EvaluateBatch(batchRows)
+			} else {
+				// No filter, all rows match
+				matches = make([]bool, len(batchRows))
+				for i := range matches {
+					matches[i] = true
+				}
+			}
+
+			// Process matching rows
+			for i, match := range matches {
+				if match {
+					rowID := batchRowIDs[i]
+					row := batchRows[i]
+
+					// Mark as deleted
+					mt.txnVersions.Put(rowID, row, true)
+					deleteCount++
+				}
+			}
+		}
 	}
 
 	return deleteCount, nil

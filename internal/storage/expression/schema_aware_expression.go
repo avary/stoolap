@@ -636,6 +636,11 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 				// Only create new schema-aware wrappers if needed
 				if saExpr, ok := childExpr.(*SchemaAwareExpression); ok {
 					cacheObj.children = append(cacheObj.children, saExpr)
+				} else if simpleExpr, ok := childExpr.(*SimpleExpression); ok {
+					if !simpleExpr.IndexPrepped {
+						simpleExpr.PrepareForSchema(sae.Schema)
+					}
+					cacheObj.children = append(cacheObj.children, simpleExpr)
 				} else {
 					cacheObj.children = append(cacheObj.children, NewSchemaAwareExpression(childExpr, sae.Schema))
 				}
@@ -699,6 +704,11 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 				// Only create new schema-aware wrappers if needed
 				if saExpr, ok := childExpr.(*SchemaAwareExpression); ok {
 					cacheObj.children = append(cacheObj.children, saExpr)
+				} else if simpleExpr, ok := childExpr.(*SimpleExpression); ok {
+					if !simpleExpr.IndexPrepped {
+						simpleExpr.PrepareForSchema(sae.Schema)
+					}
+					cacheObj.children = append(cacheObj.children, simpleExpr)
 				} else {
 					cacheObj.children = append(cacheObj.children, NewSchemaAwareExpression(childExpr, sae.Schema))
 				}
