@@ -8,27 +8,27 @@ import (
 func BenchmarkMapTypes(b *testing.B) {
 	// Key distribution types
 	const (
-		Sequential    = "sequential"
-		Random        = "random"
-		Clustered     = "clustered"
-		FewHotKeys    = "few_hot_keys"
-		ManyHotKeys   = "many_hot_keys"
+		Sequential  = "sequential"
+		Random      = "random"
+		Clustered   = "clustered"
+		FewHotKeys  = "few_hot_keys"
+		ManyHotKeys = "many_hot_keys"
 	)
 
 	// Operation mix types
 	const (
-		ReadHeavy    = "read_heavy"    // 80% read, 15% write, 5% delete
-		WriteHeavy   = "write_heavy"   // 20% read, 70% write, 10% delete
-		Balanced     = "balanced"      // 50% read, 45% write, 5% delete
-		ReadOnly     = "read_only"     // 100% read
-		WriteOnly    = "write_only"    // 100% write
+		ReadHeavy  = "read_heavy"  // 80% read, 15% write, 5% delete
+		WriteHeavy = "write_heavy" // 20% read, 70% write, 10% delete
+		Balanced   = "balanced"    // 50% read, 45% write, 5% delete
+		ReadOnly   = "read_only"   // 100% read
+		WriteOnly  = "write_only"  // 100% write
 	)
 
 	// Map sizes
 	sizes := []int{
-		1_000,      // Small
-		100_000,    // Medium
-		1_000_000,  // Large
+		1_000,     // Small
+		100_000,   // Medium
+		1_000_000, // Large
 	}
 
 	// Segment powers to test
@@ -37,7 +37,7 @@ func BenchmarkMapTypes(b *testing.B) {
 	// Prepare keys for each distribution
 	prepareKeys := func(size int, distribution string) []int64 {
 		keys := make([]int64, size)
-		
+
 		switch distribution {
 		case Sequential:
 			for i := 0; i < size; i++ {
@@ -56,7 +56,7 @@ func BenchmarkMapTypes(b *testing.B) {
 			cluster := int64(0)
 			for i := 0; i < size; i++ {
 				if i%100 == 0 {
-					cluster = int64(i / 100) * 1000
+					cluster = int64(i/100) * 1000
 				}
 				keys[i] = cluster + int64(i%100)
 			}
@@ -83,7 +83,7 @@ func BenchmarkMapTypes(b *testing.B) {
 				}
 			}
 		}
-		
+
 		return keys
 	}
 
@@ -94,15 +94,15 @@ func BenchmarkMapTypes(b *testing.B) {
 	for _, size := range sizes {
 		for _, distribution := range []string{Sequential, Random, Clustered, FewHotKeys, ManyHotKeys} {
 			keys := prepareKeys(size, distribution)
-			
+
 			for _, opMix := range []string{ReadHeavy, WriteHeavy, Balanced, ReadOnly, WriteOnly} {
 				for _, concurrency := range concurrencies {
 					benchName := func(mapType string) string {
-						return mapType + "/" + 
-							   distribution + "/" + 
-							   opMix + "/" +
-							   "size_" + intToStr(size) + "/" +
-							   "conc_" + intToStr(concurrency)
+						return mapType + "/" +
+							distribution + "/" +
+							opMix + "/" +
+							"size_" + intToStr(size) + "/" +
+							"conc_" + intToStr(concurrency)
 					}
 
 					// Skip single-threaded benchmarks for large maps to save time
@@ -134,18 +134,18 @@ func BenchmarkMapTypes(b *testing.B) {
 					if concurrency == 1 {
 						b.Run(benchName("Int64Map"), func(b *testing.B) {
 							m := NewInt64Map[int](size)
-							
+
 							// Pre-populate with half the keys
 							for i := 0; i < size/2; i++ {
 								m.Put(keys[i], i)
 							}
-							
+
 							b.ResetTimer()
-							
+
 							for i := 0; i < b.N; i++ {
 								keyIdx := i % size
 								opChoice := i % 100
-								
+
 								if opChoice < readProb {
 									// Read operation
 									_, _ = m.Get(keys[keyIdx])
@@ -167,32 +167,32 @@ func BenchmarkMapTypes(b *testing.B) {
 							sizePower++
 						}
 						m := NewSyncInt64Map[int](sizePower)
-						
+
 						// Pre-populate with half the keys
 						for i := 0; i < size/2; i++ {
 							m.Set(keys[i], i)
 						}
-						
+
 						b.ResetTimer()
-						
+
 						var wg sync.WaitGroup
 						opsPerGoroutine := b.N / concurrency
-						
+
 						for g := 0; g < concurrency; g++ {
 							wg.Add(1)
 							go func(goroutineID int) {
 								defer wg.Done()
-								
+
 								startIdx := goroutineID * opsPerGoroutine
 								endIdx := startIdx + opsPerGoroutine
 								if goroutineID == concurrency-1 {
 									endIdx = b.N // Last goroutine takes any remainder
 								}
-								
+
 								for i := startIdx; i < endIdx; i++ {
 									keyIdx := i % size
 									opChoice := i % 100
-									
+
 									if opChoice < readProb {
 										// Read operation
 										_, _ = m.Get(keys[keyIdx])
@@ -206,42 +206,42 @@ func BenchmarkMapTypes(b *testing.B) {
 								}
 							}(g)
 						}
-						
+
 						wg.Wait()
 					})
 
 					// Benchmark for SegmentInt64Map with different segment powers
 					for _, segPower := range segmentPowers {
 						segName := benchName("SegmentInt64Map_" + intToStr(int(1<<segPower)))
-						
+
 						b.Run(segName, func(b *testing.B) {
 							m := NewSegmentInt64Map[int](segPower, size)
-							
+
 							// Pre-populate with half the keys
 							for i := 0; i < size/2; i++ {
 								m.Set(keys[i], i)
 							}
-							
+
 							b.ResetTimer()
-							
+
 							var wg sync.WaitGroup
 							opsPerGoroutine := b.N / concurrency
-							
+
 							for g := 0; g < concurrency; g++ {
 								wg.Add(1)
 								go func(goroutineID int) {
 									defer wg.Done()
-									
+
 									startIdx := goroutineID * opsPerGoroutine
 									endIdx := startIdx + opsPerGoroutine
 									if goroutineID == concurrency-1 {
 										endIdx = b.N // Last goroutine takes any remainder
 									}
-									
+
 									for i := startIdx; i < endIdx; i++ {
 										keyIdx := i % size
 										opChoice := i % 100
-										
+
 										if opChoice < readProb {
 											// Read operation
 											_, _ = m.Get(keys[keyIdx])
@@ -255,7 +255,7 @@ func BenchmarkMapTypes(b *testing.B) {
 									}
 								}(g)
 							}
-							
+
 							wg.Wait()
 						})
 					}
@@ -276,16 +276,16 @@ func intToStr(n int) string {
 		if n == 0 {
 			return "0"
 		}
-		
+
 		var buf [10]byte
 		pos := len(buf)
-		
+
 		for n > 0 {
 			pos--
 			buf[pos] = byte('0' + n%10)
 			n /= 10
 		}
-		
+
 		return string(buf[pos:])
 	}
 }

@@ -17,11 +17,11 @@ type compareFunc func(a, b storage.ColumnValue) int
 
 // btreeNode represents a node in the B-tree
 type btreeNode struct {
-	keys     []storage.ColumnValue          // Keys stored in this node
-	rowIDs   []*fastmap.Int64Map[struct{}]  // Row IDs for each key using fast map for O(1) operations
-	children []*btreeNode                   // Child nodes (nil for leaf nodes)
-	isLeaf   bool                           // Whether this is a leaf node
-	compare  compareFunc                    // Function for comparing keys
+	keys     []storage.ColumnValue         // Keys stored in this node
+	rowIDs   []*fastmap.Int64Map[struct{}] // Row IDs for each key using fast map for O(1) operations
+	children []*btreeNode                  // Child nodes (nil for leaf nodes)
+	isLeaf   bool                          // Whether this is a leaf node
+	compare  compareFunc                   // Function for comparing keys
 }
 
 // Find returns the index where the key should be inserted
@@ -478,7 +478,7 @@ func NewColumnarIndex(name, tableName, columnName string,
 		columnName:   columnName,
 		columnID:     columnID,
 		dataType:     dataType,
-		valueTree:    newBTree(compareColumnValues), // Use single tree with ColumnValue comparator
+		valueTree:    newBTree(compareColumnValues),     // Use single tree with ColumnValue comparator
 		nullRows:     fastmap.NewInt64Map[struct{}](16), // Start with small capacity for NULL rows
 		mutex:        sync.RWMutex{},
 		tableName:    tableName,
@@ -577,6 +577,56 @@ func (idx *ColumnarIndex) Add(values []storage.ColumnValue, rowID int64, refID i
 
 	// If we get here, the value is unique, so insert it
 	idx.valueTree.Insert(value, rowID)
+	return nil
+}
+
+// AddBatch adds multiple entries to the index in a single batch operation
+// This is more efficient than multiple individual Add operations
+func (idx *ColumnarIndex) AddBatch(entries map[int64][]storage.ColumnValue) error {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	// For unique indexes, we need to check constraints first
+	if idx.isUnique {
+		// First collect all non-NULL values to check
+		for _, values := range entries {
+			// Skip invalid entries
+			if len(values) != 1 {
+				return fmt.Errorf("expected 1 value for column %s, got %d values", idx.columnName, len(values))
+			}
+
+			value := values[0]
+
+			// Skip NULL values - they're always allowed
+			if value == nil || value.IsNull() {
+				continue
+			}
+
+			// Check uniqueness
+			count := idx.valueTree.ValueCount(value)
+			if count > 0 {
+				return storage.NewUniqueConstraintError(idx.name, idx.columnName, value)
+			}
+		}
+	}
+
+	// Now actually add all the entries
+	for rowID, values := range entries {
+		if len(values) != 1 {
+			continue // Skip invalid entries (already checked for unique indexes)
+		}
+
+		value := values[0]
+
+		// Handle NULL values
+		if value == nil || value.IsNull() {
+			idx.nullRows.Put(rowID, struct{}{})
+		} else {
+			// Add to B-tree
+			idx.valueTree.Insert(value, rowID)
+		}
+	}
+
 	return nil
 }
 
@@ -736,6 +786,33 @@ func (idx *ColumnarIndex) Remove(values []storage.ColumnValue, rowID int64, refI
 
 	// Remove directly from the valueTree - now O(1) with our optimized B-tree
 	idx.valueTree.Remove(value, rowID)
+
+	return nil
+}
+
+// RemoveBatch removes multiple entries from the index in a single batch operation
+// This is more efficient than multiple individual Remove operations
+func (idx *ColumnarIndex) RemoveBatch(entries map[int64][]storage.ColumnValue) error {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	// Process all entries at once
+	for rowID, values := range entries {
+		// Skip invalid entries
+		if len(values) != 1 {
+			return fmt.Errorf("expected 1 value for column %s, got %d values", idx.columnName, len(values))
+		}
+
+		value := values[0]
+
+		// Handle NULL values
+		if value == nil || value.IsNull() {
+			idx.nullRows.Del(rowID)
+		} else {
+			// Remove from B-tree
+			idx.valueTree.Remove(value, rowID)
+		}
+	}
 
 	return nil
 }

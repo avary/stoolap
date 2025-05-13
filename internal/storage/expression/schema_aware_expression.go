@@ -2,6 +2,7 @@ package expression
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -463,9 +464,11 @@ func (sae *SchemaAwareExpression) Evaluate(row storage.Row) (bool, error) {
 		return false, nil
 	case *SimpleExpression:
 		// Find column index by name using the direct map lookup
-		colIndex, ok := sae.ColumnMap[expr.Column]
-		if !ok {
+		// colIndex, ok := sae.ColumnMap[expr.Column]
+		colIndex := slices.Index(sae.ColumnNames, expr.Column)
+		if colIndex == -1 {
 			// Try case-insensitive lookup
+			var ok bool
 			colIndex, ok = sae.ColumnMap[strings.ToLower(expr.Column)]
 			if !ok {
 				// Column not found in schema, set to -1 as fallback

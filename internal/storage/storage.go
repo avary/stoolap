@@ -287,8 +287,16 @@ type Index interface {
 	// Add adds a values to the index with the given row IDs
 	Add(values []ColumnValue, rowID int64, refID int64) error
 
+	// AddBatch adds multiple entries to the index in a single batch operation
+	// The map key is the rowID and the value is the column values
+	AddBatch(entries map[int64][]ColumnValue) error
+
 	// Remove removes a values from the index
 	Remove(values []ColumnValue, rowID int64, refID int64) error
+
+	// RemoveBatch removes multiple entries from the index in a single batch operation
+	// The map key is the rowID and the value is the column values
+	RemoveBatch(entries map[int64][]ColumnValue) error
 
 	// ColumnIDs returns the column IDs for this index
 	ColumnIDs() []int // Returns the column ID for this index

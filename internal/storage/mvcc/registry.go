@@ -71,9 +71,12 @@ func (r *TransactionRegistry) BeginTransaction() (txnID int64, beginTS int64) {
 func (r *TransactionRegistry) CommitTransaction(txnID int64) (commitTS int64) {
 	commitTS = time.Now().UnixNano()
 
-	// Lock-free operations with SegmentInt64Map
-	r.committedTransactions.Set(txnID, commitTS)
+	// First remove from active transactions to avoid deadlock
+	// when a cleanup operation is running concurrently
 	r.activeTransactions.Del(txnID)
+
+	// Then add to committed transactions
+	r.committedTransactions.Set(txnID, commitTS)
 
 	return commitTS
 }
@@ -217,18 +220,28 @@ func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
 	// that might still be visible to active transactions
 	if r.isolationLevel == SnapshotIsolation {
 		activeSet = make(map[int64]struct{})
-		// Get all active transactions using ForEach
+
+		// Collect all active transaction IDs into our map
+		// This is done in a separate loop to avoid nested locks
+		txnIDs := make([]int64, 0, 100)
 		r.activeTransactions.ForEach(func(txnID, beginTS int64) bool {
-			activeSet[txnID] = struct{}{}
+			txnIDs = append(txnIDs, txnID)
 			return true
 		})
+
+		// Now populate our set without holding any locks
+		for _, txnID := range txnIDs {
+			activeSet[txnID] = struct{}{}
+		}
 	}
 
 	// Track how many transactions we remove
 	removed := 0
 
-	// Clean up old committed transactions using ForEach
-	// This is safe because SegmentInt64Map is already thread-safe
+	// First collect transactions to remove to avoid modifying during iteration
+	txnsToRemove := make([]int64, 0, 100)
+
+	// Find transactions to remove
 	r.committedTransactions.ForEach(func(txnID, commitTS int64) bool {
 		// Skip transactions that are still active
 		if r.isolationLevel == SnapshotIsolation {
@@ -237,13 +250,18 @@ func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
 			}
 		}
 
-		// Only remove transactions older than the cutoff
+		// Only mark transactions older than the cutoff
 		if commitTS < cutoffTime {
-			r.committedTransactions.Del(txnID)
-			removed++
+			txnsToRemove = append(txnsToRemove, txnID)
 		}
 		return true
 	})
+
+	// Now perform the actual deletions outside the iteration loop
+	for _, txnID := range txnsToRemove {
+		r.committedTransactions.Del(txnID)
+		removed++
+	}
 
 	return removed
 }

@@ -844,6 +844,11 @@ func BenchmarkMVCCSelect(b *testing.B) {
 		b.Fatalf("Failed to create index: %v", err)
 	}
 
+	_, err = db.Exec(fmt.Sprintf("CREATE COLUMNAR INDEX ON %s (value)", tableName))
+	if err != nil {
+		b.Fatalf("Failed to create index: %v", err)
+	}
+
 	b.Run("FilteredWithColumnarIndex", func(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()

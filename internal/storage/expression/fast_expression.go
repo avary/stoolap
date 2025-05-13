@@ -88,17 +88,6 @@ func (e *FastSimpleExpression) Evaluate(row storage.Row) (bool, error) {
 
 	// Use cached column index if available
 	colIdx := e.ColIndex
-	if !e.IndexPrepped || colIdx < 0 || colIdx >= len(row) {
-		// Fallback to string lookup if needed
-		for i, col := range row {
-			if col != nil {
-				if colVal, ok := col.(interface{ Name() string }); ok && colVal.Name() == e.Column {
-					colIdx = i
-					break
-				}
-			}
-		}
-	}
 
 	// Return false if column not found
 	if colIdx < 0 || colIdx >= len(row) {

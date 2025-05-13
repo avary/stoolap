@@ -59,7 +59,7 @@ func TestSegmentInt64MapBasicOperations(t *testing.T) {
 	if val, ok := m.PutIfNotExists(1, "one again"); !ok && val != "ONE" {
 		t.Errorf("Expected PutIfNotExists to not insert for existing key 1")
 	}
-	
+
 	if val, ok := m.PutIfNotExists(4, "four"); !ok || val != "four" {
 		t.Errorf("Expected PutIfNotExists to insert for new key 4")
 	}
@@ -91,32 +91,32 @@ func TestSegmentInt64MapBasicOperations(t *testing.T) {
 	// Test iteration
 	keys := make(map[int64]bool)
 	values := make(map[string]bool)
-	
+
 	m.ForEach(func(key int64, value string) bool {
 		keys[key] = true
 		values[value] = true
 		return true
 	})
-	
+
 	// Check keys and values
 	for _, k := range []int64{2, 3, 4} {
 		if !keys[k] {
 			t.Errorf("Expected key %d in iteration", k)
 		}
 	}
-	
+
 	for _, v := range []string{"two", "three", "four"} {
 		if !values[v] {
 			t.Errorf("Expected value %s in iteration", v)
 		}
 	}
-	
+
 	// Test Clear
 	m.Clear()
 	if m.Len() != 0 {
 		t.Errorf("Expected Len() = 0 after Clear(), got %d", m.Len())
 	}
-	
+
 	if m.Has(2) || m.Has(3) || m.Has(4) {
 		t.Errorf("Expected all keys to be gone after Clear()")
 	}
@@ -129,32 +129,32 @@ func TestSegmentInt64MapConcurrency(t *testing.T) {
 	if numCPU > 8 {
 		segPower = 6 // 64 segments
 	}
-	
+
 	m := NewSegmentInt64Map[int](segPower, 10000)
 	const numOps = 100000
 	const numGoroutines = 16
-	
+
 	var wg sync.WaitGroup
 	opsPerGoroutine := numOps / numGoroutines
-	
+
 	// Counter for successful operations
 	var setCount, getCount, delCount atomic.Int64
-	
+
 	// Run operations concurrently
 	for g := 0; g < numGoroutines; g++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			
+
 			// Each goroutine works on a range of keys with some overlap
 			keyOffset := id * (opsPerGoroutine / 2)
-			
+
 			for i := 0; i < opsPerGoroutine; i++ {
 				key := int64(keyOffset + (i % (opsPerGoroutine / 2)))
-				
+
 				// Mix of operations
 				op := i % 10
-				
+
 				switch {
 				case op < 5: // 50% sets
 					m.Set(key, id*1000+i)
@@ -171,19 +171,19 @@ func TestSegmentInt64MapConcurrency(t *testing.T) {
 			}
 		}(g)
 	}
-	
+
 	wg.Wait()
-	
+
 	// Verify map state
-	t.Logf("Concurrent operations completed: set=%d, successful get=%d, successful delete=%d", 
+	t.Logf("Concurrent operations completed: set=%d, successful get=%d, successful delete=%d",
 		setCount.Load(), getCount.Load(), delCount.Load())
 	t.Logf("Final map size: %d", m.Len())
-	
+
 	// Basic check that numbers are reasonable
 	if m.Len() == 0 {
 		t.Errorf("Expected non-empty map after operations")
 	}
-	
+
 	if setCount.Load() == 0 || getCount.Load() == 0 || delCount.Load() == 0 {
 		t.Errorf("Expected non-zero counts for all operations")
 	}
@@ -191,29 +191,29 @@ func TestSegmentInt64MapConcurrency(t *testing.T) {
 
 func TestSegmentInt64MapConcurrentIteration(t *testing.T) {
 	m := NewSegmentInt64Map[int](4, 1000) // 16 segments
-	
+
 	// Pre-populate map
 	for i := 0; i < 1000; i++ {
 		m.Set(int64(i), i)
 	}
-	
+
 	// Test we can iterate while other operations are happening
 	var wg sync.WaitGroup
-	
+
 	// Start modifiers
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			
+
 			for j := 0; j < 1000; j++ {
 				key := int64(j)
-				
+
 				// Mix of operations
 				switch j % 3 {
 				case 0:
 					m.Set(key, j*10)
-				case 1: 
+				case 1:
 					_, _ = m.Get(key)
 				case 2:
 					if j%10 == 0 { // Delete some keys
@@ -223,13 +223,13 @@ func TestSegmentInt64MapConcurrentIteration(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	// Start iterators
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			
+
 			// Iterate multiple times while modifications happen
 			for iter := 0; iter < 5; iter++ {
 				count := 0
@@ -237,7 +237,7 @@ func TestSegmentInt64MapConcurrentIteration(t *testing.T) {
 					count++
 					return true
 				})
-				
+
 				// Don't assert exact count since it's changing
 				if count == 0 {
 					t.Errorf("Iterator found no entries")
@@ -245,6 +245,6 @@ func TestSegmentInt64MapConcurrentIteration(t *testing.T) {
 			}
 		}()
 	}
-	
+
 	wg.Wait()
 }

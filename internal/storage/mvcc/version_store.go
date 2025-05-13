@@ -1368,9 +1368,17 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 		return
 	}
 
+	// Group indexes by index type to use batch operations efficiently
+	indexBatchEntries := make(map[storage.Index]map[int64][]storage.ColumnValue)
+
 	// If the row is deleted, remove from all indexes
 	if version.IsDeleted {
 		for _, index := range vs.indexes {
+			// Initialize batch map for this index
+			if _, exists := indexBatchEntries[index]; !exists {
+				indexBatchEntries[index] = make(map[int64][]storage.ColumnValue)
+			}
+
 			// Get the column IDs for this index
 			columnIDs := index.ColumnIDs()
 
@@ -1379,10 +1387,10 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 				columnID := columnIDs[0]
 				// If the column exists in the row, remove its old value
 				if columnID < len(version.Data) {
-					index.Remove([]storage.ColumnValue{version.Data[columnID]}, rowID, 0)
+					indexBatchEntries[index][rowID] = []storage.ColumnValue{version.Data[columnID]}
 				} else {
 					// Column doesn't exist, treat as NULL
-					index.Remove([]storage.ColumnValue{nil}, rowID, 0)
+					indexBatchEntries[index][rowID] = []storage.ColumnValue{nil}
 				}
 			} else if len(columnIDs) > 1 {
 				// For multi-column indexes
@@ -1394,14 +1402,24 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 						values[i] = nil
 					}
 				}
-				index.Remove(values, rowID, 0)
+				indexBatchEntries[index][rowID] = values
 			}
+		}
+
+		// Process all the remove operations at once using RemoveBatch
+		for index, entries := range indexBatchEntries {
+			index.RemoveBatch(entries)
 		}
 		return
 	}
 
 	// For non-deleted rows, update all relevant indexes
 	for _, index := range vs.indexes {
+		// Initialize batch map for this index
+		if _, exists := indexBatchEntries[index]; !exists {
+			indexBatchEntries[index] = make(map[int64][]storage.ColumnValue)
+		}
+
 		// Get the column IDs for this index
 		columnIDs := index.ColumnIDs()
 
@@ -1410,10 +1428,10 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 			columnID := columnIDs[0]
 			// If the column exists in the row, add its new value
 			if columnID < len(version.Data) {
-				index.Add([]storage.ColumnValue{version.Data[columnID]}, rowID, 0)
+				indexBatchEntries[index][rowID] = []storage.ColumnValue{version.Data[columnID]}
 			} else {
 				// Column doesn't exist, treat as NULL
-				index.Add([]storage.ColumnValue{nil}, rowID, 0)
+				indexBatchEntries[index][rowID] = []storage.ColumnValue{nil}
 			}
 		} else if len(columnIDs) > 1 {
 			// For multi-column indexes
@@ -1425,7 +1443,12 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 					values[i] = nil
 				}
 			}
-			index.Add(values, rowID, 0)
+			indexBatchEntries[index][rowID] = values
 		}
+	}
+
+	// Process all the add operations at once using AddBatch
+	for index, entries := range indexBatchEntries {
+		index.AddBatch(entries)
 	}
 }

@@ -455,7 +455,7 @@ func (m *Int64Map[V]) grow() {
 	}
 
 	// Ensure new length is a power of 2 for efficient masking
-	if newLen & (newLen-1) != 0 {
+	if newLen&(newLen-1) != 0 {
 		// Round up to next power of 2
 		newLen--
 		newLen |= newLen >> 1

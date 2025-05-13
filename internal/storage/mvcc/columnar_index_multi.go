@@ -608,6 +608,83 @@ func (idx *MultiColumnarIndex) Add(values []storage.ColumnValue, rowID int64, re
 	return nil
 }
 
+// AddBatch adds multiple entries to the index in a single batch operation
+// This is more efficient than multiple individual Add operations
+func (idx *MultiColumnarIndex) AddBatch(entries map[int64][]storage.ColumnValue) error {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	// For unique indexes, we need to check constraints first
+	if idx.isUnique {
+		// First check all non-NULL value combinations for uniqueness
+		for _, values := range entries {
+			// Validate column count
+			if len(values) != len(idx.columnIDs) {
+				return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+			}
+
+			// Skip entries with NULL values
+			hasNull := false
+			for _, val := range values {
+				if val == nil || val.IsNull() {
+					hasNull = true
+					break
+				}
+			}
+
+			if !hasNull {
+				// Check uniqueness for full value set
+				count := idx.valueTree.ValueCount(values)
+				if count > 0 {
+					// Return unique constraint violation
+					return storage.NewUniqueConstraintError(
+						idx.name,
+						strings.Join(idx.columnNames, ","),
+						values[0],
+					)
+				}
+			}
+		}
+	}
+
+	// Now process all entries
+	for rowID, values := range entries {
+		// Validate column count
+		if len(values) != len(idx.columnIDs) {
+			return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+		}
+
+		// Track NULL values per column
+		hasAnyNull := false
+		for i, val := range values {
+			if val == nil || val.IsNull() {
+				hasAnyNull = true
+				colID := idx.columnIDs[i]
+
+				// Check if rowID already exists
+				exists := false
+				for _, id := range idx.nullRowsByColumn[colID] {
+					if id == rowID {
+						exists = true
+						break
+					}
+				}
+
+				if !exists {
+					idx.nullRowsByColumn[colID] = append(idx.nullRowsByColumn[colID], rowID)
+				}
+			}
+		}
+
+		// If no NULL values, add to the tree
+		if !hasAnyNull {
+			idx.valueTree.Insert(values, rowID)
+		}
+	}
+
+	return nil
+}
+
 // Remove removes values from the index
 func (idx *MultiColumnarIndex) Remove(values []storage.ColumnValue, rowID int64, refID int64) error {
 	// Validate column count
@@ -649,7 +726,50 @@ func (idx *MultiColumnarIndex) Remove(values []storage.ColumnValue, rowID int64,
 	return nil
 }
 
-// Find finds all entries that match the given values
+// RemoveBatch removes multiple entries from the index in a single batch operation
+// This is more efficient than multiple individual Remove operations
+func (idx *MultiColumnarIndex) RemoveBatch(entries map[int64][]storage.ColumnValue) error {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	// Process all entries
+	for rowID, values := range entries {
+		// Validate column count
+		if len(values) != len(idx.columnIDs) {
+			return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+		}
+
+		// Track NULL values per column
+		hasAnyNull := false
+		for i, val := range values {
+			if val == nil || val.IsNull() {
+				hasAnyNull = true
+				colID := idx.columnIDs[i]
+
+				// Find and remove rowID from nullRowsByColumn for this column
+				for j, id := range idx.nullRowsByColumn[colID] {
+					if id == rowID {
+						// Remove by swapping with the last element and truncating
+						lastIdx := len(idx.nullRowsByColumn[colID]) - 1
+						idx.nullRowsByColumn[colID][j] = idx.nullRowsByColumn[colID][lastIdx]
+						idx.nullRowsByColumn[colID] = idx.nullRowsByColumn[colID][:lastIdx]
+						break
+					}
+				}
+			}
+		}
+
+		// If any value is NULL, we don't need to remove from the tree
+		// because the row wasn't added to the tree in the first place
+		if !hasAnyNull {
+			// Remove from the tree
+			idx.valueTree.Remove(values, rowID)
+		}
+	}
+
+	return nil
+}
+
 func (idx *MultiColumnarIndex) Find(values []storage.ColumnValue) ([]storage.IndexEntry, error) {
 	// Validate column count
 	if len(values) != len(idx.columnIDs) {

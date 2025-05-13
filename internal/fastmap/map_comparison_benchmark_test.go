@@ -10,13 +10,13 @@ import (
 func BenchmarkMapsComparison(b *testing.B) {
 	// We'll test with different concurrency levels
 	concurrencies := []int{1, 4, 8, 16}
-	
+
 	// Test with sequential keys (common in database systems)
 	benchmarkMapImplementations(b, "Sequential", generateSequentialKeys, concurrencies)
-	
-	// Test with random keys 
+
+	// Test with random keys
 	benchmarkMapImplementations(b, "Random", generateRandomKeys, concurrencies)
-	
+
 	// Test with clustered keys (common in time-series data)
 	benchmarkMapImplementations(b, "Clustered", generateClusteredKeys, concurrencies)
 }
@@ -47,7 +47,7 @@ func generateClusteredKeys(n int) []int64 {
 	cluster := int64(0)
 	for i := 0; i < n; i++ {
 		if i%100 == 0 {
-			cluster = int64(i / 100) * 1000
+			cluster = int64(i/100) * 1000
 		}
 		keys[i] = cluster + int64(i%100)
 	}
@@ -57,29 +57,29 @@ func generateClusteredKeys(n int) []int64 {
 // Main benchmark function
 func benchmarkMapImplementations(b *testing.B, keyType string, keyGen func(int) []int64, concurrencies []int) {
 	const mapSize = 100_000
-	
+
 	// Generate keys
 	keys := keyGen(mapSize)
-	
+
 	// Benchmark each implementation with different concurrency patterns
 	for _, concurrency := range concurrencies {
 		// Only test Int64Map with single thread (it's not thread-safe)
 		if concurrency == 1 {
 			b.Run(keyType+"/Int64Map/Conc=1", func(b *testing.B) {
 				m := NewInt64Map[int](mapSize)
-				
+
 				// Pre-populate with half the keys
 				for i := 0; i < mapSize/2; i++ {
 					m.Put(keys[i], i)
 				}
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				for i := 0; i < b.N; i++ {
 					idx := i % mapSize
 					op := i % 10
-					
+
 					switch {
 					case op < 8: // 80% reads
 						_, _ = m.Get(keys[idx])
@@ -91,7 +91,7 @@ func benchmarkMapImplementations(b *testing.B, keyType string, keyGen func(int) 
 				}
 			})
 		}
-		
+
 		// Benchmark SyncInt64Map
 		b.Run(keyType+"/SyncInt64Map/Conc="+intToStr(concurrency), func(b *testing.B) {
 			// Calculate power of 2 size
@@ -100,32 +100,32 @@ func benchmarkMapImplementations(b *testing.B, keyType string, keyGen func(int) 
 				sizePower++
 			}
 			m := NewSyncInt64Map[int](sizePower)
-			
+
 			// Pre-populate with half the keys
 			for i := 0; i < mapSize/2; i++ {
 				m.Set(keys[i], i)
 			}
-			
+
 			b.ResetTimer()
-			
+
 			var wg sync.WaitGroup
 			perG := b.N / concurrency
-			
+
 			for g := 0; g < concurrency; g++ {
 				wg.Add(1)
 				go func(gID int) {
 					defer wg.Done()
-					
+
 					start := gID * perG
 					end := start + perG
 					if gID == concurrency-1 {
 						end = b.N // Last goroutine takes any remainder
 					}
-					
+
 					for i := start; i < end; i++ {
 						idx := i % mapSize
 						op := i % 10
-						
+
 						switch {
 						case op < 8: // 80% reads
 							_, _ = m.Get(keys[idx])
@@ -137,43 +137,43 @@ func benchmarkMapImplementations(b *testing.B, keyType string, keyGen func(int) 
 					}
 				}(g)
 			}
-			
+
 			wg.Wait()
 		})
-		
+
 		// Benchmark SegmentInt64Map with different segment counts
 		for _, segPower := range []uint8{4, 6, 8} { // 16, 64, 256 segments
 			segCount := 1 << segPower
 			name := keyType + "/SegmentInt64Map_" + intToStr(segCount) + "/Conc=" + intToStr(concurrency)
-			
+
 			b.Run(name, func(b *testing.B) {
 				m := NewSegmentInt64Map[int](segPower, mapSize)
-				
+
 				// Pre-populate with half the keys
 				for i := 0; i < mapSize/2; i++ {
 					m.Set(keys[i], i)
 				}
-				
+
 				b.ResetTimer()
-				
+
 				var wg sync.WaitGroup
 				perG := b.N / concurrency
-				
+
 				for g := 0; g < concurrency; g++ {
 					wg.Add(1)
 					go func(gID int) {
 						defer wg.Done()
-						
+
 						start := gID * perG
 						end := start + perG
 						if gID == concurrency-1 {
 							end = b.N // Last goroutine takes any remainder
 						}
-						
+
 						for i := start; i < end; i++ {
 							idx := i % mapSize
 							op := i % 10
-							
+
 							switch {
 							case op < 8: // 80% reads
 								_, _ = m.Get(keys[idx])
@@ -185,7 +185,7 @@ func benchmarkMapImplementations(b *testing.B, keyType string, keyGen func(int) 
 						}
 					}(g)
 				}
-				
+
 				wg.Wait()
 			})
 		}
