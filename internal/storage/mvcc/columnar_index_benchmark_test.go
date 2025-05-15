@@ -118,16 +118,14 @@ func BenchmarkColumnarIndexAllocFree(b *testing.B) {
 				},
 			}
 
-			// Create SchemaAwareExpression
-			schemaExpr := expression.NewSchemaAwareExpression(simpleExpr, schema)
-			schemaExpr.ColumnMap["test_column"] = 0 // Set column ID directly
+			simpleExpr.PrepareForSchema(schema)
 
 			// Benchmark filtered methods
 			b.Run("GetFilteredRowIDs", func(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					rowIDs := index.GetFilteredRowIDs(schemaExpr)
+					rowIDs := index.GetFilteredRowIDs(simpleExpr)
 					_ = len(rowIDs)
 				}
 			})
@@ -147,28 +145,26 @@ func BenchmarkColumnarIndexAllocFree(b *testing.B) {
 
 			// AND expression benchmark
 			andExpr := expression.NewAndExpression(simpleExpr1, simpleExpr2)
-			schemaAndExpr := expression.NewSchemaAwareExpression(andExpr, schema)
-			schemaAndExpr.ColumnMap["test_column"] = 0 // Set column ID directly
+			andExpr.PrepareForSchema(schema)
 
 			b.Run("GetFilteredRowIDs_And", func(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					rowIDs := index.GetFilteredRowIDs(schemaAndExpr)
+					rowIDs := index.GetFilteredRowIDs(andExpr)
 					_ = len(rowIDs)
 				}
 			})
 
 			// OR expression benchmark
 			orExpr := expression.NewOrExpression(simpleExpr1, simpleExpr2)
-			schemaOrExpr := expression.NewSchemaAwareExpression(orExpr, schema)
-			schemaOrExpr.ColumnMap["test_column"] = 0 // Set column ID directly
+			orExpr.PrepareForSchema(schema)
 
 			b.Run("GetFilteredRowIDs_Or", func(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					rowIDs := index.GetFilteredRowIDs(schemaOrExpr)
+					rowIDs := index.GetFilteredRowIDs(orExpr)
 					_ = len(rowIDs)
 				}
 			})
@@ -269,14 +265,13 @@ func BenchmarkColumnarIndexTimestamp(b *testing.B) {
 		}
 
 		andExpr := expression.NewAndExpression(expr1, expr2)
-		schemaExpr := expression.NewSchemaAwareExpression(andExpr, schema)
-		schemaExpr.ColumnMap["timestamp"] = 0 // Set column ID directly
+		andExpr.PrepareForSchema(schema)
 
 		b.ResetTimer()
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
-			rowIDs := index.GetFilteredRowIDs(schemaExpr)
+			rowIDs := index.GetFilteredRowIDs(andExpr)
 			_ = len(rowIDs)
 		}
 	})
@@ -492,10 +487,9 @@ func BenchmarkColumnarIndexSingleIntFilter(b *testing.B) {
 		}
 
 		// Create schema-aware expression
-		schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
-		schemaExpr.ColumnMap["num"] = 0 // Set column ID directly
+		expr.PrepareForSchema(schema)
 
-		idx.GetFilteredRowIDs(schemaExpr)
+		idx.GetFilteredRowIDs(expr)
 	}
 }
 
@@ -549,11 +543,9 @@ func BenchmarkColumnarIndexSingleTimestampFilter(b *testing.B) {
 			Value:    filterTime,
 		}
 
-		// Create schema-aware expression
-		schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
-		schemaExpr.ColumnMap["ts"] = 0 // Set column ID directly
+		expr.PrepareForSchema(schema)
 
-		idx.GetFilteredRowIDs(schemaExpr)
+		idx.GetFilteredRowIDs(expr)
 	}
 }
 
@@ -623,10 +615,9 @@ func BenchmarkColumnarIndexSparseData(b *testing.B) {
 				Operator: storage.EQ,
 				Value:    value,
 			}
-			schemaExpr := expression.NewSchemaAwareExpression(expr, schema)
-			schemaExpr.ColumnMap["sparse_column"] = 0 // Set column ID directly
+			expr.PrepareForSchema(schema)
 
-			rowIDs := index.GetFilteredRowIDs(schemaExpr)
+			rowIDs := index.GetFilteredRowIDs(expr)
 			_ = len(rowIDs)
 		}
 	})

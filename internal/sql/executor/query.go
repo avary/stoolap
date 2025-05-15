@@ -422,51 +422,10 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 			// Convert the WHERE clause to a storage expression
 			whereExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
 
-			// Decide if this expression can be pushed down
-			canPushDown := false
-
-			switch expr := whereExpr.(type) {
-			case *expression.SimpleExpression:
-				expr.PrepareForSchema(schema)
-				// Simple expressions are always safe to push down
-				canPushDown = true
-
-			case *expression.AndExpression:
-				// Only push down AND if all children are simple expressions and ≤ 3 total
-				if len(expr.Expressions) <= 3 {
-					allSimple := true
-					for _, childExpr := range expr.Expressions {
-						if simpleExpr, isSimple := childExpr.(*expression.SimpleExpression); !isSimple {
-							allSimple = false
-							break
-						} else {
-							// Prepare the simple expression for the schema
-							simpleExpr.PrepareForSchema(schema)
-						}
-					}
-					canPushDown = allSimple
-				}
-
-			case *expression.OrExpression:
-				// Only push down OR if all children are simple expressions and ≤ 3 total
-				if len(expr.Expressions) <= 3 {
-					allSimple := true
-					for _, childExpr := range expr.Expressions {
-						if simpleExpr, isSimple := childExpr.(*expression.SimpleExpression); !isSimple {
-							allSimple = false
-							break
-						} else {
-							// Prepare the simple expression for the schema
-							simpleExpr.PrepareForSchema(schema)
-						}
-					}
-					canPushDown = allSimple
-				}
-			}
-
-			if canPushDown {
-				saExpr := expression.NewSchemaAwareExpression(whereExpr, schema)
-				result, err = tx.SelectWithAliases(tableName, columns, saExpr, columnAliases)
+			// Check if the WHERE clause can be pushed down to storage
+			if whereExpr != nil {
+				whereExpr.PrepareForSchema(schema)
+				result, err = tx.SelectWithAliases(tableName, columns, whereExpr, columnAliases)
 				if err != nil {
 					return nil, err
 				}
@@ -476,7 +435,7 @@ func (e *Executor) executeSelectWithContext(ctx context.Context, tx storage.Tran
 		}
 
 		if needsFiltering {
-			result, err = tx.SelectWithAliases(tableName, columnsToFetch, whereExpr, columnAliases)
+			result, err = tx.SelectWithAliases(tableName, columnsToFetch, nil, columnAliases)
 			if err != nil {
 				return nil, err
 			}

@@ -16,38 +16,21 @@ type InListExpression struct {
 
 	aliases        map[string]string // Column aliases (alias -> original)
 	originalColumn string            // Original column name if Column is an alias
+
+	// Schema optimization fields
+	ColIndex     int  // Column index for fast lookup
+	IndexPrepped bool // Whether we've prepared column index mapping
 }
 
 // Evaluate implements the Expression interface
 func (e *InListExpression) Evaluate(row storage.Row) (bool, error) {
-	// Find the column in the row
-	colIndex := -1
-	for i, val := range row {
-		if val != nil {
-			if colVal, ok := val.(interface{ Name() string }); ok {
-				colName := colVal.Name()
-				// Match by column name - check both original and alias names
-				if colName == e.Column || strings.EqualFold(colName, e.Column) {
-					colIndex = i
-					break
-				}
-
-				// Also check if we're looking for an alias but the row has original names
-				if e.originalColumn != "" && (colName == e.originalColumn || strings.EqualFold(colName, e.originalColumn)) {
-					colIndex = i
-					break
-				}
-			}
-		}
-	}
-
-	// Column not found in row
-	if colIndex == -1 || colIndex >= len(row) {
+	// Only use prepared column indices, don't try to find columns by name
+	if !e.IndexPrepped || e.ColIndex < 0 || e.ColIndex >= len(row) {
 		return false, nil
 	}
 
 	// Get the column value
-	colValue := row[colIndex]
+	colValue := row[e.ColIndex]
 	if colValue == nil {
 		// NULL IN (...) is always false
 		// For NOT IN this also remains false (NULL NOT IN ... is also false)
@@ -212,4 +195,134 @@ func (e *InListExpression) WithAliases(aliases map[string]string) storage.Expres
 	}
 
 	return expr
+}
+
+// PrepareForSchema optimizes the expression for a specific schema
+func (e *InListExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	// If already prepped with valid index, don't redo the work
+	if e.IndexPrepped && e.ColIndex >= 0 {
+		return e
+	}
+
+	// Find the column index for fast lookup
+	colName := e.Column
+	if e.originalColumn != "" {
+		colName = e.originalColumn
+	}
+
+	// Try to find the column in the schema
+	for i, col := range schema.Columns {
+		if col.Name == colName || strings.EqualFold(col.Name, colName) {
+			e.ColIndex = i
+			break
+		}
+	}
+
+	e.IndexPrepped = true
+	return e
+}
+
+// EvaluateFast implements fast evaluation for the Expression interface
+func (e *InListExpression) EvaluateFast(row storage.Row) bool {
+	// Only use prepared column indices, don't try to find columns by name
+	if !e.IndexPrepped || e.ColIndex < 0 || e.ColIndex >= len(row) {
+		return false
+	}
+
+	colValue := row[e.ColIndex]
+	if colValue == nil {
+		// NULL IN (...) is always false (same for NOT IN)
+		return false
+	}
+
+	// Flag to track if we found a match
+	found := false
+
+	// Fast path evaluations based on type
+	switch colValue.Type() {
+	case storage.TypeInteger:
+		colInt, ok := colValue.AsInt64()
+		if !ok {
+			return e.Not // Not found if conversion failed
+		}
+
+		// Check if the value is in the list
+		for _, value := range e.Values {
+			// Convert value to int64 for comparison (only handle simple numeric types in fast path)
+			switch v := value.(type) {
+			case int:
+				if colInt == int64(v) {
+					found = true
+					break
+				}
+			case int64:
+				if colInt == v {
+					found = true
+					break
+				}
+			case float64:
+				if colInt == int64(v) {
+					found = true
+					break
+				}
+			}
+		}
+
+	case storage.TypeFloat:
+		colFloat, ok := colValue.AsFloat64()
+		if !ok {
+			return e.Not // Not found if conversion failed
+		}
+
+		// Check if the value is in the list
+		for _, value := range e.Values {
+			// Convert value to float64 for comparison (only handle simple numeric types in fast path)
+			switch v := value.(type) {
+			case int:
+				if colFloat == float64(v) {
+					found = true
+					break
+				}
+			case int64:
+				if colFloat == float64(v) {
+					found = true
+					break
+				}
+			case float64:
+				if colFloat == v {
+					found = true
+					break
+				}
+			}
+		}
+
+	case storage.TypeString:
+		colStr, ok := colValue.AsString()
+		if !ok {
+			return e.Not // Not found if conversion failed
+		}
+
+		// Check if the value is in the list (only handle string types in fast path)
+		for _, value := range e.Values {
+			if strValue, ok := value.(string); ok {
+				if colStr == strValue {
+					found = true
+					break
+				}
+			}
+		}
+
+	default:
+		// For other types, simply return the default value
+		if e.Not {
+			return true  // NOT IN for unknown type
+		}
+		return false  // IN for unknown type
+	}
+
+	// For NOT IN, invert the result
+	if e.Not {
+		return !found
+	}
+	return found
 }

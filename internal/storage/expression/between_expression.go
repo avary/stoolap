@@ -18,6 +18,10 @@ type BetweenExpression struct {
 
 	aliases        map[string]string // Column aliases (alias -> original)
 	originalColumn string            // Original column name if Column is an alias
+
+	// Schema optimization fields
+	ColIndex     int  // Column index for fast lookup
+	IndexPrepped bool // Whether we've prepared column index mapping
 }
 
 func NewBetweenExpression(column string, lowerBound, upperBound interface{}, inclusive bool) *BetweenExpression {
@@ -31,34 +35,13 @@ func NewBetweenExpression(column string, lowerBound, upperBound interface{}, inc
 
 // Evaluate implements the Expression interface for BetweenExpression
 func (e *BetweenExpression) Evaluate(row storage.Row) (bool, error) {
-	// Find the column in the row
-	colIndex := -1
-	for i, val := range row {
-		if val != nil {
-			if colVal, ok := val.(interface{ Name() string }); ok {
-				colName := colVal.Name()
-				// Match by column name - check both original and alias names
-				if colName == e.Column || strings.EqualFold(colName, e.Column) {
-					colIndex = i
-					break
-				}
-
-				// Also check if we're looking for an alias but the row has original names
-				if e.originalColumn != "" && (colName == e.originalColumn || strings.EqualFold(colName, e.originalColumn)) {
-					colIndex = i
-					break
-				}
-			}
-		}
-	}
-
-	// Column not found in row
-	if colIndex == -1 || colIndex >= len(row) {
+	// Only use prepared column indices, don't try to find columns by name
+	if !e.IndexPrepped || e.ColIndex < 0 || e.ColIndex >= len(row) {
 		return false, nil
 	}
 
 	// Get the column value
-	colValue := row[colIndex]
+	colValue := row[e.ColIndex]
 	if colValue == nil {
 		// NULL BETWEEN ... is always false
 		return false, nil
@@ -296,4 +279,163 @@ func (e *BetweenExpression) WithAliases(aliases map[string]string) storage.Expre
 	}
 
 	return expr
+}
+
+// PrepareForSchema optimizes the expression for a specific schema
+func (e *BetweenExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	// If already prepped with valid index, don't redo the work
+	if e.IndexPrepped && e.ColIndex >= 0 {
+		return e
+	}
+
+	// Find the column index for fast lookup
+	colName := e.Column
+	if e.originalColumn != "" {
+		colName = e.originalColumn
+	}
+
+	// Try to find the column in the schema
+	for i, col := range schema.Columns {
+		if col.Name == colName || strings.EqualFold(col.Name, colName) {
+			e.ColIndex = i
+			break
+		}
+	}
+
+	e.IndexPrepped = true
+	return e
+}
+
+// EvaluateFast implements the Expression interface for fast evaluation
+func (e *BetweenExpression) EvaluateFast(row storage.Row) bool {
+	// If we've prepped with the schema, use the column index for direct access
+	if e.IndexPrepped && e.ColIndex >= 0 && e.ColIndex < len(row) {
+		colValue := row[e.ColIndex]
+		if colValue == nil {
+			// NULL BETWEEN ... is always false
+			return false
+		}
+
+		// Fast path evaluations based on type
+		switch colValue.Type() {
+		case storage.TypeInteger:
+			colInt, ok := colValue.AsInt64()
+			if !ok {
+				return false
+			}
+
+			// Convert bounds to int64 (assuming the bounds are compatible)
+			var lowerInt, upperInt int64
+
+			switch v := e.LowerBound.(type) {
+			case int:
+				lowerInt = int64(v)
+			case int64:
+				lowerInt = v
+			case float64:
+				lowerInt = int64(v)
+			default:
+				return false // Not comparable in fast path
+			}
+
+			switch v := e.UpperBound.(type) {
+			case int:
+				upperInt = int64(v)
+			case int64:
+				upperInt = v
+			case float64:
+				upperInt = int64(v)
+			default:
+				return false // Not comparable in fast path
+			}
+
+			// Compare with bounds
+			if e.Inclusive {
+				return colInt >= lowerInt && colInt <= upperInt
+			}
+			return colInt > lowerInt && colInt < upperInt
+
+		case storage.TypeFloat:
+			colFloat, ok := colValue.AsFloat64()
+			if !ok {
+				return false
+			}
+
+			// Convert bounds to float64 (assuming the bounds are compatible)
+			var lowerFloat, upperFloat float64
+
+			switch v := e.LowerBound.(type) {
+			case int:
+				lowerFloat = float64(v)
+			case int64:
+				lowerFloat = float64(v)
+			case float64:
+				lowerFloat = v
+			default:
+				return false // Not comparable in fast path
+			}
+
+			switch v := e.UpperBound.(type) {
+			case int:
+				upperFloat = float64(v)
+			case int64:
+				upperFloat = float64(v)
+			case float64:
+				upperFloat = v
+			default:
+				return false // Not comparable in fast path
+			}
+
+			// Compare with bounds
+			if e.Inclusive {
+				return colFloat >= lowerFloat && colFloat <= upperFloat
+			}
+			return colFloat > lowerFloat && colFloat < upperFloat
+
+		case storage.TypeString:
+			colStr, ok := colValue.AsString()
+			if !ok {
+				return false
+			}
+
+			// For strings, we only handle string bounds in fast path
+			lowerStr, lowerOk := e.LowerBound.(string)
+			upperStr, upperOk := e.UpperBound.(string)
+
+			if !lowerOk || !upperOk {
+				return false // Not string bounds, can't use fast path
+			}
+
+			// Compare with bounds
+			if e.Inclusive {
+				return colStr >= lowerStr && colStr <= upperStr
+			}
+			return colStr > lowerStr && colStr < upperStr
+
+		case storage.TypeTimestamp:
+			colTime, ok := colValue.AsTimestamp()
+			if !ok {
+				return false
+			}
+
+			// For timestamps, we only handle time.Time bounds in fast path
+			lowerTime, lowerOk := e.LowerBound.(time.Time)
+			upperTime, upperOk := e.UpperBound.(time.Time)
+
+			if !lowerOk || !upperOk {
+				return false // Not time.Time bounds, can't use fast path
+			}
+
+			// Compare with bounds
+			if e.Inclusive {
+				return (colTime.Equal(lowerTime) || colTime.After(lowerTime)) &&
+					(colTime.Equal(upperTime) || colTime.Before(upperTime))
+			}
+			return colTime.After(lowerTime) && colTime.Before(upperTime)
+		}
+	}
+
+	// Fallback: If we can't use the fast path, evaluate "slowly" but without error handling
+	res, _ := e.Evaluate(row)
+	return res
 }

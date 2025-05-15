@@ -75,10 +75,8 @@ func TestColumnarIndex(t *testing.T) {
 	ageExpr := expression.NewSimpleExpression("age", storage.EQ, 25)
 	ageExpr.PrepareForSchema(schema)
 
-	ageSchemaExpr := expression.NewSchemaAwareExpression(ageExpr, schema)
-
 	// Test querying with columnar index
-	scanner, err := mvccTable.Scan(nil, ageSchemaExpr)
+	scanner, err := mvccTable.Scan(nil, ageExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}
@@ -110,9 +108,7 @@ func TestColumnarIndex(t *testing.T) {
 	enabledExpr := expression.NewSimpleExpression("enabled", storage.EQ, true)
 	enabledExpr.PrepareForSchema(schema)
 
-	enabledSchemaExpr := expression.NewSchemaAwareExpression(enabledExpr, schema)
-
-	scanner, err = mvccTable.Scan(nil, enabledSchemaExpr)
+	scanner, err = mvccTable.Scan(nil, enabledExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}
@@ -139,9 +135,9 @@ func TestColumnarIndex(t *testing.T) {
 	andExpr := &expression.AndExpression{
 		Expressions: []storage.Expression{ageGtExpr, enabledExpr},
 	}
-	andSchemaExpr := expression.NewSchemaAwareExpression(andExpr, schema)
+	andExpr.PrepareForSchema(schema)
 
-	scanner, err = mvccTable.Scan(nil, andSchemaExpr)
+	scanner, err = mvccTable.Scan(nil, andExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}
@@ -259,10 +255,8 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	categoryExpr := expression.NewSimpleExpression("category", storage.EQ, "cat_1")
 	categoryExpr.PrepareForSchema(schema)
 
-	categorySchemaExpr := expression.NewSchemaAwareExpression(categoryExpr, schema)
-
 	// Query using the columnar index
-	scanner, err := table2.Scan(nil, categorySchemaExpr)
+	scanner, err := table2.Scan(nil, categoryExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}
@@ -294,9 +288,7 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	updateExpr := expression.NewSimpleExpression("category", storage.EQ, "cat_1")
 	updateExpr.PrepareForSchema(schema)
 
-	updateSchemaExpr := expression.NewSchemaAwareExpression(updateExpr, schema)
-
-	updatedCount, err := table2.Update(updateSchemaExpr, func(row storage.Row) (storage.Row, bool) {
+	updatedCount, err := table2.Update(updateExpr, func(row storage.Row) (storage.Row, bool) {
 		// Change category from "cat_1" to "cat_updated"
 		updatedRow := make(storage.Row, len(row))
 		copy(updatedRow, row)
@@ -316,9 +308,7 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	updatedExpr := expression.NewSimpleExpression("category", storage.EQ, "cat_updated")
 	updatedExpr.PrepareForSchema(schema)
 
-	updatedSchemaExpr := expression.NewSchemaAwareExpression(updatedExpr, schema)
-
-	scanner, err = table2.Scan(nil, updatedSchemaExpr)
+	scanner, err = table2.Scan(nil, updatedExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}
@@ -356,7 +346,7 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	}
 
 	// Query for updated rows
-	scanner, err = table3.Scan(nil, updatedSchemaExpr)
+	scanner, err = table3.Scan(nil, updatedExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}
@@ -377,7 +367,7 @@ func TestColumnarIndexWithTransaction(t *testing.T) {
 	}
 
 	// Check that the original category no longer exists
-	scanner, err = table3.Scan(nil, categorySchemaExpr)
+	scanner, err = table3.Scan(nil, categoryExpr)
 	if err != nil {
 		t.Fatalf("Failed to scan table: %v", err)
 	}

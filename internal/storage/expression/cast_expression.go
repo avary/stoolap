@@ -14,6 +14,10 @@ type CastExpression struct {
 	Column     string            // The column name to cast
 	TargetType storage.DataType  // The target data type to cast to
 	aliases    map[string]string // Column aliases (alias -> original name)
+
+	// Schema optimization fields
+	ColIndex     int  // Column index for fast lookup
+	IndexPrepped bool // Whether we've prepared column index mapping
 }
 
 // NewCastExpression creates a new cast expression
@@ -27,11 +31,29 @@ func NewCastExpression(column string, targetType storage.DataType) *CastExpressi
 
 // Evaluate implements the Expression interface for CastExpression
 func (ce *CastExpression) Evaluate(row storage.Row) (bool, error) {
-	// Since CastExpression is typically used in a comparison,
-	// just returning true means it will be evaluated by its parent expression
-	// This is not ideal for standalone usage, but works in WHERE clauses
-	// where the cast is part of a comparison
-	return true, nil
+	// Check if we've been optimized by schema preparation
+	if ce.IndexPrepped && ce.ColIndex >= 0 && ce.ColIndex < len(row) {
+		// Column found by index, get the value
+		colValue := row[ce.ColIndex]
+		if colValue == nil || colValue.IsNull() {
+			// NULL values remain NULL after CAST
+			return false, nil
+		}
+
+		// Perform the cast operation
+		_, err := ce.PerformCast(colValue)
+		if err != nil {
+			return false, err
+		}
+
+		// CAST expression by itself should not filter rows
+		// When used in a comparison, the parent expression will handle the comparison
+		return true, nil
+	}
+
+	// If column index not prepared, simply return false
+	// We don't want to do expensive column name lookups or interface calls
+	return false, nil
 }
 
 // WithAliases implements the storage.Expression interface
@@ -53,6 +75,52 @@ func (ce *CastExpression) WithAliases(aliases map[string]string) storage.Express
 	}
 
 	return result
+}
+
+// PrepareForSchema optimizes the expression for a specific schema
+func (ce *CastExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	// If already prepped with valid index, don't redo the work
+	if ce.IndexPrepped && ce.ColIndex >= 0 {
+		return ce
+	}
+
+	// Try to find the column in the schema
+	for i, col := range schema.Columns {
+		if col.Name == ce.Column || strings.EqualFold(col.Name, ce.Column) {
+			ce.ColIndex = i
+			break
+		}
+	}
+
+	ce.IndexPrepped = true
+	return ce
+}
+
+// EvaluateFast implements the Expression interface for fast evaluation
+func (ce *CastExpression) EvaluateFast(row storage.Row) bool {
+	// Check if we've been optimized by schema preparation
+	if ce.IndexPrepped && ce.ColIndex >= 0 && ce.ColIndex < len(row) {
+		// Column found by index, get the value
+		colValue := row[ce.ColIndex]
+		if colValue == nil || colValue.IsNull() {
+			// NULL values remain NULL after CAST
+			return false
+		}
+
+		// Perform the cast operation
+		_, err := ce.PerformCast(colValue)
+		if err != nil {
+			return false
+		}
+
+		// CAST expression by itself should not filter rows
+		// When used in a comparison, the parent expression will handle the comparison
+		return true
+	}
+
+	// If column index not prepared, simply return false
+	// We don't want to do expensive column name lookups or interface calls
+	return false
 }
 
 // GetColumnName returns the column name this expression operates on
@@ -96,153 +164,135 @@ type CompoundExpression struct {
 	Operator storage.Operator  // The comparison operator
 	Value    interface{}       // The value to compare against
 	aliases  map[string]string // Column aliases (alias -> original)
+
+	// Schema optimization
+	isOptimized bool // Indicates if this expression has already been prepared for a schema
 }
 
 // Evaluate implements the Expression interface for CompoundExpression
 func (ce *CompoundExpression) Evaluate(row storage.Row) (bool, error) {
-	// Find column index by name
-	colIndex := -1
-	colName := ce.CastExpr.Column
+	// Fast path is only possible if the CastExpr is optimized
+	if ce.CastExpr.IndexPrepped && ce.CastExpr.ColIndex >= 0 && ce.CastExpr.ColIndex < len(row) {
+		colValue := row[ce.CastExpr.ColIndex]
 
-	// Try to find the column in the row
-	for i, val := range row {
-		// Skip nil values
-		if val == nil {
-			continue
+		if colValue == nil || colValue.IsNull() {
+			// NULL values always return false for comparisons
+			return false, nil
 		}
 
-		// Check if column value has a name method
-		if colVal, ok := val.(interface{ Name() string }); ok {
-			name := colVal.Name()
-			if name == colName || strings.EqualFold(name, colName) {
-				colIndex = i
-				break
+		// Cast the column value to the target type
+		castedValue, err := ce.CastExpr.PerformCast(colValue)
+		if err != nil {
+			return false, err
+		}
+
+		// Now compare the casted value with the comparison value
+		// Convert literal value to column value for comparison
+		var comparisonValue storage.ColumnValue
+
+		switch ce.CastExpr.TargetType {
+		case storage.INTEGER:
+			// Convert comparison value to integer
+			var intVal int64
+			switch v := ce.Value.(type) {
+			case int:
+				intVal = int64(v)
+			case int64:
+				intVal = v
+			case float64:
+				intVal = int64(v)
+			case string:
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					intVal = parsed
+				} else {
+					return false, fmt.Errorf("cannot convert comparison value %v to INTEGER", ce.Value)
+				}
+			default:
+				return false, fmt.Errorf("unsupported comparison value type: %T", ce.Value)
 			}
-		}
-	}
+			comparisonValue = storage.NewIntegerValue(intVal)
 
-	// Column not found
-	if colIndex == -1 || colIndex >= len(row) {
-		return false, fmt.Errorf("column '%s' not found in row", colName)
-	}
-
-	// Get the column value
-	colValue := row[colIndex]
-
-	if colValue == nil || colValue.IsNull() {
-		// NULL values always return false for comparisons
-		return false, nil
-	}
-
-	// Cast the column value to the target type
-	castedValue, err := ce.CastExpr.PerformCast(colValue)
-	if err != nil {
-		return false, err
-	}
-
-	// Now compare the casted value with the comparison value
-	// Convert literal value to column value for comparison
-	var comparisonValue storage.ColumnValue
-
-	switch ce.CastExpr.TargetType {
-	case storage.INTEGER:
-		// Convert comparison value to integer
-		var intVal int64
-		switch v := ce.Value.(type) {
-		case int:
-			intVal = int64(v)
-		case int64:
-			intVal = v
-		case float64:
-			intVal = int64(v)
-		case string:
-			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-				intVal = parsed
-			} else {
-				return false, fmt.Errorf("cannot convert comparison value %v to INTEGER", ce.Value)
+		case storage.FLOAT:
+			// Convert comparison value to float
+			var floatVal float64
+			switch v := ce.Value.(type) {
+			case int:
+				floatVal = float64(v)
+			case int64:
+				floatVal = float64(v)
+			case float64:
+				floatVal = v
+			case string:
+				if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+					floatVal = parsed
+				} else {
+					return false, fmt.Errorf("cannot convert comparison value %v to FLOAT", ce.Value)
+				}
+			default:
+				return false, fmt.Errorf("unsupported comparison value type: %T", ce.Value)
 			}
-		default:
-			return false, fmt.Errorf("unsupported comparison value type: %T", ce.Value)
-		}
-		comparisonValue = storage.NewIntegerValue(intVal)
+			comparisonValue = storage.NewFloatValue(floatVal)
 
-	case storage.FLOAT:
-		// Convert comparison value to float
-		var floatVal float64
-		switch v := ce.Value.(type) {
-		case int:
-			floatVal = float64(v)
-		case int64:
-			floatVal = float64(v)
-		case float64:
-			floatVal = v
-		case string:
-			if parsed, err := strconv.ParseFloat(v, 64); err == nil {
-				floatVal = parsed
-			} else {
-				return false, fmt.Errorf("cannot convert comparison value %v to FLOAT", ce.Value)
+		case storage.TEXT:
+			// Convert comparison value to string
+			var strVal string
+			switch v := ce.Value.(type) {
+			case string:
+				strVal = v
+			default:
+				strVal = fmt.Sprintf("%v", ce.Value)
 			}
-		default:
-			return false, fmt.Errorf("unsupported comparison value type: %T", ce.Value)
-		}
-		comparisonValue = storage.NewFloatValue(floatVal)
+			comparisonValue = storage.NewStringValue(strVal)
 
-	case storage.TEXT:
-		// Convert comparison value to string
-		var strVal string
-		switch v := ce.Value.(type) {
-		case string:
-			strVal = v
-		default:
-			strVal = fmt.Sprintf("%v", ce.Value)
-		}
-		comparisonValue = storage.NewStringValue(strVal)
+		case storage.BOOLEAN:
+			// Convert comparison value to boolean
+			var boolVal bool
+			switch v := ce.Value.(type) {
+			case bool:
+				boolVal = v
+			case int:
+				boolVal = v != 0
+			case int64:
+				boolVal = v != 0
+			case float64:
+				boolVal = v != 0
+			case string:
+				s := strings.ToLower(v)
+				boolVal = s == "true" || s == "1" || s == "t" || s == "yes" || s == "y"
+			default:
+				return false, fmt.Errorf("unsupported comparison value type: %T", ce.Value)
+			}
+			comparisonValue = storage.NewBooleanValue(boolVal)
 
-	case storage.BOOLEAN:
-		// Convert comparison value to boolean
-		var boolVal bool
-		switch v := ce.Value.(type) {
-		case bool:
-			boolVal = v
-		case int:
-			boolVal = v != 0
-		case int64:
-			boolVal = v != 0
-		case float64:
-			boolVal = v != 0
-		case string:
-			s := strings.ToLower(v)
-			boolVal = s == "true" || s == "1" || s == "t" || s == "yes" || s == "y"
 		default:
-			return false, fmt.Errorf("unsupported comparison value type: %T", ce.Value)
+			// For other types, just use string conversion as fallback
+			comparisonValue = storage.NewStringValue(fmt.Sprintf("%v", ce.Value))
 		}
-		comparisonValue = storage.NewBooleanValue(boolVal)
 
-	default:
-		// For other types, just use string conversion as fallback
-		comparisonValue = storage.NewStringValue(fmt.Sprintf("%v", ce.Value))
+		// Compare the values based on the operator
+		var result bool
+		switch ce.Operator {
+		case storage.EQ:
+			result = compareColumnValues(castedValue, comparisonValue) == 0
+		case storage.NE:
+			result = compareColumnValues(castedValue, comparisonValue) != 0
+		case storage.GT:
+			result = compareColumnValues(castedValue, comparisonValue) > 0
+		case storage.GTE:
+			result = compareColumnValues(castedValue, comparisonValue) >= 0
+		case storage.LT:
+			result = compareColumnValues(castedValue, comparisonValue) < 0
+		case storage.LTE:
+			result = compareColumnValues(castedValue, comparisonValue) <= 0
+		default:
+			return false, fmt.Errorf("unsupported operator: %v", ce.Operator)
+		}
+
+		return result, nil
 	}
 
-	// Compare the values based on the operator
-	var result bool
-	switch ce.Operator {
-	case storage.EQ:
-		result = compareColumnValues(castedValue, comparisonValue) == 0
-	case storage.NE:
-		result = compareColumnValues(castedValue, comparisonValue) != 0
-	case storage.GT:
-		result = compareColumnValues(castedValue, comparisonValue) > 0
-	case storage.GTE:
-		result = compareColumnValues(castedValue, comparisonValue) >= 0
-	case storage.LT:
-		result = compareColumnValues(castedValue, comparisonValue) < 0
-	case storage.LTE:
-		result = compareColumnValues(castedValue, comparisonValue) <= 0
-	default:
-		return false, fmt.Errorf("unsupported operator: %v", ce.Operator)
-	}
-
-	return result, nil
+	// If column index not prepared, simply return false
+	return false, nil
 }
 
 // WithAliases implements the storage.Expression interface
@@ -266,6 +316,287 @@ func (ce *CompoundExpression) WithAliases(aliases map[string]string) storage.Exp
 	}
 
 	return result
+}
+
+// PrepareForSchema optimizes the expression for a specific schema
+func (ce *CompoundExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	// If already optimized, don't redo the work
+	if ce.isOptimized {
+		return ce
+	}
+
+	// Optimize the cast expression
+	if preparedCast, ok := ce.CastExpr.PrepareForSchema(schema).(*CastExpression); ok {
+		ce.CastExpr = preparedCast
+	}
+
+	ce.isOptimized = true
+	return ce
+}
+
+// EvaluateFast implements the Expression interface for fast evaluation
+func (ce *CompoundExpression) EvaluateFast(row storage.Row) bool {
+	// Fast path is only possible if the CastExpr is optimized
+	if ce.CastExpr.IndexPrepped && ce.CastExpr.ColIndex >= 0 && ce.CastExpr.ColIndex < len(row) {
+		colValue := row[ce.CastExpr.ColIndex]
+		if colValue == nil || colValue.IsNull() {
+			// NULL comparisons are always false in SQL
+			return false
+		}
+
+		// Compare based on the target type and operator
+		switch ce.CastExpr.TargetType {
+		case storage.INTEGER:
+			// Cast column value to integer and compare
+			var colInt int64
+			switch colValue.Type() {
+			case storage.INTEGER:
+				var ok bool
+				colInt, ok = colValue.AsInt64()
+				if !ok {
+					return false
+				}
+			case storage.FLOAT:
+				var f float64
+				var ok bool
+				f, ok = colValue.AsFloat64()
+				if !ok {
+					return false
+				}
+				colInt = int64(f)
+			case storage.BOOLEAN:
+				var b bool
+				var ok bool
+				b, ok = colValue.AsBoolean()
+				if !ok {
+					return false
+				}
+				if b {
+					colInt = 1
+				} else {
+					colInt = 0
+				}
+			default:
+				// Not one of our fast-path types, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+			// Get the comparison value
+			var compInt int64
+			switch v := ce.Value.(type) {
+			case int:
+				compInt = int64(v)
+			case int64:
+				compInt = v
+			case float64:
+				compInt = int64(v)
+			default:
+				// Not one of our fast-path types, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+			// Compare with the operator
+			switch ce.Operator {
+			case storage.EQ:
+				return colInt == compInt
+			case storage.NE:
+				return colInt != compInt
+			case storage.GT:
+				return colInt > compInt
+			case storage.GTE:
+				return colInt >= compInt
+			case storage.LT:
+				return colInt < compInt
+			case storage.LTE:
+				return colInt <= compInt
+			default:
+				// Not a supported operator, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+		case storage.FLOAT:
+			// Cast column value to float and compare
+			var colFloat float64
+			switch colValue.Type() {
+			case storage.INTEGER:
+				var i int64
+				var ok bool
+				i, ok = colValue.AsInt64()
+				if !ok {
+					return false
+				}
+				colFloat = float64(i)
+			case storage.FLOAT:
+				var ok bool
+				colFloat, ok = colValue.AsFloat64()
+				if !ok {
+					return false
+				}
+			case storage.BOOLEAN:
+				var b bool
+				var ok bool
+				b, ok = colValue.AsBoolean()
+				if !ok {
+					return false
+				}
+				if b {
+					colFloat = 1.0
+				} else {
+					colFloat = 0.0
+				}
+			default:
+				// Not one of our fast-path types, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+			// Get the comparison value
+			var compFloat float64
+			switch v := ce.Value.(type) {
+			case int:
+				compFloat = float64(v)
+			case int64:
+				compFloat = float64(v)
+			case float64:
+				compFloat = v
+			default:
+				// Not one of our fast-path types, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+			// Compare with the operator
+			switch ce.Operator {
+			case storage.EQ:
+				return colFloat == compFloat
+			case storage.NE:
+				return colFloat != compFloat
+			case storage.GT:
+				return colFloat > compFloat
+			case storage.GTE:
+				return colFloat >= compFloat
+			case storage.LT:
+				return colFloat < compFloat
+			case storage.LTE:
+				return colFloat <= compFloat
+			default:
+				// Not a supported operator, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+		case storage.TEXT:
+			// Cast column value to string and compare
+			var colStr string
+			var ok bool
+			colStr, ok = colValue.AsString()
+			if !ok {
+				return false
+			}
+
+			// Get the comparison value
+			compStr, ok := ce.Value.(string)
+			if !ok {
+				// Not one of our fast-path types, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+			// Compare with the operator
+			switch ce.Operator {
+			case storage.EQ:
+				return colStr == compStr
+			case storage.NE:
+				return colStr != compStr
+			case storage.GT:
+				return colStr > compStr
+			case storage.GTE:
+				return colStr >= compStr
+			case storage.LT:
+				return colStr < compStr
+			case storage.LTE:
+				return colStr <= compStr
+			default:
+				// Not a supported operator, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+		case storage.BOOLEAN:
+			// Cast column value to boolean and compare
+			var colBool bool
+			switch colValue.Type() {
+			case storage.INTEGER:
+				var i int64
+				var ok bool
+				i, ok = colValue.AsInt64()
+				if !ok {
+					return false
+				}
+				colBool = i != 0
+			case storage.FLOAT:
+				var f float64
+				var ok bool
+				f, ok = colValue.AsFloat64()
+				if !ok {
+					return false
+				}
+				colBool = f != 0
+			case storage.BOOLEAN:
+				var ok bool
+				colBool, ok = colValue.AsBoolean()
+				if !ok {
+					return false
+				}
+			default:
+				// Not one of our fast-path types, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+			// Get the comparison value
+			compBool, ok := ce.Value.(bool)
+			if !ok {
+				// Try to convert int/float to bool
+				switch v := ce.Value.(type) {
+				case int:
+					compBool = v != 0
+				case int64:
+					compBool = v != 0
+				case float64:
+					compBool = v != 0
+				default:
+					// Not one of our fast-path types, return false
+					// We don't want to do expensive fallbacks to slow path
+					return false
+				}
+			}
+
+			// For booleans, only EQ and NE make sense
+			switch ce.Operator {
+			case storage.EQ:
+				return colBool == compBool
+			case storage.NE:
+				return colBool != compBool
+			default:
+				// Not a supported operator, return false
+				// We don't want to do expensive fallbacks to slow path
+				return false
+			}
+
+		default:
+			// Not one of our fast-path types, return false
+			// We don't want to do expensive fallbacks to slow path
+			return false
+		}
+	}
+
+	// If not schema-prepared or column index not found, simply return false
+	// We don't want to do expensive fallbacks to the slow path Evaluate method
+	return false
 }
 
 // compareColumnValues compares two column values

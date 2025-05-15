@@ -193,17 +193,17 @@ type Expression interface {
 	// Evaluate evaluates the expression against a row
 	Evaluate(row Row) (bool, error)
 
+	// EvaluateFast is an optimized version of Evaluate that sacrifices error handling for speed
+	// It returns true if the expression matches, false otherwise
+	EvaluateFast(row Row) bool
+
 	// WithAliases sets column aliases for this expression
 	// This allows the expression to resolve alias references to original column names
 	WithAliases(aliases map[string]string) Expression
-}
-
-// SchemaAwareExpression is an interface for expressions that can be optimized with schema information
-type SchemaAwareExpression interface {
-	Expression
-
-	// WithSchema provides column mapping information to the expression
-	WithSchema(columnMap map[string]int) Expression
+	
+	// PrepareForSchema optimizes the expression for a given schema
+	// This allows the expression to quickly find columns by index instead of by name
+	PrepareForSchema(schema Schema) Expression
 }
 
 // Table represents a database table

@@ -251,18 +251,12 @@ func BenchmarkRangeScanner(b *testing.B) {
 			andExpr := &expression.AndExpression{
 				Expressions: []storage.Expression{expr1, expr2},
 			}
-
 			// Create a schema-aware expression to ensure columnar index is used properly
 			schema := mvccTable.Schema()
-			schemaAwareExpr := expression.NewSchemaAwareExpression(andExpr, schema)
-
-			// Important: Set the correct column mapping for the value column (index 1)
-			schemaAwareExpr.ColumnMap = map[string]int{
-				"value": 1, // value is the second column (index 1)
-			}
+			andExpr.PrepareForSchema(schema)
 
 			// Get scanner with full projection, using schema-aware expression for column mapping
-			scanner, err := mvccTable.Scan(nil, schemaAwareExpr)
+			scanner, err := mvccTable.Scan(nil, andExpr)
 			if err != nil {
 				b.Fatalf("Failed to scan: %v", err)
 			}
@@ -314,15 +308,10 @@ func BenchmarkRangeScanner(b *testing.B) {
 			andExpr := &expression.AndExpression{
 				Expressions: []storage.Expression{expr1, expr2},
 			}
-			schemaExpr := expression.NewSchemaAwareExpression(andExpr, schema)
-
-			// VERY IMPORTANT: Set column mapping explicitly for columnar index to work correctly
-			schemaExpr.ColumnMap = map[string]int{
-				"value": 1, // value column is at index 1 in schema
-			}
+			andExpr.PrepareForSchema(schema)
 
 			// Get the row IDs directly
-			rowIDs := colIndex.GetFilteredRowIDs(schemaExpr)
+			rowIDs := colIndex.GetFilteredRowIDs(andExpr)
 
 			// Count rows (no scanning, just counting)
 			rowCount := len(rowIDs)

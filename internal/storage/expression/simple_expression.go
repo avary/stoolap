@@ -93,34 +93,9 @@ func (e *SimpleExpression) Evaluate(row storage.Row) (bool, error) {
 		return e.evaluateComparison(colVal)
 	}
 
-	// Fall back to column name lookup
-	for i, colVal := range row {
-		// Skip nil values
-		if colVal == nil {
-			continue
-		}
-
-		// Handle NULL checks differently
-		if colVal.IsNull() {
-			// If this is the column we're looking for, evaluate NULL check
-			if i == e.ColIndex {
-				return e.evaluateNull()
-			}
-			// Otherwise continue searching
-			continue
-		}
-
-		// Cache the column index for future evaluations
-		if !e.IndexPrepped {
-			e.ColIndex = i
-			e.IndexPrepped = true
-		}
-
-		return e.evaluateComparison(colVal)
-	}
-
-	// Column not found
-	return false, fmt.Errorf("column %s not found", e.Column)
+	// If column index not prepared, simply return false
+	// We don't want to do expensive column name lookups or interface calls
+	return false, nil
 }
 
 // IsEquality returns true if this is an equality expression
@@ -629,10 +604,10 @@ func (e *SimpleExpression) evaluateNumericComparison(colValue storage.ColumnValu
 
 // PrepareForSchema optimizes the expression for a specific schema by calculating
 // column indices in advance for fast evaluation
-func (e *SimpleExpression) PrepareForSchema(schema storage.Schema) {
+func (e *SimpleExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
 	// If already prepped with valid index, don't redo the work
 	if e.IndexPrepped && e.ColIndex >= 0 {
-		return
+		return e
 	}
 
 	// Find the column index to optimize lookup
@@ -640,7 +615,7 @@ func (e *SimpleExpression) PrepareForSchema(schema storage.Schema) {
 		if col.Name == e.Column {
 			e.ColIndex = i
 			break
-		} else if strings.ToLower(col.Name) == strings.ToLower(e.Column) {
+		} else if strings.EqualFold(col.Name, e.Column) {
 			// Try case-insensitive match as a fallback
 			e.ColIndex = i
 			break
@@ -648,6 +623,7 @@ func (e *SimpleExpression) PrepareForSchema(schema storage.Schema) {
 	}
 
 	e.IndexPrepped = true
+	return e
 }
 
 // EvaluateFast is an ultra-optimized version of Evaluate that avoids interface method calls
@@ -656,9 +632,9 @@ func (e *SimpleExpression) EvaluateFast(row storage.Row) bool {
 	// Use cached column index if available
 	colIdx := e.ColIndex
 	if !e.IndexPrepped || colIdx < 0 || colIdx >= len(row) {
-		// Fallback to slower path
-		result, _ := e.Evaluate(row)
-		return result
+		// If column index not prepared, simply return false
+		// We don't want to do expensive column name lookups or interface calls
+		return false
 	}
 
 	// Get the column value directly - inlined for speed
@@ -851,4 +827,54 @@ func (e *SimpleExpression) EvaluateFast(row storage.Row) bool {
 	// Fallback to standard path for more complex cases
 	result, _ := e.evaluateComparison(colVal)
 	return result
+}
+
+// PrimaryKeyDetector is a helper function to check if an expression is a primary key operation
+func PrimaryKeyDetector(expr storage.Expression, schema storage.Schema) (*SimpleExpression, bool) {
+	// Fast exit if no expression
+	if expr == nil {
+		return nil, false
+	}
+
+	// Find the primary key column
+	var pkColName string
+	var pkColIndex int = -1
+
+	for i, col := range schema.Columns {
+		if col.PrimaryKey {
+			pkColName = col.Name
+			pkColIndex = i
+			break
+		}
+	}
+
+	// If no primary key found, can't optimize
+	if pkColName == "" {
+		return nil, false
+	}
+
+	// Check if it's a SimpleExpression
+	if simpleExpr, ok := expr.(*SimpleExpression); ok {
+		// Only for primary key column
+		if simpleExpr.Column != pkColName {
+			return nil, false
+		}
+
+		// For supported operators
+		if simpleExpr.Operator != storage.EQ &&
+			simpleExpr.Operator != storage.NE &&
+			simpleExpr.Operator != storage.GT &&
+			simpleExpr.Operator != storage.GTE &&
+			simpleExpr.Operator != storage.LT &&
+			simpleExpr.Operator != storage.LTE {
+			return nil, false
+		}
+
+		simpleExpr.ColIndex = pkColIndex
+		simpleExpr.IndexPrepped = true
+
+		return simpleExpr, true
+	}
+
+	return nil, false
 }

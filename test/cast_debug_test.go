@@ -146,8 +146,7 @@ func TestCastDebug(t *testing.T) {
 		for result.Next() {
 			count++
 			var id int64
-			var extraCol interface{} // Add an extra variable to handle the second column
-			if err := result.Scan(&id, &extraCol); err != nil {
+			if err := result.Scan(&id); err != nil {
 				t.Fatalf("failed to scan result: %v", err)
 			}
 			t.Logf("CAST query match: id=%d", id)

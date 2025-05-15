@@ -6,9 +6,9 @@ import (
 
 // AndExpression represents a logical AND of multiple expressions
 type AndExpression struct {
-	Expressions             []storage.Expression
-	aliases                 map[string]string    // Column aliases
-	cachedSchemaExpressions []storage.Expression // Cached schema-aware expressions for performance
+	Expressions []storage.Expression
+	aliases     map[string]string    // Column aliases
+	isOptimized bool                 // Whether this expression has been optimized for schema
 }
 
 // NewAndExpression creates a new AND expression
@@ -30,6 +30,31 @@ func (e *AndExpression) Evaluate(row storage.Row) (bool, error) {
 		}
 	}
 	return true, nil // All expressions were true
+}
+
+// EvaluateFast implements the Expression interface for fast evaluation
+func (e *AndExpression) EvaluateFast(row storage.Row) bool {
+	for _, expr := range e.Expressions {
+		if !expr.EvaluateFast(row) {
+			return false // Short-circuit on first false
+		}
+	}
+	return true // All expressions were true
+}
+
+// PrepareForSchema prepares the expression for a given schema
+func (e *AndExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	if e.isOptimized {
+		return e
+	}
+	
+	// Optimize all child expressions
+	for i, expr := range e.Expressions {
+		e.Expressions[i] = expr.PrepareForSchema(schema)
+	}
+	
+	e.isOptimized = true
+	return e
 }
 
 // WithAliases implements the Expression interface
@@ -56,9 +81,9 @@ func (e *AndExpression) WithAliases(aliases map[string]string) storage.Expressio
 
 // OrExpression represents a logical OR of multiple expressions
 type OrExpression struct {
-	Expressions             []storage.Expression
-	aliases                 map[string]string    // Column aliases
-	cachedSchemaExpressions []storage.Expression // Cached schema-aware expressions for performance
+	Expressions []storage.Expression
+	aliases     map[string]string // Column aliases
+	isOptimized bool              // Whether this expression has been optimized for schema
 }
 
 // NewOrExpression creates a new OR expression
@@ -80,6 +105,31 @@ func (e *OrExpression) Evaluate(row storage.Row) (bool, error) {
 		}
 	}
 	return false, nil // No expression was true
+}
+
+// EvaluateFast implements the Expression interface for fast evaluation
+func (e *OrExpression) EvaluateFast(row storage.Row) bool {
+	for _, expr := range e.Expressions {
+		if expr.EvaluateFast(row) {
+			return true // Short-circuit on first true
+		}
+	}
+	return false // No expression was true
+}
+
+// PrepareForSchema prepares the expression for a given schema
+func (e *OrExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	if e.isOptimized {
+		return e
+	}
+	
+	// Optimize all child expressions
+	for i, expr := range e.Expressions {
+		e.Expressions[i] = expr.PrepareForSchema(schema)
+	}
+	
+	e.isOptimized = true
+	return e
 }
 
 // WithAliases implements the Expression interface

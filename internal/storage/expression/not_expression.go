@@ -7,6 +7,9 @@ import (
 // NotExpression represents a logical NOT of an expression
 type NotExpression struct {
 	Expr storage.Expression
+	
+	// Schema optimization
+	isOptimized bool // Indicates if this expression has already been prepared for a schema
 }
 
 // NewNotExpression creates a new NOT expression
@@ -41,4 +44,24 @@ func (e *NotExpression) WithAliases(aliases map[string]string) storage.Expressio
 	return &NotExpression{
 		Expr: e.Expr,
 	}
+}
+
+// PrepareForSchema optimizes the expression for a specific schema
+func (e *NotExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	// If already optimized, don't redo the work
+	if e.isOptimized {
+		return e
+	}
+	
+	// Optimize the inner expression
+	e.Expr = e.Expr.PrepareForSchema(schema)
+	e.isOptimized = true
+	
+	return e
+}
+
+// EvaluateFast implements the Expression interface for fast evaluation
+func (e *NotExpression) EvaluateFast(row storage.Row) bool {
+	// Simply negate the result of the inner expression's fast evaluation
+	return !e.Expr.EvaluateFast(row)
 }

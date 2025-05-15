@@ -1535,13 +1535,6 @@ func (idx *MultiColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int6
 		}
 	}
 
-	// Handle SchemaAwareExpression
-	if schemaExpr, ok := expr.(*expression.SchemaAwareExpression); ok {
-		if schemaExpr.Expr != nil {
-			return idx.GetFilteredRowIDs(schemaExpr.Expr)
-		}
-	}
-
 	// For other expressions, we can't use this index efficiently
 	return nil
 }

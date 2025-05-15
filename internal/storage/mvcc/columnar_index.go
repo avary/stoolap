@@ -923,14 +923,6 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		}
 	}
 
-	// Special case for SchemaAwareExpression
-	if schemaExpr, ok := expr.(*expression.SchemaAwareExpression); ok {
-		// Try with the wrapped expression instead
-		if schemaExpr.Expr != nil {
-			return idx.GetFilteredRowIDs(schemaExpr.Expr)
-		}
-	}
-
 	// For other cases, return nil to indicate we can't use this index
 	return nil
 }

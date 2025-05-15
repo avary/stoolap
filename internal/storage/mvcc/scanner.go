@@ -8,7 +8,6 @@ import (
 
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
-	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
 // MVCCScannerMode defines the scanner's operation mode
@@ -16,15 +15,14 @@ type MVCCScannerMode int
 
 // MVCCScanner is a simple scanner implementation for MVCC results
 type MVCCScanner struct {
-	sourceRows    *fastmap.Int64Map[storage.Row]    // Original row references, not copied
-	rowIDs        []int64                           // Sorted row IDs for iteration
-	currentIndex  int                               // Current position in rowIDs
-	columnIndices []int                             // Which columns to return
-	schema        storage.Schema                    // Schema information
-	err           error                             // Any error that occurred
-	rowMap        *fastmap.Int64Map[storage.Row]    // The original map, will be returned to pool on Close
-	whereExpr     *expression.SchemaAwareExpression // The schema-aware expression, if it needs to be returned to pool
-	projectedRow  storage.Row                       // Reusable buffer for column projection
+	sourceRows    *fastmap.Int64Map[storage.Row] // Original row references, not copied
+	rowIDs        []int64                        // Sorted row IDs for iteration
+	currentIndex  int                            // Current position in rowIDs
+	columnIndices []int                          // Which columns to return
+	schema        storage.Schema                 // Schema information
+	err           error                          // Any error that occurred
+	rowMap        *fastmap.Int64Map[storage.Row] // The original map, will be returned to pool on Close
+	projectedRow  storage.Row                    // Reusable buffer for column projection
 
 	closed      atomic.Bool
 	shouldClose atomic.Int64
@@ -100,12 +98,6 @@ func (s *MVCCScanner) Close() error {
 	// Return the row map to the pool if it came from there
 	if s.rowMap != nil {
 		PutRowMap(s.rowMap)
-	}
-
-	// Return the schema aware expression to pool if applicable
-	if s.whereExpr != nil {
-		expression.ReturnSchemaAwereExpressionPool(s.whereExpr)
-		s.whereExpr = nil
 	}
 
 	// Return the scanner itself to the pool
@@ -332,7 +324,6 @@ func ReturnMVCCScanner(scanner *MVCCScanner) {
 	// We can't set schema to nil as it's a value type, not a pointer
 	scanner.projectedRow = nil
 	scanner.rowMap = nil
-	scanner.whereExpr = nil
 	scanner.err = nil
 	scanner.currentIndex = -1
 
@@ -355,11 +346,6 @@ func NewMVCCScanner(rows *fastmap.Int64Map[storage.Row], schema storage.Schema, 
 	scanner.columnIndices = columnIndices
 	scanner.schema = schema
 	scanner.rowMap = rows // Store the original map for returning to the pool
-
-	// Store the expression if it's a SchemaAwareExpression for cleanup
-	if saExpr, ok := where.(*expression.SchemaAwareExpression); ok {
-		scanner.whereExpr = saExpr
-	}
 
 	scanner.projectedRow = make(storage.Row, len(columnIndices))
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -316,9 +315,8 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 						// Find primary key column to create the search expression
 						for _, col := range schema.Columns {
 							if col.PrimaryKey {
-								simpleExpr := expression.NewSimpleExpression(col.Name, storage.EQ, pkErr.RowID)
-								simpleExpr.PrepareForSchema(schema)
-								searchExpr = expression.NewSchemaAwareExpression(simpleExpr, schema)
+								searchExpr = expression.NewSimpleExpression(col.Name, storage.EQ, pkErr.RowID)
+								searchExpr.PrepareForSchema(schema)
 								break
 							}
 						}
@@ -326,9 +324,8 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 					// Case 2: Unique constraint violation - we have column name and value
 					if searchExpr == nil && errors.As(err, &uniqueErr) {
-						simpleExpr := expression.NewSimpleExpression(uniqueErr.Column, storage.EQ, uniqueErr.Value.AsInterface())
-						simpleExpr.PrepareForSchema(schema)
-						searchExpr = expression.NewSchemaAwareExpression(simpleExpr, schema)
+						searchExpr = expression.NewSimpleExpression(uniqueErr.Column, storage.EQ, uniqueErr.Value.AsInterface())
+						searchExpr.PrepareForSchema(schema)
 					}
 
 					// If we found a valid search expression, find and update the row
@@ -545,10 +542,7 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 	if stmt.Where != nil {
 		// Convert the SQL WHERE expression to a storage-level expression
 		updateExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
-		if simpleExpr, ok := updateExpr.(*expression.SimpleExpression); ok {
-			// Prepare the expression for the schema
-			simpleExpr.PrepareForSchema(schema)
-		}
+		updateExpr.PrepareForSchema(schema)
 	} else {
 		// If no WHERE clause, update all rows - use a simple expression that always returns true
 		updateExpr = nil
@@ -603,10 +597,7 @@ func (e *Executor) executeDeleteWithContext(ctx context.Context, tx storage.Tran
 	if stmt.Where != nil {
 		// Convert the SQL WHERE expression to a storage-level expression
 		deleteExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
-		if simpleExpr, ok := deleteExpr.(*expression.SimpleExpression); ok {
-			// Prepare the expression for the schema
-			simpleExpr.PrepareForSchema(schema)
-		}
+		deleteExpr.PrepareForSchema(schema)
 	} else {
 		// If no WHERE clause, delete all rows - use a simple expression that always returns true
 		deleteExpr = nil
@@ -625,6 +616,18 @@ func (e *Executor) executeDeleteWithContext(ctx context.Context, tx storage.Tran
 // createWhereExpression creates a storage.Expression from a parser.Expression
 func createWhereExpression(ctx context.Context, expr parser.Expression, registry contract.FunctionRegistry) storage.Expression {
 	if expr == nil {
+		return nil
+	}
+
+	// Handle NOT expressions (implemented as PrefixExpression with operator "NOT")
+	if prefixExpr, ok := expr.(*parser.PrefixExpression); ok && prefixExpr.Operator == "NOT" {
+		// Recursively process the inner expression
+		innerExpr := createWhereExpression(ctx, prefixExpr.Right, registry)
+
+		// If we successfully created a storage expression, wrap it in a NOT
+		if innerExpr != nil {
+			return expression.NewNotExpression(innerExpr)
+		}
 		return nil
 	}
 
@@ -868,6 +871,14 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 					values = append(values, v.Value)
 				case *parser.BooleanLiteral:
 					values = append(values, v.Value)
+				case *parser.Parameter:
+					// Handle parameter binding if available
+					if ps := getParameterFromContext(ctx); ps != nil {
+						param := ps.GetValue(v)
+						values = append(values, param.Value)
+					}
+				case *parser.NullLiteral:
+					values = append(values, nil)
 				}
 			}
 
@@ -880,35 +891,7 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 		}
 	}
 
-	// Create an evaluator for the WHERE expression
-	evaluator := NewEvaluator(ctx, registry)
-
-	// Return a function expression that evaluates the WHERE clause for each row
-	return expression.NewEvalExpression(func(row storage.Row) (bool, error) {
-		// Convert storage.Row to a map for the evaluator
-		rowMap := make(map[string]storage.ColumnValue, len(row))
-
-		// When evaluating expressions, we need to do proper column name/value mapping
-		// to ensure WHERE clauses are evaluated correctly
-		for i, val := range row {
-			// Skip nil values
-			if val == nil {
-				continue
-			}
-
-			// First, add by position (column0, column1, etc.)
-			colByPos := "column" + strconv.Itoa(i)
-			rowMap[colByPos] = val
-		}
-
-		// Evaluate the WHERE clause
-		match, err := evaluator.EvaluateWhereClause(expr, rowMap)
-		if err != nil {
-			return false, nil
-		}
-
-		return match, nil
-	})
+	return nil
 }
 
 // isColumnAndLiteral checks if an expression is a comparison between a column and a literal value

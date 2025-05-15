@@ -4,7 +4,10 @@ import (
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
+// NOTE: The EvalExpression is currently only used for testing purposes
+
 // EvalExpression represents an expression implemented as a Go function
+// Deprecated: This is a generic expression that evaluates a function
 type EvalExpression struct {
 	evalFn func(row storage.Row) (bool, error)
 
@@ -28,6 +31,25 @@ func (e *EvalExpression) Evaluate(row storage.Row) (bool, error) {
 	}
 
 	return e.evalFn(row)
+}
+
+func (e *EvalExpression) EvaluateFast(row storage.Row) bool {
+	if e.evalFn == nil {
+		return false
+	}
+
+	result, err := e.evalFn(row)
+	if err != nil {
+		// If there's an error, we can't determine the result
+		return false
+	}
+
+	return result
+}
+
+// PrepareForSchema returns the expression itself since EvalExpression
+func (e *EvalExpression) PrepareForSchema(schema storage.Schema) storage.Expression {
+	return e
 }
 
 // GetColumnName returns an empty string since we don't know which column is used

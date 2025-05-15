@@ -3,7 +3,6 @@ package mvcc
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -672,35 +671,14 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 			}
 		}
 	}
-
-	// Try the columnar index optimization first for non-PK columns
-	var schemaExpr *expression.SchemaAwareExpression
-
 	// Prepare filter expression (optimized if possible)
 	var filterExpr storage.Expression = where
 
-	// Prepare schema-aware expression if not already optimized
-	if where != nil {
-		if _, ok := where.(*expression.FastSimpleExpression); ok {
-			// Already optimized with FastSimpleExpression
-			filterExpr = where
-		} else if existingExpr, ok := where.(*expression.SchemaAwareExpression); ok {
-			// Already schema-aware
-			filterExpr = where
-			schemaExpr = existingExpr
-		} else {
-			// Wrap with schema awareness for better column matching
-			newExpr := expression.NewSchemaAwareExpression(where, schema)
-			filterExpr = newExpr
-			schemaExpr = newExpr
-			defer expression.ReturnSchemaAwereExpressionPool(newExpr)
-		}
-	}
+	if filterExpr != nil {
+		filterExpr = filterExpr.PrepareForSchema(schema)
 
-	// Try columnar index optimization if schema-aware expression is available
-	if schemaExpr != nil {
 		// Get filtered row IDs using columnar indexes
-		rowIDs := mt.GetFilteredRowIDs(schemaExpr)
+		rowIDs := mt.GetFilteredRowIDs(filterExpr)
 
 		if len(rowIDs) > 0 {
 			// Processing update using columnar-index filtered row IDs
@@ -787,21 +765,15 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 		// Skip this step for large updates to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
 
-		// Create or reuse optimized batch evaluator if we have a filter
-		var batchEvaluator *expression.BatchExpressionEvaluator
+		// Prepare expression for schema evaluation
 		if filterExpr != nil {
-			// First check if we already have a batch evaluator
-			if existingEval, ok := filterExpr.(*expression.BatchExpressionEvaluator); ok {
-				// Reuse the existing evaluator
-				batchEvaluator = existingEval
-			} else {
-				// Get schema for batch evaluator
-				schema, schemaErr := mt.versionStore.GetTableSchema()
-				if schemaErr == nil {
-					// Create a new batch evaluator for the expression
-					batchEvaluator = expression.NewBatchExpressionEvaluator(filterExpr, schema)
-				}
+			// Get schema for expression preparation
+			schema, schemaErr := mt.versionStore.GetTableSchema()
+			if schemaErr != nil {
+				return 0, fmt.Errorf("failed to get schema for filter preparation: %w", schemaErr)
 			}
+
+			filterExpr = filterExpr.PrepareForSchema(schema)
 		}
 
 		// Prepare a batch of rows for processing
@@ -839,9 +811,12 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 		// Process batch of rows
 		if len(batchRows) > 0 {
 			var matches []bool
-			if batchEvaluator != nil {
-				// Use batch evaluation
-				matches = batchEvaluator.EvaluateBatch(batchRows)
+			if filterExpr != nil {
+				// Evaluate each row with the prepared expression
+				matches = make([]bool, len(batchRows))
+				for i, row := range batchRows {
+					matches[i] = filterExpr.EvaluateFast(row)
+				}
 			} else {
 				// No filter, all rows match
 				matches = make([]bool, len(batchRows))
@@ -908,7 +883,6 @@ func PutProcessedKeysMap(m *fastmap.Int64Map[struct{}]) {
 }
 
 // processGlobalVersions processes visible versions from the global version store
-// filter: The expression used for filtering (SchemaAwareExpression or FastSimpleExpression)
 // processedKeys: Map of keys already processed to avoid duplicates
 // processor: Function to call for each matching row
 // batchSize: Maximum number of rows to process (0 for unlimited)
@@ -926,21 +900,15 @@ func (mt *MVCCTable) processGlobalVersions(
 	processCount := 0
 	var err error
 
-	// Create optimized batch evaluator if we have a filter
-	var batchEvaluator *expression.BatchExpressionEvaluator
+	// Prepare filter expression for schema evaluation
 	if filter != nil {
-		// Get schema for batch evaluator
+		// Get schema for expression preparation
 		schema, schemaErr := mt.versionStore.GetTableSchema()
-		if schemaErr == nil {
-			// Check if we already have a batch evaluator
-			if existingEval, ok := filter.(*expression.BatchExpressionEvaluator); ok {
-				// Reuse the existing evaluator
-				batchEvaluator = existingEval
-			} else {
-				// Create a new batch evaluator for the expression
-				batchEvaluator = expression.NewBatchExpressionEvaluator(filter, schema)
-			}
+		if schemaErr != nil {
+			return 0, fmt.Errorf("failed to get schema for filter preparation: %w", schemaErr)
 		}
+
+		filter = filter.PrepareForSchema(schema)
 	}
 
 	// Prepare a batch of rows for processing
@@ -955,9 +923,12 @@ func (mt *MVCCTable) processGlobalVersions(
 			return nil
 		}
 
-		if batchEvaluator != nil {
-			// Use batch evaluation for all rows
-			matches := batchEvaluator.EvaluateBatch(batchRows)
+		if filter != nil {
+			// Evaluate each row with the prepared filter
+			matches := make([]bool, len(batchRows))
+			for i, row := range batchRows {
+				matches[i] = filter.EvaluateFast(row)
+			}
 
 			// Process matching rows
 			for i, match := range matches {
@@ -1147,9 +1118,6 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 		}
 	}
 
-	// Try to use columnar indexes for optimization
-	var schemaExpr *expression.SchemaAwareExpression
-
 	// Prepare filter expression (optimized if possible)
 	var filterExpr storage.Expression = where
 	schema, err = mt.versionStore.GetTableSchema()
@@ -1157,28 +1125,11 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 		return 0, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Prepare schema-aware expression if not already optimized
-	if where != nil {
-		if _, ok := where.(*expression.FastSimpleExpression); ok {
-			// Already optimized with FastSimpleExpression
-			filterExpr = where
-		} else if existingExpr, ok := where.(*expression.SchemaAwareExpression); ok {
-			// Already schema-aware
-			filterExpr = where
-			schemaExpr = existingExpr
-		} else {
-			// Wrap with schema awareness for better column matching
-			newExpr := expression.NewSchemaAwareExpression(where, schema)
-			filterExpr = newExpr
-			schemaExpr = newExpr
-			defer expression.ReturnSchemaAwereExpressionPool(newExpr)
-		}
-	}
+	if filterExpr != nil {
+		filterExpr = filterExpr.PrepareForSchema(schema)
 
-	// Try columnar index optimization if schema-aware expression is available
-	if schemaExpr != nil {
 		// Get filtered row IDs using columnar indexes
-		rowIDs := mt.GetFilteredRowIDs(schemaExpr)
+		rowIDs := mt.GetFilteredRowIDs(filterExpr)
 
 		if len(rowIDs) > 0 {
 			// Process deletions in batches for better memory usage
@@ -1233,20 +1184,9 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 	// Count of rows deleted
 	deleteCount := 0
 
-	// Prepare schema-aware expression if not already optimized
-	if where != nil {
-		if _, ok := where.(*expression.FastSimpleExpression); ok {
-			// Already optimized with FastSimpleExpression
-			filterExpr = where
-		} else if _, ok := where.(*expression.SchemaAwareExpression); ok {
-			// Already schema-aware
-			filterExpr = where
-		} else {
-			// Wrap with schema awareness for better column matching
-			schemaExpr := expression.NewSchemaAwareExpression(where, schema)
-			filterExpr = schemaExpr
-			defer expression.ReturnSchemaAwereExpressionPool(schemaExpr)
-		}
+	filterExpr = where
+	if filterExpr != nil {
+		filterExpr = filterExpr.PrepareForSchema(schema)
 	}
 
 	// PART 2: Process global versions with batch limiting
@@ -1263,21 +1203,15 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 		// Skip this step for large deletes to optimize memory usage
 		allRows := mt.txnVersions.GetAllVisibleRows()
 
-		// Create or reuse optimized batch evaluator if we have a filter
-		var batchEvaluator *expression.BatchExpressionEvaluator
+		// Prepare expression for schema evaluation
 		if filterExpr != nil {
-			// First check if we already have a batch evaluator
-			if existingEval, ok := filterExpr.(*expression.BatchExpressionEvaluator); ok {
-				// Reuse the existing evaluator
-				batchEvaluator = existingEval
-			} else {
-				// Get schema for batch evaluator
-				schema, schemaErr := mt.versionStore.GetTableSchema()
-				if schemaErr == nil {
-					// Create a new batch evaluator for the expression
-					batchEvaluator = expression.NewBatchExpressionEvaluator(filterExpr, schema)
-				}
+			// Get schema for expression preparation
+			schema, schemaErr := mt.versionStore.GetTableSchema()
+			if schemaErr != nil {
+				return 0, fmt.Errorf("failed to get schema for filter preparation: %w", schemaErr)
 			}
+
+			filterExpr = filterExpr.PrepareForSchema(schema)
 		}
 
 		// Prepare a batch of rows for processing
@@ -1315,9 +1249,12 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 		// Process batch of rows
 		if len(batchRows) > 0 {
 			var matches []bool
-			if batchEvaluator != nil {
-				// Use batch evaluation
-				matches = batchEvaluator.EvaluateBatch(batchRows)
+			if filterExpr != nil {
+				// Evaluate each row with the prepared expression
+				matches = make([]bool, len(batchRows))
+				for i, row := range batchRows {
+					matches[i] = filterExpr.EvaluateFast(row)
+				}
 			} else {
 				// No filter, all rows match
 				matches = make([]bool, len(batchRows))
@@ -1523,30 +1460,29 @@ func (mt *MVCCTable) Scan(columnIndices []int, where storage.Expression) (storag
 	// Check if we can use columnar indexes for optimization
 	var filterExpr storage.Expression
 	if where != nil {
-		// Ensure expression is schema-aware for columnar index usage
-		if _, ok := where.(*expression.FastSimpleExpression); ok {
-			// Already optimized, use as is
-			filterExpr = where
-		} else if schemaExpr, ok := where.(*expression.SchemaAwareExpression); ok {
-			// Already schema-aware, use as is
-			filterExpr = schemaExpr
+		filterExpr = where
+		filterExpr = filterExpr.PrepareForSchema(schema)
 
-			// Try to optimize with columnar indexes using the new direct row ID approach
-			rowIDs := mt.GetFilteredRowIDs(schemaExpr)
-			if len(rowIDs) > 0 {
-				// Create the optimized columnar iterator for better performance
-				return NewColumnarIndexIterator(
-					mt.versionStore,
-					rowIDs,
-					mt.txnID,
-					schema,
-					columnIndices,
-				), nil
-			}
+		// Try to optimize with columnar indexes using the new direct row ID approach
+		rowIDs := mt.GetFilteredRowIDs(filterExpr)
+		if len(rowIDs) > 0 {
+			// Create the optimized columnar iterator for better performance
+			return NewColumnarIndexIterator(
+				mt.versionStore,
+				rowIDs,
+				mt.txnID,
+				schema,
+				columnIndices,
+			), nil
 		}
 	}
 
 	// Regular path for all other queries
+	// Make sure expression is properly prepared with schema before scanning
+	if filterExpr != nil {
+		filterExpr = filterExpr.PrepareForSchema(schema)
+	}
+
 	// Get all visible rows with proper visibility checks for deleted rows
 	visibleRows := mt.txnVersions.GetAllVisibleRows()
 
@@ -1733,7 +1669,7 @@ type PKOperationInfo struct {
 	ID int64
 
 	// Optimized expression for direct execution
-	Expr *expression.FastSimpleExpression
+	Expr *expression.SimpleExpression
 
 	// Original comparison operator
 	Operator storage.Operator
@@ -1764,23 +1700,16 @@ func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOper
 	}
 
 	// Try to use our fast PK detector/optimizer
-	fastExpr, ok := expression.FastPKDetector(expr, schema)
+	simpleExpr, ok := expression.PrimaryKeyDetector(expr, schema)
 	if ok {
 		// We have an optimized expression
-		result.Expr = fastExpr
-		result.Operator = fastExpr.Operator
+		result.Expr = simpleExpr
+		result.Operator = simpleExpr.Operator
 		result.Valid = true
 
 		// For integer PKs, also extract the ID for legacy code paths
-		if fastExpr.ValueType == storage.TypeInteger {
-			result.ID = fastExpr.Int64Value
-		} else if fastExpr.ValueType == storage.TypeFloat {
-			result.ID = int64(fastExpr.Float64Value)
-		} else if fastExpr.ValueType == storage.TypeString {
-			// Try to parse string as integer
-			if id, err := strconv.ParseInt(fastExpr.StringValue, 10, 64); err == nil {
-				result.ID = id
-			}
+		if simpleExpr.ValueType == storage.TypeInteger {
+			result.ID = simpleExpr.Int64Value
 		}
 
 		return []PKOperationInfo{result}
@@ -1885,7 +1814,7 @@ func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOper
 					// If the range narrows to an exact value (id >= 5 AND id <= 5)
 					if lowerVal == upperVal {
 						// Create an exact equality expression
-						fastExpr := expression.NewFastSimpleExpression(
+						fastExpr := expression.NewSimpleExpression(
 							minBound.Expr.Column,
 							storage.EQ,
 							lowerVal,
@@ -2262,14 +2191,24 @@ func (mt *MVCCTable) DropColumnarIndex(indexIdentifier string) error {
 
 // GetFilteredRowIDs extracts row IDs that match the expression using columnar indexes
 // This is optimized for direct iteration over row IDs without materializing intermediate rows
-func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpression) []int64 {
+func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 	// If the expression is nil or version store is not available, return empty result
-	if schemaExpr == nil || mt.versionStore == nil {
+	if expr == nil || mt.versionStore == nil {
 		return nil
 	}
 
+	// Make sure expression is prepared with schema
+	schema, err := mt.versionStore.GetTableSchema()
+	if err != nil {
+		// Can't prepare expression without schema
+		return nil
+	}
+
+	// Ensure the expression is prepared with schema
+	expr = expr.PrepareForSchema(schema)
+
 	// Fast path for common case: direct simple expression on a single column
-	if simpleExpr, ok := schemaExpr.Expr.(*expression.SimpleExpression); ok {
+	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
 		// Get the index directly using our consistent method - it will check all naming patterns
 		index, err := mt.GetColumnarIndex(simpleExpr.Column)
 		if err == nil {
@@ -2279,7 +2218,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 	}
 
 	// Fast path for simple AND expression with two conditions
-	if andExpr, ok := schemaExpr.Expr.(*expression.AndExpression); ok && len(andExpr.Expressions) == 2 {
+	if andExpr, ok := expr.(*expression.AndExpression); ok && len(andExpr.Expressions) == 2 {
 		expr1, ok1 := andExpr.Expressions[0].(*expression.SimpleExpression)
 		expr2, ok2 := andExpr.Expressions[1].(*expression.SimpleExpression)
 
@@ -2322,7 +2261,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 	}
 
 	// Try to extract column references to find usable indexes
-	columnRefs := extractColumnReferences(schemaExpr)
+	columnRefs := extractColumnReferences(expr)
 	if len(columnRefs) == 0 {
 		return nil
 	}
@@ -2332,7 +2271,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 		colName := columnRefs[0]
 		index, err := mt.GetColumnarIndex(colName)
 		if err == nil {
-			return GetRowIDsFromColumnarIndex(schemaExpr.Expr, index)
+			return GetRowIDsFromColumnarIndex(expr, index)
 		}
 	}
 
@@ -2363,7 +2302,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 
 		for _, colName := range availableIndexColumns {
 			// Simple check for equality conditions
-			if hasEqualityCondition(schemaExpr.Expr, colName) {
+			if hasEqualityCondition(expr, colName) {
 				mostSelectiveCol = colName
 				foundEquality = true
 				break
@@ -2374,7 +2313,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 		if foundEquality {
 			index, err := mt.GetColumnarIndex(mostSelectiveCol)
 			if err == nil {
-				rowIDs := GetRowIDsFromColumnarIndex(schemaExpr.Expr, index)
+				rowIDs := GetRowIDsFromColumnarIndex(expr, index)
 				if len(rowIDs) > 0 {
 					matchingRowIDs = rowIDs
 					foundIndex = true
@@ -2406,7 +2345,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(schemaExpr *expression.SchemaAwareExpress
 		}
 
 		// Use the index to get matching row IDs directly
-		rowIDs := GetRowIDsFromColumnarIndex(schemaExpr.Expr, index)
+		rowIDs := GetRowIDsFromColumnarIndex(expr, index)
 
 		if len(rowIDs) > 0 {
 			if !foundIndex {
@@ -2462,15 +2401,8 @@ func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) *fastmap.Int64Ma
 		return result
 	}
 
-	// Extract schema-aware expression
-	var schemaExpr *expression.SchemaAwareExpression
-	var ok bool
-	if schemaExpr, ok = expr.(*expression.SchemaAwareExpression); !ok {
-		return result
-	}
-
 	// Get filtered row IDs using our optimized method
-	matchingRowIDs := mt.GetFilteredRowIDs(schemaExpr)
+	matchingRowIDs := mt.GetFilteredRowIDs(expr)
 
 	// If we found matching rows, fetch them from the version store
 	if len(matchingRowIDs) > 0 {
@@ -2502,7 +2434,7 @@ func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) *fastmap.Int64Ma
 	return result
 }
 
-func extractColumnReferences(expr *expression.SchemaAwareExpression) []string {
+func extractColumnReferences(expr storage.Expression) []string {
 	columnSet := make(map[string]bool)
 
 	// Helper function to process a single expression
@@ -2544,17 +2476,17 @@ func extractColumnReferences(expr *expression.SchemaAwareExpression) []string {
 				columnSet[typedExpr.Column] = true
 			}
 
-		case *expression.SchemaAwareExpression:
-			// Process the wrapped expression
-			if typedExpr.Expr != nil {
-				processExpression(typedExpr.Expr)
+		case *expression.CastExpression:
+			// Cast expressions may reference a column
+			if typedExpr.Column != "" {
+				columnSet[typedExpr.Column] = true
 			}
 		}
 	}
 
 	// Process the top-level expression
-	if expr != nil && expr.Expr != nil {
-		processExpression(expr.Expr)
+	if expr != nil {
+		processExpression(expr)
 	}
 
 	// Convert set to slice

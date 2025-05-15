@@ -37,9 +37,9 @@ func TestIsNullExpression(t *testing.T) {
 	// Test IS NULL direct expression on row1
 	t.Run("IS NULL on optional_value row1", func(t *testing.T) {
 		isNullExpr := expression.NewIsNullExpression("optional_value")
-		schemaAwareExpr := expression.NewSchemaAwareExpression(isNullExpr, schema)
+		isNullExpr = isNullExpr.PrepareForSchema(schema)
 
-		result, err := schemaAwareExpr.Evaluate(row1)
+		result, err := isNullExpr.Evaluate(row1)
 		if err != nil {
 			t.Fatalf("Error evaluating IS NULL: %v", err)
 		}
@@ -52,9 +52,9 @@ func TestIsNullExpression(t *testing.T) {
 	// Test IS NOT NULL direct expression on row1
 	t.Run("IS NOT NULL on optional_value row1", func(t *testing.T) {
 		isNotNullExpr := expression.NewIsNotNullExpression("optional_value")
-		schemaAwareExpr := expression.NewSchemaAwareExpression(isNotNullExpr, schema)
+		isNotNullExpr = isNotNullExpr.PrepareForSchema(schema)
 
-		result, err := schemaAwareExpr.Evaluate(row1)
+		result, err := isNotNullExpr.Evaluate(row1)
 		if err != nil {
 			t.Fatalf("Error evaluating IS NOT NULL: %v", err)
 		}
@@ -67,9 +67,9 @@ func TestIsNullExpression(t *testing.T) {
 	// Test IS NULL direct expression on row2
 	t.Run("IS NULL on optional_value row2", func(t *testing.T) {
 		isNullExpr := expression.NewIsNullExpression("optional_value")
-		schemaAwareExpr := expression.NewSchemaAwareExpression(isNullExpr, schema)
+		isNullExpr = isNullExpr.PrepareForSchema(schema)
 
-		result, err := schemaAwareExpr.Evaluate(row2)
+		result, err := isNullExpr.Evaluate(row2)
 		if err != nil {
 			t.Fatalf("Error evaluating IS NULL: %v", err)
 		}
@@ -82,9 +82,9 @@ func TestIsNullExpression(t *testing.T) {
 	// Test IS NOT NULL direct expression on row2
 	t.Run("IS NOT NULL on optional_value row2", func(t *testing.T) {
 		isNotNullExpr := expression.NewIsNotNullExpression("optional_value")
-		schemaAwareExpr := expression.NewSchemaAwareExpression(isNotNullExpr, schema)
+		isNotNullExpr = isNotNullExpr.PrepareForSchema(schema)
 
-		result, err := schemaAwareExpr.Evaluate(row2)
+		result, err := isNotNullExpr.Evaluate(row2)
 		if err != nil {
 			t.Fatalf("Error evaluating IS NOT NULL: %v", err)
 		}
@@ -97,9 +97,9 @@ func TestIsNullExpression(t *testing.T) {
 	// Test IS NULL on optional_text with row2
 	t.Run("IS NULL on optional_text row2", func(t *testing.T) {
 		isNullExpr := expression.NewIsNullExpression("optional_text")
-		schemaAwareExpr := expression.NewSchemaAwareExpression(isNullExpr, schema)
+		isNullExpr = isNullExpr.PrepareForSchema(schema)
 
-		result, err := schemaAwareExpr.Evaluate(row2)
+		result, err := isNullExpr.Evaluate(row2)
 		if err != nil {
 			t.Fatalf("Error evaluating IS NULL: %v", err)
 		}
@@ -112,9 +112,9 @@ func TestIsNullExpression(t *testing.T) {
 	// Test IS NOT NULL on optional_text with row2
 	t.Run("IS NOT NULL on optional_text row2", func(t *testing.T) {
 		isNotNullExpr := expression.NewIsNotNullExpression("optional_text")
-		schemaAwareExpr := expression.NewSchemaAwareExpression(isNotNullExpr, schema)
+		isNotNullExpr = isNotNullExpr.PrepareForSchema(schema)
 
-		result, err := schemaAwareExpr.Evaluate(row2)
+		result, err := isNotNullExpr.Evaluate(row2)
 		if err != nil {
 			t.Fatalf("Error evaluating IS NOT NULL: %v", err)
 		}

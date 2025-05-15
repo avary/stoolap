@@ -163,11 +163,10 @@ func BenchmarkColumnarIterator(b *testing.B) {
 				Expressions: []storage.Expression{expr1, expr2},
 			}
 
-			// Create schema-aware expression
-			schemaExpr := expression.NewSchemaAwareExpression(andExpr, mvccTable.Schema())
+			andExpr.PrepareForSchema(mvccTable.Schema())
 
 			// Get row IDs directly
-			rowIDs := mvccTable.GetFilteredRowIDs(schemaExpr)
+			rowIDs := mvccTable.GetFilteredRowIDs(andExpr)
 			if len(rowIDs) == 0 {
 				b.Fatalf("No row IDs returned from columnar index")
 			}
@@ -222,11 +221,10 @@ func BenchmarkColumnarIterator(b *testing.B) {
 				Expressions: []storage.Expression{expr1, expr2},
 			}
 
-			// Create schema-aware expression
-			schemaExpr := expression.NewSchemaAwareExpression(andExpr, mvccTable.Schema())
+			andExpr.PrepareForSchema(mvccTable.Schema())
 
 			// Get rows using the old approach
-			rows := mvccTable.GetRowsWithFilter(schemaExpr)
+			rows := mvccTable.GetRowsWithFilter(andExpr)
 
 			// Create scanner using the rows map
 			scanner := NewMVCCScanner(rows, mvccTable.Schema(), nil, nil)
