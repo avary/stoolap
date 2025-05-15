@@ -7,8 +7,8 @@ import (
 // AndExpression represents a logical AND of multiple expressions
 type AndExpression struct {
 	Expressions []storage.Expression
-	aliases     map[string]string    // Column aliases
-	isOptimized bool                 // Whether this expression has been optimized for schema
+	aliases     map[string]string // Column aliases
+	isOptimized bool              // Whether this expression has been optimized for schema
 }
 
 // NewAndExpression creates a new AND expression
@@ -32,14 +32,14 @@ func (e *AndExpression) Evaluate(row storage.Row) (bool, error) {
 	return true, nil // All expressions were true
 }
 
-// EvaluateFast implements the Expression interface for fast evaluation
 func (e *AndExpression) EvaluateFast(row storage.Row) bool {
+	// For more expressions, use existing logic
 	for _, expr := range e.Expressions {
 		if !expr.EvaluateFast(row) {
-			return false // Short-circuit on first false
+			return false
 		}
 	}
-	return true // All expressions were true
+	return true
 }
 
 // PrepareForSchema prepares the expression for a given schema
@@ -47,12 +47,12 @@ func (e *AndExpression) PrepareForSchema(schema storage.Schema) storage.Expressi
 	if e.isOptimized {
 		return e
 	}
-	
+
 	// Optimize all child expressions
 	for i, expr := range e.Expressions {
 		e.Expressions[i] = expr.PrepareForSchema(schema)
 	}
-	
+
 	e.isOptimized = true
 	return e
 }
@@ -122,12 +122,12 @@ func (e *OrExpression) PrepareForSchema(schema storage.Schema) storage.Expressio
 	if e.isOptimized {
 		return e
 	}
-	
+
 	// Optimize all child expressions
 	for i, expr := range e.Expressions {
 		e.Expressions[i] = expr.PrepareForSchema(schema)
 	}
-	
+
 	e.isOptimized = true
 	return e
 }

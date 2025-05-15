@@ -315,9 +315,9 @@ func (e *InListExpression) EvaluateFast(row storage.Row) bool {
 	default:
 		// For other types, simply return the default value
 		if e.Not {
-			return true  // NOT IN for unknown type
+			return true // NOT IN for unknown type
 		}
-		return false  // IN for unknown type
+		return false // IN for unknown type
 	}
 
 	// For NOT IN, invert the result

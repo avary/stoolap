@@ -7,7 +7,7 @@ import (
 // NotExpression represents a logical NOT of an expression
 type NotExpression struct {
 	Expr storage.Expression
-	
+
 	// Schema optimization
 	isOptimized bool // Indicates if this expression has already been prepared for a schema
 }
@@ -52,11 +52,11 @@ func (e *NotExpression) PrepareForSchema(schema storage.Schema) storage.Expressi
 	if e.isOptimized {
 		return e
 	}
-	
+
 	// Optimize the inner expression
 	e.Expr = e.Expr.PrepareForSchema(schema)
 	e.isOptimized = true
-	
+
 	return e
 }
 

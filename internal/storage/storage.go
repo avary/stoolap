@@ -200,7 +200,7 @@ type Expression interface {
 	// WithAliases sets column aliases for this expression
 	// This allows the expression to resolve alias references to original column names
 	WithAliases(aliases map[string]string) Expression
-	
+
 	// PrepareForSchema optimizes the expression for a given schema
 	// This allows the expression to quickly find columns by index instead of by name
 	PrepareForSchema(schema Schema) Expression

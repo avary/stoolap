@@ -584,20 +584,20 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 		}
 
 		if len(pkInfos) == 2 {
-			fastExpr1 := pkInfos[0].Expr
-			fastExpr2 := pkInfos[1].Expr
+			simpleExpr1 := pkInfos[0].Expr
+			simpleExpr2 := pkInfos[1].Expr
 
-			if (fastExpr1.Operator == storage.GT || fastExpr1.Operator == storage.GTE) &&
-				(fastExpr2.Operator == storage.LT || fastExpr2.Operator == storage.LTE) {
+			if (simpleExpr1.Operator == storage.GT || simpleExpr1.Operator == storage.GTE) &&
+				(simpleExpr2.Operator == storage.LT || simpleExpr2.Operator == storage.LTE) {
 
 				// Get range bounds with adjustments for inclusive/exclusive
-				lowerBound := fastExpr1.Int64Value
-				if fastExpr1.Operator == storage.GTE {
+				lowerBound := simpleExpr1.Int64Value
+				if simpleExpr1.Operator == storage.GTE {
 					lowerBound-- // Adjust for inclusive lower bound
 				}
 
-				upperBound := fastExpr2.Int64Value
-				if fastExpr2.Operator == storage.LT {
+				upperBound := simpleExpr2.Int64Value
+				if simpleExpr2.Operator == storage.LT {
 					upperBound-- // Adjust for exclusive upper bound
 				}
 
@@ -924,17 +924,11 @@ func (mt *MVCCTable) processGlobalVersions(
 		}
 
 		if filter != nil {
-			// Evaluate each row with the prepared filter
-			matches := make([]bool, len(batchRows))
+			// Evaluate and process in a single pass for better performance
 			for i, row := range batchRows {
-				matches[i] = filter.EvaluateFast(row)
-			}
-
-			// Process matching rows
-			for i, match := range matches {
-				if match {
+				// Fast path: directly evaluate and process in one loop
+				if filter.EvaluateFast(row) {
 					rowID := batchRowIDs[i]
-					row := batchRows[i]
 
 					// Mark as processed
 					processedKeys.Put(rowID, struct{}{})
@@ -1062,20 +1056,20 @@ func (mt *MVCCTable) Delete(where storage.Expression) (int, error) {
 
 		// Fast path for range deletion
 		if len(pkInfos) == 2 {
-			fastExpr1 := pkInfos[0].Expr
-			fastExpr2 := pkInfos[1].Expr
+			simpleExpr1 := pkInfos[0].Expr
+			simpleExpr2 := pkInfos[1].Expr
 
-			if (fastExpr1.Operator == storage.GT || fastExpr1.Operator == storage.GTE) &&
-				(fastExpr2.Operator == storage.LT || fastExpr2.Operator == storage.LTE) {
+			if (simpleExpr1.Operator == storage.GT || simpleExpr1.Operator == storage.GTE) &&
+				(simpleExpr2.Operator == storage.LT || simpleExpr2.Operator == storage.LTE) {
 
 				// Get range bounds
-				lowerBound := fastExpr1.Int64Value
-				if fastExpr1.Operator == storage.GTE {
+				lowerBound := simpleExpr1.Int64Value
+				if simpleExpr1.Operator == storage.GTE {
 					lowerBound-- // Adjust for inclusive lower bound
 				}
 
-				upperBound := fastExpr2.Int64Value
-				if fastExpr2.Operator == storage.LT {
+				upperBound := simpleExpr2.Int64Value
+				if simpleExpr2.Operator == storage.LT {
 					upperBound-- // Adjust for exclusive upper bound
 				}
 
@@ -1425,23 +1419,23 @@ func (mt *MVCCTable) Scan(columnIndices []int, where storage.Expression) (storag
 		}
 
 		if len(pkInfos) == 2 {
-			fastExpr1 := pkInfos[0].Expr
-			fastExpr2 := pkInfos[1].Expr
+			simpleExpr1 := pkInfos[0].Expr
+			simpleExpr2 := pkInfos[1].Expr
 
-			if (fastExpr1.Operator == storage.GT || fastExpr1.Operator == storage.GTE) &&
-				(fastExpr2.Operator == storage.LT || fastExpr2.Operator == storage.LTE) {
+			if (simpleExpr1.Operator == storage.GT || simpleExpr1.Operator == storage.GTE) &&
+				(simpleExpr2.Operator == storage.LT || simpleExpr2.Operator == storage.LTE) {
 
-				lowerBound := fastExpr1.Int64Value
-				upperBound := fastExpr2.Int64Value
+				lowerBound := simpleExpr1.Int64Value
+				upperBound := simpleExpr2.Int64Value
 
 				// Adjust bounds based on inclusive/exclusive operators
 				startID := lowerBound
-				if fastExpr1.Operator == storage.GT {
+				if simpleExpr1.Operator == storage.GT {
 					startID = lowerBound + 1 // exclusive lower bound
 				}
 
 				endID := upperBound
-				inclusiveEnd := fastExpr2.Operator == storage.LTE
+				inclusiveEnd := simpleExpr2.Operator == storage.LTE
 
 				// Create and return optimized range scanner
 				return NewRangeScanner(
@@ -1814,15 +1808,15 @@ func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOper
 					// If the range narrows to an exact value (id >= 5 AND id <= 5)
 					if lowerVal == upperVal {
 						// Create an exact equality expression
-						fastExpr := expression.NewSimpleExpression(
+						simpleExpr := expression.NewSimpleExpression(
 							minBound.Expr.Column,
 							storage.EQ,
 							lowerVal,
 						)
-						fastExpr.ColIndex = minBound.Expr.ColIndex
-						fastExpr.IndexPrepped = true
+						simpleExpr.ColIndex = minBound.Expr.ColIndex
+						simpleExpr.IndexPrepped = true
 
-						result.Expr = fastExpr
+						result.Expr = simpleExpr
 						result.Operator = storage.EQ
 						result.Valid = true
 						result.ID = lowerVal
@@ -2192,24 +2186,35 @@ func (mt *MVCCTable) DropColumnarIndex(indexIdentifier string) error {
 // GetFilteredRowIDs extracts row IDs that match the expression using columnar indexes
 // This is optimized for direct iteration over row IDs without materializing intermediate rows
 func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
-	// If the expression is nil or version store is not available, return empty result
+	// Fast exit for nil expression or nil version store
 	if expr == nil || mt.versionStore == nil {
 		return nil
 	}
 
-	// Make sure expression is prepared with schema
+	// Fetch schema and prepare expression (cached during a query)
 	schema, err := mt.versionStore.GetTableSchema()
 	if err != nil {
-		// Can't prepare expression without schema
 		return nil
 	}
 
 	// Ensure the expression is prepared with schema
 	expr = expr.PrepareForSchema(schema)
 
-	// Fast path for common case: direct simple expression on a single column
+	// Ultra-fast path: check for equality on a single column (most common case)
+	// This is a specialized version of the more general SimpleExpression check below
+	// but directly checks for equality which is by far the most common operation
+	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok && simpleExpr.Operator == storage.EQ {
+		// Try to get a direct columnar index for this column (most efficient)
+		index, err := mt.GetColumnarIndex(simpleExpr.Column)
+		if err == nil {
+			// Special fast path for equality on exact match index
+			return GetRowIDsFromColumnarIndex(simpleExpr, index)
+		}
+	}
+
+	// Fast path for other simple expressions on a single column
 	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
-		// Get the index directly using our consistent method - it will check all naming patterns
+		// Get the index directly using our consistent method
 		index, err := mt.GetColumnarIndex(simpleExpr.Column)
 		if err == nil {
 			// Use the optimized path for this index
@@ -2227,7 +2232,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 			if expr1.Column == expr2.Column {
 				colName := expr1.Column
 
-				// Get the index directly using our consistent method
+				// Get the index directly
 				index, err := mt.GetColumnarIndex(colName)
 				if err == nil {
 					// Let the index handle the AND condition directly
@@ -2235,21 +2240,40 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				}
 			} else {
 				// Case 2: Conditions on different columns (e.g., x > 10 AND y = true)
-				// Get the first index directly
-				index1, err1 := mt.GetColumnarIndex(expr1.Column)
-				// Get the second index directly
-				index2, err2 := mt.GetColumnarIndex(expr2.Column)
+				// This is very common in multi-column filtering
 
-				// If we have both indexes, we can apply them independently and intersect the results
+				// Determine which expression is more likely to be selective
+				// Equality conditions typically filter out more rows than range conditions
+				var moreSelectiveExpr, lessSelectiveExpr *expression.SimpleExpression
+
+				// Prioritize equality checks as they're more selective
+				if expr1.Operator == storage.EQ && expr2.Operator != storage.EQ {
+					moreSelectiveExpr = expr1
+					lessSelectiveExpr = expr2
+				} else if expr2.Operator == storage.EQ && expr1.Operator != storage.EQ {
+					moreSelectiveExpr = expr2
+					lessSelectiveExpr = expr1
+				} else {
+					// Default to the first expression as more selective if we can't determine
+					moreSelectiveExpr = expr1
+					lessSelectiveExpr = expr2
+				}
+
+				// Get indexes for both expressions
+				indexSelective, err1 := mt.GetColumnarIndex(moreSelectiveExpr.Column)
+				indexLessSelective, err2 := mt.GetColumnarIndex(lessSelectiveExpr.Column)
+
+				// If we have both indexes, apply the more selective one first
 				if err1 == nil && err2 == nil {
-					// Get matching row IDs from first condition
-					rowIDs1 := GetRowIDsFromColumnarIndex(expr1, index1)
+					// Get matching row IDs from more selective condition first
+					rowIDs1 := GetRowIDsFromColumnarIndex(moreSelectiveExpr, indexSelective)
+					if len(rowIDs1) == 0 {
+						return nil
+					}
 
-					// Get matching row IDs from second condition
-					rowIDs2 := GetRowIDsFromColumnarIndex(expr2, index2)
-
-					// If either result set is empty, return empty result
-					if len(rowIDs1) == 0 || len(rowIDs2) == 0 {
+					// Get matching row IDs from less selective condition
+					rowIDs2 := GetRowIDsFromColumnarIndex(lessSelectiveExpr, indexLessSelective)
+					if len(rowIDs2) == 0 {
 						return nil
 					}
 
