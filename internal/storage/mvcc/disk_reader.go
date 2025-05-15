@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/stoolap/stoolap/internal/btree"
+	"github.com/stoolap/stoolap/internal/common"
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 )
@@ -55,16 +56,26 @@ func NewDiskReader(filePath string) (*DiskReader, error) {
 		LoadedRowIDs: fastmap.NewInt64Map[struct{}](1000), // Initialize loaded rowids map
 	}
 
+	// Get buffers from the pool for header and footer
+	headerBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(headerBuffer)
+
+	// Ensure buffer is sized correctly for header
+	if cap(headerBuffer.B) < FileHeaderSize {
+		headerBuffer.B = make([]byte, FileHeaderSize)
+	} else {
+		headerBuffer.B = headerBuffer.B[:FileHeaderSize]
+	}
+
 	// Read header
-	headerBytes := make([]byte, FileHeaderSize)
-	if _, err := file.ReadAt(headerBytes, 0); err != nil {
+	if _, err := file.ReadAt(headerBuffer.B, 0); err != nil {
 		file.Close()
 		return nil, err
 	}
 
-	reader.header.Magic = binary.LittleEndian.Uint64(headerBytes[0:8])
-	reader.header.Version = binary.LittleEndian.Uint32(headerBytes[8:12])
-	reader.header.Flags = binary.LittleEndian.Uint32(headerBytes[12:16])
+	reader.header.Magic = binary.LittleEndian.Uint64(headerBuffer.B[0:8])
+	reader.header.Version = binary.LittleEndian.Uint32(headerBuffer.B[8:12])
+	reader.header.Flags = binary.LittleEndian.Uint32(headerBuffer.B[12:16])
 
 	// Validate magic bytes
 	if reader.header.Magic != MagicBytes {
@@ -72,19 +83,29 @@ func NewDiskReader(filePath string) (*DiskReader, error) {
 		return nil, fmt.Errorf("invalid file format: magic mismatch")
 	}
 
+	// Get another buffer for footer
+	footerBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(footerBuffer)
+
+	// Ensure buffer is sized correctly for footer
+	if cap(footerBuffer.B) < FooterSize {
+		footerBuffer.B = make([]byte, FooterSize)
+	} else {
+		footerBuffer.B = footerBuffer.B[:FooterSize]
+	}
+
 	// Read footer
-	footerBytes := make([]byte, FooterSize)
-	if _, err := file.ReadAt(footerBytes, stat.Size()-FooterSize); err != nil {
+	if _, err := file.ReadAt(footerBuffer.B, stat.Size()-FooterSize); err != nil {
 		file.Close()
 		return nil, err
 	}
 
-	reader.footer.IndexOffset = binary.LittleEndian.Uint64(footerBytes[0:8])
-	reader.footer.IndexSize = binary.LittleEndian.Uint64(footerBytes[8:16])
-	reader.footer.RowCount = binary.LittleEndian.Uint64(footerBytes[16:24])
-	reader.footer.TxnIDsOffset = binary.LittleEndian.Uint64(footerBytes[24:32])
-	reader.footer.TxnIDsCount = binary.LittleEndian.Uint64(footerBytes[32:40])
-	reader.footer.Magic = binary.LittleEndian.Uint64(footerBytes[40:48])
+	reader.footer.IndexOffset = binary.LittleEndian.Uint64(footerBuffer.B[0:8])
+	reader.footer.IndexSize = binary.LittleEndian.Uint64(footerBuffer.B[8:16])
+	reader.footer.RowCount = binary.LittleEndian.Uint64(footerBuffer.B[16:24])
+	reader.footer.TxnIDsOffset = binary.LittleEndian.Uint64(footerBuffer.B[24:32])
+	reader.footer.TxnIDsCount = binary.LittleEndian.Uint64(footerBuffer.B[32:40])
+	reader.footer.Magic = binary.LittleEndian.Uint64(footerBuffer.B[40:48])
 
 	// Validate footer magic
 	if reader.footer.Magic != MagicBytes {
@@ -126,11 +147,19 @@ func (r *DiskReader) loadIndex() error {
 	// Calculate the number of index entries
 	numEntries := r.footer.IndexSize / IndexEntrySize
 
-	// Allocate buffer for the index
-	indexBytes := make([]byte, r.footer.IndexSize)
+	// Get a buffer from the pool
+	indexBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(indexBuffer)
+
+	// Ensure buffer has enough capacity
+	if cap(indexBuffer.B) < int(r.footer.IndexSize) {
+		indexBuffer.B = make([]byte, r.footer.IndexSize)
+	} else {
+		indexBuffer.B = indexBuffer.B[:r.footer.IndexSize]
+	}
 
 	// Read the index
-	if _, err := r.file.ReadAt(indexBytes, int64(r.footer.IndexOffset)); err != nil {
+	if _, err := r.file.ReadAt(indexBuffer.B, int64(r.footer.IndexOffset)); err != nil {
 		return err
 	}
 
@@ -143,8 +172,8 @@ func (r *DiskReader) loadIndex() error {
 
 	for i := uint64(0); i < numEntries; i++ {
 		offset := i * IndexEntrySize
-		keys[i] = int64(binary.LittleEndian.Uint64(indexBytes[offset : offset+8]))
-		values[i] = int64(binary.LittleEndian.Uint64(indexBytes[offset+8 : offset+16]))
+		keys[i] = int64(binary.LittleEndian.Uint64(indexBuffer.B[offset : offset+8]))
+		values[i] = int64(binary.LittleEndian.Uint64(indexBuffer.B[offset+8 : offset+16]))
 	}
 
 	// Use optimized batch insertion
@@ -161,22 +190,42 @@ func (r *DiskReader) readSchema() error {
 	// Skip header
 	offset := int64(FileHeaderSize)
 
+	// Get a buffer from the pool for the length
+	lenBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(lenBuffer)
+
+	// Ensure buffer has enough capacity for length (4 bytes)
+	if cap(lenBuffer.B) < 4 {
+		lenBuffer.B = make([]byte, 4)
+	} else {
+		lenBuffer.B = lenBuffer.B[:4]
+	}
+
 	// Read schema length
-	lenBytes := make([]byte, 4)
-	if _, err := r.file.ReadAt(lenBytes, offset); err != nil {
+	if _, err := r.file.ReadAt(lenBuffer.B, offset); err != nil {
 		return err
 	}
-	schemaLen := binary.LittleEndian.Uint32(lenBytes)
+	schemaLen := binary.LittleEndian.Uint32(lenBuffer.B)
 	offset += 4
 
+	// Get another buffer from the pool for schema data
+	schemaBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(schemaBuffer)
+
+	// Ensure buffer has enough capacity
+	if cap(schemaBuffer.B) < int(schemaLen) {
+		schemaBuffer.B = make([]byte, schemaLen)
+	} else {
+		schemaBuffer.B = schemaBuffer.B[:schemaLen]
+	}
+
 	// Read schema data
-	schemaBytes := make([]byte, schemaLen)
-	if _, err := r.file.ReadAt(schemaBytes, offset); err != nil {
+	if _, err := r.file.ReadAt(schemaBuffer.B, offset); err != nil {
 		return err
 	}
 
 	// Deserialize schema
-	schema, err := deserializeSchema(schemaBytes)
+	schema, err := deserializeSchema(schemaBuffer.B)
 	if err != nil {
 		return err
 	}
@@ -207,14 +256,24 @@ func (r *DiskReader) GetRow(rowID int64) (RowVersion, bool) {
 	}
 	rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
 
-	// Read row data
-	rowBytes := make([]byte, rowLen)
-	if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+	// Get a buffer from the pool instead of allocating
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
+	// Ensure the buffer has enough capacity
+	if cap(buffer.B) < int(rowLen) {
+		buffer.B = make([]byte, rowLen)
+	} else {
+		buffer.B = buffer.B[:rowLen]
+	}
+
+	// Read row data into the reused buffer
+	if _, err := r.file.ReadAt(buffer.B, offset+4); err != nil {
 		return RowVersion{}, false
 	}
 
 	// Deserialize row version
-	version, err := deserializeRowVersion(rowBytes)
+	version, err := deserializeRowVersion(buffer.B)
 	if err != nil {
 		return RowVersion{}, false
 	}
@@ -236,6 +295,10 @@ func (r *DiskReader) GetRowBatch(rowIDs []int64) map[int64]RowVersion {
 
 	result := make(map[int64]RowVersion, len(rowIDs))
 
+	// Get a buffer from the pool that we'll reuse for each row
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
 	for _, rowID := range rowIDs {
 		if _, ok := r.LoadedRowIDs.Get(rowID); ok {
 			continue // Already loaded
@@ -253,14 +316,20 @@ func (r *DiskReader) GetRowBatch(rowIDs []int64) map[int64]RowVersion {
 		}
 		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
 
+		// Ensure the buffer has enough capacity
+		if cap(buffer.B) < int(rowLen) {
+			buffer.B = make([]byte, rowLen)
+		} else {
+			buffer.B = buffer.B[:rowLen]
+		}
+
 		// Read row data
-		rowBytes := make([]byte, rowLen)
-		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+		if _, err := r.file.ReadAt(buffer.B, offset+4); err != nil {
 			continue
 		}
 
 		// Deserialize row version
-		version, err := deserializeRowVersion(rowBytes)
+		version, err := deserializeRowVersion(buffer.B)
 		if err != nil {
 			continue
 		}
@@ -288,6 +357,10 @@ func (r *DiskReader) ForEach(callback func(rowID int64, version RowVersion) bool
 	processed := 0
 	errors := 0
 
+	// Get a buffer from the pool that we'll reuse for each row
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
 	for rowID, offset := range r.index.GetAll() {
 		// Check if we've already loaded this rowID
 		if r.LoadedRowIDs.Has(rowID) {
@@ -301,15 +374,21 @@ func (r *DiskReader) ForEach(callback func(rowID int64, version RowVersion) bool
 		}
 		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
 
+		// Ensure the buffer has enough capacity
+		if cap(buffer.B) < int(rowLen) {
+			buffer.B = make([]byte, rowLen)
+		} else {
+			buffer.B = buffer.B[:rowLen]
+		}
+
 		// Read row data
-		rowBytes := make([]byte, rowLen)
-		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+		if _, err := r.file.ReadAt(buffer.B, offset+4); err != nil {
 			errors++
 			continue
 		}
 
 		// Deserialize row version
-		version, err := deserializeRowVersion(rowBytes)
+		version, err := deserializeRowVersion(buffer.B)
 		if err != nil {
 			errors++
 			continue
@@ -337,6 +416,10 @@ func (r *DiskReader) GetAllRows() map[int64]RowVersion {
 	// Estimate initial capacity based on row count
 	result := make(map[int64]RowVersion, r.footer.RowCount)
 
+	// Get a buffer from the pool that we'll reuse for each row
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
 	// Iterate through all entries in the index
 	r.index.ForEach(func(rowID int64, offset int64) bool {
 		// Read length prefix using pre-allocated buffer
@@ -345,14 +428,20 @@ func (r *DiskReader) GetAllRows() map[int64]RowVersion {
 		}
 		rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
 
+		// Ensure the buffer has enough capacity
+		if cap(buffer.B) < int(rowLen) {
+			buffer.B = make([]byte, rowLen)
+		} else {
+			buffer.B = buffer.B[:rowLen]
+		}
+
 		// Read row data
-		rowBytes := make([]byte, rowLen)
-		if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+		if _, err := r.file.ReadAt(buffer.B, offset+4); err != nil {
 			return true // Continue on error
 		}
 
 		// Deserialize row version
-		version, err := deserializeRowVersion(rowBytes)
+		version, err := deserializeRowVersion(buffer.B)
 		if err != nil {
 			return true // Continue on error
 		}

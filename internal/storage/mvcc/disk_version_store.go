@@ -4,7 +4,6 @@ package mvcc
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stoolap/stoolap/internal/common"
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/binser"
@@ -216,14 +216,24 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 			}
 			rowLen := binary.LittleEndian.Uint32(r.lenBuffer)
 
+			// Get a buffer from the pool
+			buffer := common.GetBufferPool()
+			defer common.PutBufferPool(buffer)
+
+			// Ensure buffer has enough capacity
+			if cap(buffer.B) < int(rowLen) {
+				buffer.B = make([]byte, rowLen)
+			} else {
+				buffer.B = buffer.B[:rowLen]
+			}
+
 			// Read row data
-			rowBytes := make([]byte, rowLen)
-			if _, err := r.file.ReadAt(rowBytes, offset+4); err != nil {
+			if _, err := r.file.ReadAt(buffer.B, offset+4); err != nil {
 				return true // Continue on error
 			}
 
 			// Deserialize row version
-			version, err := deserializeRowVersion(rowBytes)
+			version, err := deserializeRowVersion(buffer.B)
 			if err != nil {
 				return true // Continue on error
 			}
@@ -611,13 +621,31 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 	}
 	defer file.Close()
 
-	// Read the entire file
-	data, err := io.ReadAll(file)
+	// Get file stats to determine size
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get metadata file stats: %w", err)
+	}
+
+	// Get a buffer from the pool for the file data
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
+	// Ensure buffer has enough capacity
+	fileSize := fileInfo.Size()
+	if cap(buffer.B) < int(fileSize) {
+		buffer.B = make([]byte, fileSize)
+	} else {
+		buffer.B = buffer.B[:fileSize]
+	}
+
+	// Read the entire file into the buffer
+	_, err = file.Read(buffer.B)
 	if err != nil {
 		return fmt.Errorf("failed to read metadata file: %w", err)
 	}
 
-	reader := binser.NewReader(data)
+	reader := binser.NewReader(buffer.B)
 
 	// Read format version
 	version, err := reader.ReadUint32()
@@ -696,8 +724,16 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 		}
 
 		// Read index data directly (without using ReadBytes that would expect a TypeBytes marker)
-		// Create a buffer for the index data
-		indexData := make([]byte, indexLen)
+		// Get a buffer from the pool
+		indexBuffer := common.GetBufferPool()
+		defer common.PutBufferPool(indexBuffer)
+
+		// Ensure buffer has enough capacity
+		if cap(indexBuffer.B) < int(indexLen) {
+			indexBuffer.B = make([]byte, indexLen)
+		} else {
+			indexBuffer.B = indexBuffer.B[:indexLen]
+		}
 
 		// Check if we have enough bytes remaining
 		if reader.RemainingBytes() < int(indexLen) {
@@ -711,16 +747,16 @@ func (dvs *DiskVersionStore) loadMetadataFile(path string) error {
 			if err != nil {
 				return fmt.Errorf("failed to read byte %d of index data for index %d: %w", j, i, err)
 			}
-			indexData[j] = b
+			indexBuffer.B[j] = b
 		}
 
 		// Deserialize index metadata
-		if len(indexData) < 10 {
-			return fmt.Errorf("index data too small for index %d: %d bytes", i, len(indexData))
+		if len(indexBuffer.B) < 10 {
+			return fmt.Errorf("index data too small for index %d: %d bytes", i, len(indexBuffer.B))
 		}
 
 		// Use debug version for detailed logging
-		indexMeta, err := DeserializeIndexMetadata(indexData)
+		indexMeta, err := DeserializeIndexMetadata(indexBuffer.B)
 		if err != nil {
 			return fmt.Errorf("failed to deserialize index metadata for index %d: %w", i, err)
 		}
@@ -895,6 +931,11 @@ func (dvs *DiskVersionStore) Close() error {
 
 // serializeSchema serializes a schema to binary format
 func serializeSchema(schema *storage.Schema) ([]byte, error) {
+	// Get a buffer from the pool for the writer
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
+	// Create a new writer
 	writer := binser.NewWriter()
 	defer writer.Release()
 
@@ -916,7 +957,12 @@ func serializeSchema(schema *storage.Schema) ([]byte, error) {
 	writer.WriteInt64(schema.CreatedAt.UnixNano())
 	writer.WriteInt64(schema.UpdatedAt.UnixNano())
 
-	return writer.Bytes(), nil
+	// Create a copy of the writer's buffer to return
+	writerBytes := writer.Bytes()
+	result := make([]byte, len(writerBytes))
+	copy(result, writerBytes)
+
+	return result, nil
 }
 
 // deserializeSchema deserializes a schema from binary data
@@ -992,89 +1038,110 @@ func deserializeSchema(data []byte) (*storage.Schema, error) {
 
 // serializeRow serializes a row to binary format
 func serializeRow(row storage.Row) ([]byte, error) {
-	buf := make([]byte, 0, 256) // Initial buffer size
+	// Get a buffer from the pool
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
+	// Make sure we have capacity for the header (column count) and some data
+	// We'll grow as needed
+	initialCap := 256
+	if cap(buffer.B) < initialCap {
+		buffer.B = make([]byte, 0, initialCap)
+	} else {
+		buffer.B = buffer.B[:0]
+	}
 
 	// Add column count
-	buf = append(buf, byte(len(row)>>8), byte(len(row)))
+	buffer.B = append(buffer.B, byte(len(row)>>8), byte(len(row)))
 
 	// Add each column
 	for _, col := range row {
 		if col == nil || col.IsNull() {
 			// Write NULL marker
-			buf = append(buf, binser.TypeNull)
+			buffer.B = append(buffer.B, binser.TypeNull)
 			continue
 		}
 
 		// Write the column type
-		buf = append(buf, binser.TypeUint8)
-		buf = append(buf, byte(col.Type()))
+		buffer.B = append(buffer.B, binser.TypeUint8)
+		buffer.B = append(buffer.B, byte(col.Type()))
 
 		// Write value based on type
 		switch col.Type() {
 		case storage.TypeInteger:
 			v, _ := col.AsInt64()
-			buf = append(buf, binser.TypeInt64)
+			buffer.B = append(buffer.B, binser.TypeInt64)
 			// Allocate space for the int64 value
-			buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
+			buffer.B = append(buffer.B, 0, 0, 0, 0, 0, 0, 0, 0)
 			// Write directly to the buffer at the correct position
-			binary.LittleEndian.PutUint64(buf[len(buf)-8:], uint64(v))
+			binary.LittleEndian.PutUint64(buffer.B[len(buffer.B)-8:], uint64(v))
 
 		case storage.TypeFloat:
 			v, _ := col.AsFloat64()
-			buf = append(buf, binser.TypeFloat64)
+			buffer.B = append(buffer.B, binser.TypeFloat64)
 			// Allocate space for the float64 value
-			buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
+			buffer.B = append(buffer.B, 0, 0, 0, 0, 0, 0, 0, 0)
 			// Write directly to the buffer at the correct position
-			binary.LittleEndian.PutUint64(buf[len(buf)-8:], math.Float64bits(v))
+			binary.LittleEndian.PutUint64(buffer.B[len(buffer.B)-8:], math.Float64bits(v))
 
 		case storage.TypeString:
 			v, _ := col.AsString()
-			buf = append(buf, binser.TypeString)
+			buffer.B = append(buffer.B, binser.TypeString)
 			// Allocate space for string length (uint32)
-			buf = append(buf, 0, 0, 0, 0)
+			buffer.B = append(buffer.B, 0, 0, 0, 0)
 			// Write the length
-			binary.LittleEndian.PutUint32(buf[len(buf)-4:], uint32(len(v)))
+			binary.LittleEndian.PutUint32(buffer.B[len(buffer.B)-4:], uint32(len(v)))
 			// Append the string data
-			buf = append(buf, v...)
+			buffer.B = append(buffer.B, v...)
 
 		case storage.TypeBoolean:
 			v, _ := col.AsBoolean()
-			buf = append(buf, binser.TypeBool)
+			buffer.B = append(buffer.B, binser.TypeBool)
 			if v {
-				buf = append(buf, 1)
+				buffer.B = append(buffer.B, 1)
 			} else {
-				buf = append(buf, 0)
+				buffer.B = append(buffer.B, 0)
 			}
 
 		case storage.TypeTimestamp:
 			v, _ := col.AsTimestamp()
-			buf = append(buf, binser.TypeTime)
+			buffer.B = append(buffer.B, binser.TypeTime)
 			// Allocate space for the time value (int64 nanoseconds)
-			buf = append(buf, 0, 0, 0, 0, 0, 0, 0, 0)
+			buffer.B = append(buffer.B, 0, 0, 0, 0, 0, 0, 0, 0)
 			// Write directly to the buffer at the correct position
-			binary.LittleEndian.PutUint64(buf[len(buf)-8:], uint64(v.UnixNano()))
+			binary.LittleEndian.PutUint64(buffer.B[len(buffer.B)-8:], uint64(v.UnixNano()))
 
 		case storage.TypeJSON:
 			v, _ := col.AsJSON()
-			buf = append(buf, binser.TypeString)
+			buffer.B = append(buffer.B, binser.TypeString)
 			// Allocate space for JSON string length (uint32)
-			buf = append(buf, 0, 0, 0, 0)
+			buffer.B = append(buffer.B, 0, 0, 0, 0)
 			// Write the length
-			binary.LittleEndian.PutUint32(buf[len(buf)-4:], uint32(len(v)))
+			binary.LittleEndian.PutUint32(buffer.B[len(buffer.B)-4:], uint32(len(v)))
 			// Append the JSON string data
-			buf = append(buf, v...)
+			buffer.B = append(buffer.B, v...)
 
 		default:
 			return nil, fmt.Errorf("unsupported type: %v", col.Type())
 		}
 	}
 
-	return buf, nil
+	// Create a copy of the buffer to return
+	// This is necessary since the buffer will be returned to the pool
+	result := make([]byte, len(buffer.B))
+	copy(result, buffer.B)
+
+	return result, nil
 }
 
 // serializeRowVersion serializes a row version to binary format
 // This reuses the same approach as in the snapshotter for consistency
 func serializeRowVersion(version RowVersion) ([]byte, error) {
+	// Get a buffer from the pool
+	buffer := common.GetBufferPool()
+	defer common.PutBufferPool(buffer)
+
+	// Create a new writer
 	writer := binser.NewWriter()
 	defer writer.Release()
 
@@ -1096,7 +1163,12 @@ func serializeRowVersion(version RowVersion) ([]byte, error) {
 		writer.WriteBytes(nil)
 	}
 
-	return writer.Bytes(), nil
+	// Copy writer output to our result
+	writerBytes := writer.Bytes()
+	result := make([]byte, len(writerBytes))
+	copy(result, writerBytes)
+
+	return result, nil
 }
 
 func deserializeRow(data []byte) (storage.Row, error) {

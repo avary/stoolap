@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/stoolap/stoolap/internal/common"
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
@@ -38,13 +39,23 @@ func NewDiskAppender(filePath string) (*DiskAppender, error) {
 		Flags:   0,
 	}
 
-	headerBytes := make([]byte, FileHeaderSize)
-	binary.LittleEndian.PutUint64(headerBytes[0:8], header.Magic)
-	binary.LittleEndian.PutUint32(headerBytes[8:12], header.Version)
-	binary.LittleEndian.PutUint32(headerBytes[12:16], header.Flags)
+	// Get a buffer from the pool
+	headerBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(headerBuffer)
+
+	// Ensure buffer has enough capacity
+	if cap(headerBuffer.B) < FileHeaderSize {
+		headerBuffer.B = make([]byte, FileHeaderSize)
+	} else {
+		headerBuffer.B = headerBuffer.B[:FileHeaderSize]
+	}
+
+	binary.LittleEndian.PutUint64(headerBuffer.B[0:8], header.Magic)
+	binary.LittleEndian.PutUint32(headerBuffer.B[8:12], header.Version)
+	binary.LittleEndian.PutUint32(headerBuffer.B[12:16], header.Flags)
 
 	writer := bufio.NewWriterSize(file, DefaultBlockSize)
-	if _, err := writer.Write(headerBytes); err != nil {
+	if _, err := writer.Write(headerBuffer.B); err != nil {
 		file.Close()
 
 		os.Remove(filePath) // Clean up on error
@@ -91,25 +102,40 @@ func (a *DiskAppender) Close() error {
 
 // WriteSchema writes the table schema to the file
 func (a *DiskAppender) WriteSchema(schema *storage.Schema) error {
-	schemaBytes, err := serializeSchema(schema)
+	// Get a buffer from the pool for the schema serialization
+	schemaBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(schemaBuffer)
+
+	// Serialize schema into the buffer
+	serializedSchema, err := serializeSchema(schema)
 	if err != nil {
 		return err
 	}
 
+	// Get another buffer for the length prefix
+	lenBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(lenBuffer)
+
+	// Set length buffer capacity
+	if cap(lenBuffer.B) < 4 {
+		lenBuffer.B = make([]byte, 4)
+	} else {
+		lenBuffer.B = lenBuffer.B[:4]
+	}
+
 	// Write length of schema data (uint32)
-	lenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBytes, uint32(len(schemaBytes)))
-	if _, err := a.writer.Write(lenBytes); err != nil {
+	binary.LittleEndian.PutUint32(lenBuffer.B, uint32(len(serializedSchema)))
+	if _, err := a.writer.Write(lenBuffer.B); err != nil {
 		return err
 	}
 
 	// Write schema data
-	if _, err := a.writer.Write(schemaBytes); err != nil {
+	if _, err := a.writer.Write(serializedSchema); err != nil {
 		return err
 	}
 
 	// Update offset
-	a.dataOffset += 4 + uint64(len(schemaBytes))
+	a.dataOffset += 4 + uint64(len(serializedSchema))
 
 	return nil
 }
@@ -135,10 +161,20 @@ func (a *DiskAppender) AppendRow(version RowVersion) error {
 	// Store the CreateTime as the approximate commit timestamp
 	a.committedTxnIDs[version.TxnID] = version.CreateTime
 
+	// Get a buffer from the pool for the length
+	lenBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(lenBuffer)
+
+	// Ensure buffer has enough capacity
+	if cap(lenBuffer.B) < 4 {
+		lenBuffer.B = make([]byte, 4)
+	} else {
+		lenBuffer.B = lenBuffer.B[:4]
+	}
+
 	// Write row length (uint32)
-	lenBytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBytes, uint32(len(rowBytes)))
-	if _, err := a.writer.Write(lenBytes); err != nil {
+	binary.LittleEndian.PutUint32(lenBuffer.B, uint32(len(rowBytes)))
+	if _, err := a.writer.Write(lenBuffer.B); err != nil {
 		return err
 	}
 
@@ -180,20 +216,38 @@ func (a *DiskAppender) Finalize() error {
 		return sortedKeys[i] < sortedKeys[j]
 	})
 
+	// Get buffers from the pool for index entry parts
+	rowIDBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(rowIDBuffer)
+
+	offsetBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(offsetBuffer)
+
+	// Ensure buffers have enough capacity
+	if cap(rowIDBuffer.B) < 8 {
+		rowIDBuffer.B = make([]byte, 8)
+	} else {
+		rowIDBuffer.B = rowIDBuffer.B[:8]
+	}
+
+	if cap(offsetBuffer.B) < 8 {
+		offsetBuffer.B = make([]byte, 8)
+	} else {
+		offsetBuffer.B = offsetBuffer.B[:8]
+	}
+
 	// Write each index entry
 	indexOffset := a.dataOffset
 	for _, rowID := range sortedKeys {
 		offset := a.rowIDIndex[rowID]
 
 		// Write rowID (int64)
-		rowIDBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(rowIDBytes, uint64(rowID))
-		a.indexBuffer.Write(rowIDBytes)
+		binary.LittleEndian.PutUint64(rowIDBuffer.B, uint64(rowID))
+		a.indexBuffer.Write(rowIDBuffer.B)
 
 		// Write offset (uint64)
-		offsetBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(offsetBytes, offset)
-		a.indexBuffer.Write(offsetBytes)
+		binary.LittleEndian.PutUint64(offsetBuffer.B, offset)
+		a.indexBuffer.Write(offsetBuffer.B)
 	}
 
 	// Write index to file
@@ -204,23 +258,43 @@ func (a *DiskAppender) Finalize() error {
 
 	// Prepare TxnIDs data - write transaction IDs and their commit timestamps
 	txnIDsOffset := indexOffset + uint64(len(indexBytes))
-	txnIDsBuffer := bytes.NewBuffer(make([]byte, 0, len(a.committedTxnIDs)*16)) // Each entry is 16 bytes (TxnID + Timestamp)
+
+	// Use a ByteBuffer from our pool instead of a bytes.Buffer
+	txnIdsBufferObj := common.GetBufferPool()
+	defer common.PutBufferPool(txnIdsBufferObj)
+
+	// Get buffers from the pool for txnID and timestamp
+	txnIDBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(txnIDBuffer)
+
+	timestampBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(timestampBuffer)
+
+	// Ensure buffers have enough capacity
+	if cap(txnIDBuffer.B) < 8 {
+		txnIDBuffer.B = make([]byte, 8)
+	} else {
+		txnIDBuffer.B = txnIDBuffer.B[:8]
+	}
+
+	if cap(timestampBuffer.B) < 8 {
+		timestampBuffer.B = make([]byte, 8)
+	} else {
+		timestampBuffer.B = timestampBuffer.B[:8]
+	}
 
 	for txnID, timestamp := range a.committedTxnIDs {
 		// Write TxnID (int64)
-		txnIDBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(txnIDBytes, uint64(txnID))
-		txnIDsBuffer.Write(txnIDBytes)
+		binary.LittleEndian.PutUint64(txnIDBuffer.B, uint64(txnID))
+		txnIdsBufferObj.Write(txnIDBuffer.B)
 
 		// Write commit timestamp (int64)
-		timestampBytes := make([]byte, 8)
-		binary.LittleEndian.PutUint64(timestampBytes, uint64(timestamp))
-		txnIDsBuffer.Write(timestampBytes)
+		binary.LittleEndian.PutUint64(timestampBuffer.B, uint64(timestamp))
+		txnIdsBufferObj.Write(timestampBuffer.B)
 	}
 
 	// Write transaction IDs to file
-	txnIDsBytes := txnIDsBuffer.Bytes()
-	if _, err := a.file.WriteAt(txnIDsBytes, int64(txnIDsOffset)); err != nil {
+	if _, err := a.file.WriteAt(txnIdsBufferObj.B, int64(txnIDsOffset)); err != nil {
 		return err
 	}
 
@@ -234,17 +308,27 @@ func (a *DiskAppender) Finalize() error {
 		Magic:        MagicBytes,
 	}
 
-	// Write footer
-	footerOffset := txnIDsOffset + uint64(len(txnIDsBytes))
-	footerBytes := make([]byte, 48) // Updated footer size with TxnIDs fields
-	binary.LittleEndian.PutUint64(footerBytes[0:8], footer.IndexOffset)
-	binary.LittleEndian.PutUint64(footerBytes[8:16], footer.IndexSize)
-	binary.LittleEndian.PutUint64(footerBytes[16:24], footer.RowCount)
-	binary.LittleEndian.PutUint64(footerBytes[24:32], footer.TxnIDsOffset)
-	binary.LittleEndian.PutUint64(footerBytes[32:40], footer.TxnIDsCount)
-	binary.LittleEndian.PutUint64(footerBytes[40:48], footer.Magic)
+	// Get a buffer from the pool for the footer
+	footerBuffer := common.GetBufferPool()
+	defer common.PutBufferPool(footerBuffer)
 
-	if _, err := a.file.WriteAt(footerBytes, int64(footerOffset)); err != nil {
+	// Ensure buffer has enough capacity
+	if cap(footerBuffer.B) < 48 {
+		footerBuffer.B = make([]byte, 48)
+	} else {
+		footerBuffer.B = footerBuffer.B[:48]
+	}
+
+	// Write footer
+	footerOffset := txnIDsOffset + uint64(len(txnIdsBufferObj.B))
+	binary.LittleEndian.PutUint64(footerBuffer.B[0:8], footer.IndexOffset)
+	binary.LittleEndian.PutUint64(footerBuffer.B[8:16], footer.IndexSize)
+	binary.LittleEndian.PutUint64(footerBuffer.B[16:24], footer.RowCount)
+	binary.LittleEndian.PutUint64(footerBuffer.B[24:32], footer.TxnIDsOffset)
+	binary.LittleEndian.PutUint64(footerBuffer.B[32:40], footer.TxnIDsCount)
+	binary.LittleEndian.PutUint64(footerBuffer.B[40:48], footer.Magic)
+
+	if _, err := a.file.WriteAt(footerBuffer.B, int64(footerOffset)); err != nil {
 		return err
 	}
 

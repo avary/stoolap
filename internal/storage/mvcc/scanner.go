@@ -1,7 +1,10 @@
 package mvcc
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
@@ -22,12 +25,16 @@ type MVCCScanner struct {
 	rowMap        *fastmap.Int64Map[storage.Row]    // The original map, will be returned to pool on Close
 	whereExpr     *expression.SchemaAwareExpression // The schema-aware expression, if it needs to be returned to pool
 	projectedRow  storage.Row                       // Reusable buffer for column projection
+
+	closed      atomic.Bool
+	shouldClose atomic.Int64
 }
 
 // Next advances to the next row
 func (s *MVCCScanner) Next() bool {
 	// Check for errors
 	if s.err != nil {
+		s.shouldClose.Store(time.Now().UnixNano())
 		return false
 	}
 
@@ -35,12 +42,19 @@ func (s *MVCCScanner) Next() bool {
 	s.currentIndex++
 
 	// Check if we've reached the end
-	return s.currentIndex < len(s.rowIDs)
+	next := s.currentIndex < len(s.rowIDs)
+	if !next {
+		s.shouldClose.Store(time.Now().UnixNano())
+		return false
+	}
+
+	return true
 }
 
 // Row returns the current row, with projection if needed
 func (s *MVCCScanner) Row() storage.Row {
 	if s.currentIndex < 0 || s.currentIndex >= len(s.rowIDs) {
+		s.shouldClose.Store(time.Now().UnixNano())
 		return nil
 	}
 
@@ -76,13 +90,16 @@ func (s *MVCCScanner) Err() error {
 
 // Close releases any resources held by the scanner
 func (s *MVCCScanner) Close() error {
+	if s.closed.Swap(true) {
+		return nil // Already closed
+	}
+
 	clear(s.projectedRow)
 	s.projectedRow = s.projectedRow[:0]
 
 	// Return the row map to the pool if it came from there
 	if s.rowMap != nil {
 		PutRowMap(s.rowMap)
-		s.rowMap.Clear()
 	}
 
 	// Return the schema aware expression to pool if applicable
@@ -319,6 +336,9 @@ func ReturnMVCCScanner(scanner *MVCCScanner) {
 	scanner.err = nil
 	scanner.currentIndex = -1
 
+	scanner.shouldClose.Store(0) // Reset shouldClose to 0
+	scanner.closed.Store(false)  // Reset closed state
+
 	mvccScannerPool.Put(scanner)
 }
 
@@ -369,5 +389,28 @@ func NewMVCCScanner(rows *fastmap.Int64Map[storage.Row], schema storage.Schema, 
 		SIMDSortInt64s(scanner.rowIDs)
 	}
 
+	go scanner.resourceWatch()
+
 	return scanner
+}
+
+func (s *MVCCScanner) resourceWatch() {
+	maxDuration := time.Second
+
+	for {
+		if s.closed.Load() {
+			return // Exit if scanner is closed
+		}
+
+		shouldClose := s.shouldClose.Load()
+		if shouldClose > 0 {
+			if elapsed := time.Now().UnixNano() - shouldClose; elapsed > maxDuration.Nanoseconds() {
+				fmt.Printf("Warning: scanner has been idle for %s, closing...\n", time.Duration(elapsed))
+				s.Close()
+				return
+			}
+		}
+
+		time.Sleep(100 * time.Millisecond) // Check every 100ms
+	}
 }

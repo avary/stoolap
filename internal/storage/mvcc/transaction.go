@@ -412,7 +412,6 @@ func (t *MVCCTransaction) Select(tableName string, columnsToFetch []string, expr
 			}
 		}
 	}
-
 	// Scan the table with the column indices and expression
 	scanner, err := table.Scan(columnIndices, expr)
 	if err != nil {

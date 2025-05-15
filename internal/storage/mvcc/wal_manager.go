@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stoolap/stoolap/internal/common"
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/binser"
@@ -81,7 +82,7 @@ type WALManager struct {
 	currentWALFile string // Current WAL file name
 	mu             sync.Mutex
 	currentLSN     atomic.Uint64 // Log Sequence Number
-	walBuffer      *ByteBuffer
+	walBuffer      *common.ByteBuffer
 	flushTrigger   uint64 // Bytes before auto-flush
 	maxWALSize     uint64 // Maximum WAL file size before rotation
 	lastCheckpoint uint64 // Last checkpoint LSN
@@ -224,7 +225,7 @@ func NewWALManager(path string, syncMode SyncMode, config *storage.PersistenceCo
 		path:               path,
 		walFile:            walFile,
 		currentWALFile:     walFilename,
-		walBuffer:          GetBufferPool(),        // Get a buffer from the pool
+		walBuffer:          common.GetBufferPool(), // Get a buffer from the pool
 		flushTrigger:       DefaultWALFlushTrigger, // Flush trigger
 		maxWALSize:         DefaultWALMaxSize,      // Default max WAL size
 		lastCheckpoint:     initialLSN,             // Start with current LSN as checkpoint
@@ -389,8 +390,8 @@ func (wm *WALManager) BatchCommit(entries []WALEntry) error {
 
 	// Prepare buffer for all entries
 	// This is more efficient than calling AppendEntryLocked for each entry
-	batchBuffer := GetBufferPool() // Get a ByteBuffer from the pool
-	defer PutBufferPool(batchBuffer)
+	batchBuffer := common.GetBufferPool() // Get a ByteBuffer from the pool
+	defer common.PutBufferPool(batchBuffer)
 
 	// Serialize all entries into the buffer
 	for _, entry := range entries {
@@ -456,7 +457,7 @@ func (wm *WALManager) Close() error {
 		}
 
 		// Release buffer resources
-		PutBufferPool(wm.walBuffer)
+		common.PutBufferPool(wm.walBuffer)
 		wm.walBuffer = nil
 	}
 
@@ -877,13 +878,13 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 		headerBuf := make([]byte, 16) // 8 bytes for LSN, 8 bytes for size
 
 		// Get a data buffer from the pool to reduce allocations
-		entryBuf := GetBufferPool()
+		entryBuf := common.GetBufferPool()
 
 		// Reset file position
 		_, err = walFile.Seek(0, io.SeekStart)
 		if err != nil {
 			walFile.Close()
-			PutBufferPool(entryBuf)
+			common.PutBufferPool(entryBuf)
 			return lastLSN, err
 		}
 
@@ -895,7 +896,7 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 					break
 				}
 				walFile.Close()
-				PutBufferPool(entryBuf)
+				common.PutBufferPool(entryBuf)
 				return lastLSN, err
 			}
 			if n < 16 {
@@ -912,7 +913,7 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 				_, err = walFile.Seek(int64(size), io.SeekCurrent)
 				if err != nil {
 					walFile.Close()
-					PutBufferPool(entryBuf)
+					common.PutBufferPool(entryBuf)
 					return lastLSN, err
 				}
 				continue
@@ -926,13 +927,13 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 			n, err = walFile.Read(tempBuf)
 			if err != nil {
 				walFile.Close()
-				PutBufferPool(entryBuf)
+				common.PutBufferPool(entryBuf)
 				return lastLSN, err
 			}
 			if uint64(n) < size {
 				// Incomplete entry, stop
 				walFile.Close()
-				PutBufferPool(entryBuf)
+				common.PutBufferPool(entryBuf)
 				return lastLSN, fmt.Errorf("incomplete WAL entry")
 			}
 
@@ -940,7 +941,7 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 			entry, err := wm.deserializeEntry(lsn, tempBuf)
 			if err != nil {
 				walFile.Close()
-				PutBufferPool(entryBuf)
+				common.PutBufferPool(entryBuf)
 				return lastLSN, err
 			}
 
@@ -948,7 +949,7 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 			err = callback(entry)
 			if err != nil {
 				walFile.Close()
-				PutBufferPool(entryBuf)
+				common.PutBufferPool(entryBuf)
 				return lastLSN, err
 			}
 
@@ -961,7 +962,7 @@ func (wm *WALManager) Replay(fromLSN uint64, callback func(WALEntry) error) (uin
 
 		// Close file and return buffer to pool
 		walFile.Close()
-		PutBufferPool(entryBuf)
+		common.PutBufferPool(entryBuf)
 	}
 
 	// Update the current LSN if the last replayed LSN is greater

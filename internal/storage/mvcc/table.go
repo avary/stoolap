@@ -907,35 +907,6 @@ func PutProcessedKeysMap(m *fastmap.Int64Map[struct{}]) {
 	processedKeysPool.Put(m)
 }
 
-// matchesFilter evaluates if a row matches the filter expression
-// Returns true if the row matches or if there's no filter
-func (mt *MVCCTable) matchesFilter(expr storage.Expression, row storage.Row) bool {
-	if expr == nil {
-		return true // No filter, so everything matches
-	}
-
-	// Try to use BatchExpressionEvaluator for faster evaluation
-	// This check preserves the same behavior for other callers but gives us a fast path
-	if batchExpr, ok := expr.(*expression.BatchExpressionEvaluator); ok {
-		return batchExpr.EvaluateFast(row)
-	} else if _, ok := expr.(*expression.SchemaAwareExpression); ok {
-		// For SchemaAwareExpression, we can create a BatchExpressionEvaluator
-		schema, err := mt.versionStore.GetTableSchema()
-		if err == nil {
-			batchEval := expression.NewBatchExpressionEvaluator(expr, schema)
-			return batchEval.EvaluateFast(row)
-		}
-	}
-
-	// Fall back to standard evaluation
-	matches, err := expr.Evaluate(row)
-	if err != nil {
-		return false // Error in evaluation, consider as non-match
-	}
-
-	return matches
-}
-
 // processGlobalVersions processes visible versions from the global version store
 // filter: The expression used for filtering (SchemaAwareExpression or FastSimpleExpression)
 // processedKeys: Map of keys already processed to avoid duplicates

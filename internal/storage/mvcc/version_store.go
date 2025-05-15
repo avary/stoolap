@@ -800,6 +800,7 @@ func PutRowMap(m *fastmap.Int64Map[storage.Row]) {
 	}
 
 	m.Clear()
+
 	rowMapPool.Put(m)
 }
 
@@ -1368,33 +1369,27 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 		return
 	}
 
-	// Group indexes by index type to use batch operations efficiently
-	indexBatchEntries := make(map[storage.Index]map[int64][]storage.ColumnValue)
-
-	// If the row is deleted, remove from all indexes
+	// Since we're only updating indexes for a single row, avoid the batch overhead
+	// and just call Add/Remove directly on each index
 	if version.IsDeleted {
+		// Remove from all indexes
 		for _, index := range vs.indexes {
-			// Initialize batch map for this index
-			if _, exists := indexBatchEntries[index]; !exists {
-				indexBatchEntries[index] = make(map[int64][]storage.ColumnValue)
-			}
-
 			// Get the column IDs for this index
 			columnIDs := index.ColumnIDs()
 
-			// For single-column indexes
+			// Extract column values based on index structure
+			var values []storage.ColumnValue
 			if len(columnIDs) == 1 {
+				// Single-column index
 				columnID := columnIDs[0]
-				// If the column exists in the row, remove its old value
 				if columnID < len(version.Data) {
-					indexBatchEntries[index][rowID] = []storage.ColumnValue{version.Data[columnID]}
+					values = []storage.ColumnValue{version.Data[columnID]}
 				} else {
-					// Column doesn't exist, treat as NULL
-					indexBatchEntries[index][rowID] = []storage.ColumnValue{nil}
+					values = []storage.ColumnValue{nil}
 				}
 			} else if len(columnIDs) > 1 {
-				// For multi-column indexes
-				values := make([]storage.ColumnValue, len(columnIDs))
+				// Multi-column index
+				values = make([]storage.ColumnValue, len(columnIDs))
 				for i, columnID := range columnIDs {
 					if columnID < len(version.Data) {
 						values[i] = version.Data[columnID]
@@ -1402,40 +1397,32 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 						values[i] = nil
 					}
 				}
-				indexBatchEntries[index][rowID] = values
 			}
-		}
 
-		// Process all the remove operations at once using RemoveBatch
-		for index, entries := range indexBatchEntries {
-			index.RemoveBatch(entries)
+			// Remove from index
+			index.Remove(values, rowID, 0)
 		}
 		return
 	}
 
 	// For non-deleted rows, update all relevant indexes
 	for _, index := range vs.indexes {
-		// Initialize batch map for this index
-		if _, exists := indexBatchEntries[index]; !exists {
-			indexBatchEntries[index] = make(map[int64][]storage.ColumnValue)
-		}
-
 		// Get the column IDs for this index
 		columnIDs := index.ColumnIDs()
 
-		// For single-column indexes
+		// Extract column values based on index structure
+		var values []storage.ColumnValue
 		if len(columnIDs) == 1 {
+			// Single-column index
 			columnID := columnIDs[0]
-			// If the column exists in the row, add its new value
 			if columnID < len(version.Data) {
-				indexBatchEntries[index][rowID] = []storage.ColumnValue{version.Data[columnID]}
+				values = []storage.ColumnValue{version.Data[columnID]}
 			} else {
-				// Column doesn't exist, treat as NULL
-				indexBatchEntries[index][rowID] = []storage.ColumnValue{nil}
+				values = []storage.ColumnValue{nil}
 			}
 		} else if len(columnIDs) > 1 {
-			// For multi-column indexes
-			values := make([]storage.ColumnValue, len(columnIDs))
+			// Multi-column index
+			values = make([]storage.ColumnValue, len(columnIDs))
 			for i, columnID := range columnIDs {
 				if columnID < len(version.Data) {
 					values[i] = version.Data[columnID]
@@ -1443,12 +1430,9 @@ func (vs *VersionStore) UpdateColumnarIndexes(rowID int64, version RowVersion) {
 					values[i] = nil
 				}
 			}
-			indexBatchEntries[index][rowID] = values
 		}
-	}
 
-	// Process all the add operations at once using AddBatch
-	for index, entries := range indexBatchEntries {
-		index.AddBatch(entries)
+		// Add to index
+		index.Add(values, rowID, 0)
 	}
 }
