@@ -1693,6 +1693,131 @@ func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOper
 		return []PKOperationInfo{result}
 	}
 
+	// Handle RangeExpression directly
+	if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
+		// Check if this is operating on a primary key column
+		pkInfo := getOrCreatePKInfo(schema)
+		isPKColumn := false
+		for _, col := range schema.Columns {
+			if col.Name == rangeExpr.Column && col.PrimaryKey {
+				isPKColumn = true
+				break
+			}
+		}
+
+		if isPKColumn {
+			// Since primary keys are always Int64, we can directly use the pre-computed Int64 values
+			if pkInfo.pkType == storage.TypeInteger {
+				// Extract min value (lower bound)
+				var minResult, maxResult PKOperationInfo
+
+				// Handle min value if available
+				if rangeExpr.MinValue != nil {
+					// Use pre-computed Int64Min value directly
+					minValue := rangeExpr.Int64Min
+
+					// Create operator based on inclusivity
+					minOp := storage.GT
+					if rangeExpr.IncludeMin {
+						minOp = storage.GTE
+					}
+
+					// Create simple expression for lower bound
+					minSimpleExpr := expression.NewSimpleExpression(
+						rangeExpr.Column,
+						minOp,
+						minValue,
+					)
+					minSimpleExpr.ColIndex = pkInfo.singlePKIndex
+					minSimpleExpr.IndexPrepped = true
+
+					minResult = PKOperationInfo{
+						ID:       minValue,
+						Expr:     minSimpleExpr,
+						Operator: minOp,
+						Valid:    true,
+					}
+				}
+
+				// Handle max value if available
+				if rangeExpr.MaxValue != nil {
+					// Use pre-computed Int64Max value directly
+					maxValue := rangeExpr.Int64Max
+
+					// Create operator based on inclusivity
+					maxOp := storage.LT
+					if rangeExpr.IncludeMax {
+						maxOp = storage.LTE
+					}
+
+					// Create simple expression for upper bound
+					maxSimpleExpr := expression.NewSimpleExpression(
+						rangeExpr.Column,
+						maxOp,
+						maxValue,
+					)
+					maxSimpleExpr.ColIndex = pkInfo.singlePKIndex
+					maxSimpleExpr.IndexPrepped = true
+
+					maxResult = PKOperationInfo{
+						ID:       maxValue,
+						Expr:     maxSimpleExpr,
+						Operator: maxOp,
+						Valid:    true,
+					}
+				}
+
+				// Check if we have both bounds
+				if minResult.Valid && maxResult.Valid {
+					// Get the actual bounds, adjusting for inclusive/exclusive
+					lowerVal := minResult.ID
+					if minResult.Operator == storage.GT {
+						lowerVal++ // For exclusive bounds (id > X), we add 1 to get the minimum possible value
+					}
+
+					upperVal := maxResult.ID
+					if maxResult.Operator == storage.LT {
+						upperVal-- // For exclusive bounds (id < X), we subtract 1 to get the maximum possible value
+					}
+
+					// Check if bounds are contradictory (min > max)
+					if lowerVal > upperVal {
+						result.Valid = true
+						result.EmptyResult = true
+						return []PKOperationInfo{result}
+					}
+
+					// If the range narrows to an exact value (id >= 5 AND id <= 5)
+					if lowerVal == upperVal {
+						// Create an exact equality expression
+						simpleExpr := expression.NewSimpleExpression(
+							rangeExpr.Column,
+							storage.EQ,
+							lowerVal,
+						)
+						simpleExpr.ColIndex = pkInfo.singlePKIndex
+						simpleExpr.IndexPrepped = true
+
+						result.Expr = simpleExpr
+						result.Operator = storage.EQ
+						result.Valid = true
+						result.ID = lowerVal
+						return []PKOperationInfo{result}
+					}
+
+					// Return both bounds for range optimization
+					return []PKOperationInfo{minResult, maxResult}
+				} else if minResult.Valid {
+					// Only have lower bound
+					return []PKOperationInfo{minResult}
+				} else if maxResult.Valid {
+					// Only have upper bound
+					return []PKOperationInfo{maxResult}
+				}
+			}
+		}
+	}
+
 	// Try to use our fast PK detector/optimizer
 	simpleExpr, ok := expression.PrimaryKeyDetector(expr, schema)
 	if ok {
@@ -1745,7 +1870,7 @@ func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOper
 					// Return it as the canonical expression
 					for _, info := range infoList {
 						if info.Operator == storage.EQ {
-							return []PKOperationInfo{result}
+							return []PKOperationInfo{info}
 						}
 					}
 				}
@@ -2222,6 +2347,16 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		}
 	}
 
+	if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
+		// Fast path for range expressions on a single column
+		// Get the index directly using our consistent method
+		index, err := mt.GetColumnarIndex(rangeExpr.Column)
+		if err == nil {
+			// Use the optimized path for this index
+			return index.GetFilteredRowIDs(rangeExpr)
+		}
+	}
+
 	// Fast path for simple AND expression with two conditions
 	if andExpr, ok := expr.(*expression.AndExpression); ok && len(andExpr.Expressions) == 2 {
 		expr1, ok1 := andExpr.Expressions[0].(*expression.SimpleExpression)
@@ -2490,6 +2625,12 @@ func extractColumnReferences(expr storage.Expression) []string {
 
 		case *expression.BetweenExpression:
 			// BETWEEN expressions reference a column
+			if typedExpr.Column != "" {
+				columnSet[typedExpr.Column] = true
+			}
+
+		case *expression.RangeExpression:
+			// RangeExpression references a column
 			if typedExpr.Column != "" {
 				columnSet[typedExpr.Column] = true
 			}

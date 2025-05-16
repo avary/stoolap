@@ -179,8 +179,8 @@ func NewRangeScanner(
 		inclusive:     inclusive,
 		columnIndices: columnIndices,
 		schema:        schema,
-		batchSize:     1000, // Batch size for prefetching
-		currentBatch:  fastmap.NewInt64Map[*RowVersion](1000),
+		batchSize:     1000,                                // Batch size for prefetching
+		currentBatch:  fastmap.NewInt64Map[*RowVersion](0), // Use a smaller initial capacity
 		projectedRow:  make(storage.Row, len(columnIndices)),
 	}
 }

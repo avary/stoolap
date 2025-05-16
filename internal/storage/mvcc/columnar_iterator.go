@@ -224,6 +224,23 @@ func GetRowIDsFromColumnarIndex(expr storage.Expression, index storage.Index) []
 		}
 	}
 
+	// Fast path for RangeExpression directly on the indexed column
+	if rangeExpr, ok := expr.(*expression.RangeExpression); ok && indexColumnName != "" {
+		if rangeExpr.Column == indexColumnName {
+			// Use type assertion to handle different index implementations
+			if concreteIndex, ok := index.(*ColumnarIndex); ok {
+				return getRowIDsFromRangeExpression(rangeExpr, concreteIndex)
+			} else {
+				// For any other index that implements FilteredRowIDs interface
+				if filteredIndex, ok := index.(interface {
+					GetFilteredRowIDs(expr storage.Expression) []int64
+				}); ok {
+					return filteredIndex.GetFilteredRowIDs(rangeExpr)
+				}
+			}
+		}
+	}
+
 	// For AND expressions, extract the condition for this specific column if possible
 	if andExpr, ok := expr.(*expression.AndExpression); ok && indexColumnName != "" {
 		for _, subExpr := range andExpr.Expressions {
@@ -238,6 +255,20 @@ func GetRowIDsFromColumnarIndex(expr storage.Expression, index storage.Index) []
 							GetFilteredRowIDs(expr storage.Expression) []int64
 						}); ok {
 							return filteredIndex.GetFilteredRowIDs(simpleExpr)
+						}
+					}
+				}
+			} else if rangeExpr, ok := subExpr.(*expression.RangeExpression); ok {
+				if rangeExpr.Column == indexColumnName {
+					// Use type assertion to handle different index implementations
+					if concreteIndex, ok := index.(*ColumnarIndex); ok {
+						return getRowIDsFromRangeExpression(rangeExpr, concreteIndex)
+					} else {
+						// For any other index that implements FilteredRowIDs interface
+						if filteredIndex, ok := index.(interface {
+							GetFilteredRowIDs(expr storage.Expression) []int64
+						}); ok {
+							return filteredIndex.GetFilteredRowIDs(rangeExpr)
 						}
 					}
 				}
@@ -257,6 +288,26 @@ func GetRowIDsFromColumnarIndex(expr storage.Expression, index storage.Index) []
 		}
 		return nil
 	}
+}
+
+// Helper for columnar index implementation with RangeExpression
+func getRowIDsFromRangeExpression(expr *expression.RangeExpression, index *ColumnarIndex) []int64 {
+	// Optimize for range queries
+	// Get the range bounds
+	var minValue, maxValue storage.ColumnValue
+
+	// Convert directly from the original values
+	if expr.MinValue != nil {
+		minValue = storage.ValueToPooledColumnValue(expr.MinValue, index.dataType)
+		defer storage.PutPooledColumnValue(minValue)
+	}
+	if expr.MaxValue != nil {
+		maxValue = storage.ValueToPooledColumnValue(expr.MaxValue, index.dataType)
+		defer storage.PutPooledColumnValue(maxValue)
+	}
+
+	// Get the row IDs within the range
+	return index.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, expr.IncludeMin, expr.IncludeMax)
 }
 
 // Helper for columnar index implementation

@@ -747,7 +747,16 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 			// If we can't properly extract the BETWEEN values, return nil
 			return nil
 		} else if binaryExpr.Operator == "AND" {
-			// For AND expressions, optimize both sides
+			// Check for range pattern first, like "column > value1 AND column <= value2"
+			if isRangePattern(binaryExpr) {
+				column, minValue, maxValue, includeMin, includeMax := extractRangeValues(ctx, binaryExpr)
+				if column != "" && (minValue != nil || maxValue != nil) {
+					// Create a BetweenExpression with custom inclusivity
+					return expression.NewRangeExpression(column, minValue, maxValue, includeMin, includeMax)
+				}
+			}
+
+			// For regular AND expressions, optimize both sides
 			leftExpr := createWhereExpression(ctx, binaryExpr.Left, registry)
 			rightExpr := createWhereExpression(ctx, binaryExpr.Right, registry)
 
@@ -909,6 +918,125 @@ func isColumnAndLiteral(ctx context.Context, expr *parser.InfixExpression) bool 
 	}
 
 	return false
+}
+
+// isRangePattern detects if an AND expression represents a range query pattern
+// like "column > value1 AND column <= value2"
+func isRangePattern(expr *parser.InfixExpression) bool {
+	// Must be an AND expression
+	if expr.Operator != "AND" {
+		return false
+	}
+
+	// Check if both sides are infix expressions (comparisons)
+	leftExpr, leftOk := expr.Left.(*parser.InfixExpression)
+	rightExpr, rightOk := expr.Right.(*parser.InfixExpression)
+
+	if !leftOk || !rightOk {
+		return false
+	}
+
+	// Both must be comparing a column with a literal
+	if !isColumnAndLiteral(context.Background(), leftExpr) || !isColumnAndLiteral(context.Background(), rightExpr) {
+		return false
+	}
+
+	// Extract column names from both expressions
+	leftCol, rightCol := extractColumnName(leftExpr), extractColumnName(rightExpr)
+
+	// Both comparisons must be on the same column
+	if leftCol == "" || rightCol == "" || leftCol != rightCol {
+		return false
+	}
+
+	// Check if we have range operators
+	leftOp := leftExpr.Operator
+	rightOp := rightExpr.Operator
+
+	// Either (left is lower bound AND right is upper bound) OR (left is upper bound AND right is lower bound)
+	isLeftLower := leftOp == ">" || leftOp == ">="
+	isRightUpper := rightOp == "<" || rightOp == "<="
+
+	isRightLower := rightOp == ">" || rightOp == ">="
+	isLeftUpper := leftOp == "<" || leftOp == "<="
+
+	return (isLeftLower && isRightUpper) || (isRightLower && isLeftUpper)
+}
+
+// extractColumnName gets the column name from a comparison expression
+func extractColumnName(expr *parser.InfixExpression) string {
+	// Check if left side is column
+	if col, ok := expr.Left.(*parser.Identifier); ok {
+		return col.Value
+	}
+
+	// Check if right side is column
+	if col, ok := expr.Right.(*parser.Identifier); ok {
+		return col.Value
+	}
+
+	return ""
+}
+
+// extractRangeValues extracts all values needed for a range expression
+func extractRangeValues(ctx context.Context, expr *parser.InfixExpression) (
+	column string, minValue, maxValue interface{}, includeMin, includeMax bool) {
+
+	// Get the left and right comparison expressions
+	leftExpr, _ := expr.Left.(*parser.InfixExpression)
+	rightExpr, _ := expr.Right.(*parser.InfixExpression)
+
+	// Extract column name (either side will have the same column)
+	column = extractColumnName(leftExpr)
+
+	// Figure out which one is the lower bound and which is the upper bound
+	leftOp := leftExpr.Operator
+	rightOp := rightExpr.Operator
+
+	isLeftLower := leftOp == ">" || leftOp == ">="
+	isRightUpper := rightOp == "<" || rightOp == "<="
+
+	if isLeftLower && isRightUpper {
+		// Left is minimum bound, right is maximum bound
+		if extractColumnFromLeft(leftExpr) {
+			minValue = getLiteralValue(ctx, leftExpr.Right)
+		} else {
+			minValue = getLiteralValue(ctx, leftExpr.Left)
+		}
+
+		if extractColumnFromLeft(rightExpr) {
+			maxValue = getLiteralValue(ctx, rightExpr.Right)
+		} else {
+			maxValue = getLiteralValue(ctx, rightExpr.Left)
+		}
+
+		includeMin = leftOp == ">="
+		includeMax = rightOp == "<="
+	} else {
+		// Right is minimum bound, left is maximum bound
+		if extractColumnFromLeft(rightExpr) {
+			minValue = getLiteralValue(ctx, rightExpr.Right)
+		} else {
+			minValue = getLiteralValue(ctx, rightExpr.Left)
+		}
+
+		if extractColumnFromLeft(leftExpr) {
+			maxValue = getLiteralValue(ctx, leftExpr.Right)
+		} else {
+			maxValue = getLiteralValue(ctx, leftExpr.Left)
+		}
+
+		includeMin = rightOp == ">="
+		includeMax = leftOp == "<="
+	}
+
+	return
+}
+
+// extractColumnFromLeft returns true if the column is on the left side of the expression
+func extractColumnFromLeft(expr *parser.InfixExpression) bool {
+	_, ok := expr.Left.(*parser.Identifier)
+	return ok
 }
 
 // isLiteral checks if an expression is a literal value

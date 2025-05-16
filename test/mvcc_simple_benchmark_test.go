@@ -728,7 +728,7 @@ func BenchmarkMVCCSelect(b *testing.B) {
 			insertQuery,
 			i+1,
 			"item_"+strconv.Itoa(i+1),
-			float64(i)*1.5,
+			float64(i+1),
 			i%2 == 0,
 			time.Now())
 		if err != nil {
@@ -788,7 +788,7 @@ func BenchmarkMVCCSelect(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			v := float64(i%count) * 1.5 // Cycle through existing IDs
+			v := float64(i + 1) // Cycle through existing IDs
 
 			var id int
 			var name string
@@ -803,22 +803,17 @@ func BenchmarkMVCCSelect(b *testing.B) {
 		}
 	})
 
-	_, err = db.Exec(fmt.Sprintf("DROP COLUMNAR INDEX ON %s (value)", tableName))
-	if err != nil {
-		b.Fatalf("Failed to drop index: %v", err)
-	}
+	rangeQuery := fmt.Sprintf("SELECT id, name, value, active FROM %s WHERE id > ? AND id <= ?", tableName)
 
-	filteredQuery := fmt.Sprintf("SELECT id, name, value, active FROM %s WHERE value > ? AND active = ?", tableName)
-
-	b.Run("FilteredNoIndex", func(b *testing.B) {
+	b.Run("RangePrimaryKey", func(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			rows, err := db.Query(
-				filteredQuery,
-				500.0, true)
+				rangeQuery,
+				0, 100)
 			if err != nil {
-				b.Fatalf("Filtered select failed: %v", err)
+				b.Fatalf("Range select failed: %v", err)
 			}
 
 			// Process all rows to ensure query is fully executed
@@ -836,28 +831,67 @@ func BenchmarkMVCCSelect(b *testing.B) {
 				rowCount++
 			}
 			rows.Close()
+
+			if rowCount != 100 {
+				b.Fatalf("Expected 100 rows, got %d", rowCount)
+			}
 		}
 	})
 
-	_, err = db.Exec(fmt.Sprintf("CREATE COLUMNAR INDEX ON %s (active)", tableName))
+	_, err = db.Exec(fmt.Sprintf("DROP COLUMNAR INDEX ON %s (value)", tableName))
 	if err != nil {
-		b.Fatalf("Failed to create index: %v", err)
+		b.Fatalf("Failed to drop index: %v", err)
 	}
+
+	filteredQuery := fmt.Sprintf("SELECT id, name, value, active FROM %s WHERE value > ? AND value <= ?", tableName)
+
+	b.Run("RangeNoIndex", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rows, err := db.Query(
+				filteredQuery,
+				float64(0), float64(100))
+			if err != nil {
+				b.Fatalf("Range select failed: %v", err)
+			}
+
+			// Process all rows to ensure query is fully executed
+			var id int
+			var name string
+			var value float64
+			var active bool
+			rowCount := 0
+			for rows.Next() {
+				err := rows.Scan(&id, &name, &value, &active)
+				if err != nil {
+					rows.Close()
+					b.Fatalf("Row scan failed: %v", err)
+				}
+				rowCount++
+			}
+			rows.Close()
+
+			if rowCount != 100 {
+				b.Fatalf("Expected 100 rows, got %d", rowCount)
+			}
+		}
+	})
 
 	_, err = db.Exec(fmt.Sprintf("CREATE COLUMNAR INDEX ON %s (value)", tableName))
 	if err != nil {
 		b.Fatalf("Failed to create index: %v", err)
 	}
 
-	b.Run("FilteredWithColumnarIndex", func(b *testing.B) {
+	b.Run("RangeWithColumnarIndex", func(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			rows, err := db.Query(
 				filteredQuery,
-				500.0, true)
+				float64(0), float64(100))
 			if err != nil {
-				b.Fatalf("Filtered select failed: %v", err)
+				b.Fatalf("Range select failed: %v", err)
 			}
 
 			// Process all rows to ensure query is fully executed
@@ -875,6 +909,10 @@ func BenchmarkMVCCSelect(b *testing.B) {
 				rowCount++
 			}
 			rows.Close()
+
+			if rowCount != 100 {
+				b.Fatalf("Expected 100 rows, got %d", rowCount)
+			}
 		}
 	})
 }

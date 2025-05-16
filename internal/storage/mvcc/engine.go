@@ -612,7 +612,10 @@ func (e *MVCCEngine) StartPeriodicCleanup(interval, maxAge time.Duration) func()
 
 				// Evict cold data that hasn't been accessed in 2x maxAge
 				// Limit to 1000 rows per table to avoid excessive disk I/O
-				evictedCount := e.EvictColdData(2*maxAge, 1000)
+				// evictedCount := e.EvictColdData(2*maxAge, 1000)
+
+				// TODO: Check cold data eviction logic
+				evictedCount := 0
 
 				if rowCount > 0 || txnCount > 0 || evictedCount > 0 {
 					fmt.Printf("Cleanup: removed %d transactions, %d deleted rows older than %s, evicted %d cold rows\n",

@@ -22,6 +22,10 @@ type btreeNode struct {
 	children []*btreeNode                  // Child nodes (nil for leaf nodes)
 	isLeaf   bool                          // Whether this is a leaf node
 	compare  compareFunc                   // Function for comparing keys
+
+	// Lazy deletion tracking
+	pendingDeletions int  // Count of keys with empty rowIDs maps (marked for deletion)
+	toBeCompacted    bool // Flag indicating this node needs compaction
 }
 
 // Find returns the index where the key should be inserted
@@ -59,7 +63,7 @@ func (n *btreeNode) insert(key storage.ColumnValue, rowID int64) {
 }
 
 // remove removes a rowID from a key in the B-tree node
-func (n *btreeNode) remove(key storage.ColumnValue, rowID int64) bool {
+func (n *btreeNode) remove(key storage.ColumnValue, rowID int64) (bool, bool) {
 	i := n.findIndex(key)
 	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
 		// O(1) removal from the Int64Map
@@ -67,17 +71,18 @@ func (n *btreeNode) remove(key storage.ColumnValue, rowID int64) bool {
 
 		// If the key was found and deleted
 		if deleted {
-			// If no more rowIDs for this key, remove the key
+			// If no more rowIDs for this key, mark for lazy deletion
 			if n.rowIDs[i].Len() == 0 {
-				copy(n.keys[i:], n.keys[i+1:])
-				copy(n.rowIDs[i:], n.rowIDs[i+1:])
-				n.keys = n.keys[:len(n.keys)-1]
-				n.rowIDs = n.rowIDs[:len(n.rowIDs)-1]
+				// Instead of immediate removal with costly slice operations,
+				// just mark this position for eventual compaction
+				n.pendingDeletions++
+				n.toBeCompacted = true
+				return true, true // Return true for both deletion and needing compaction
 			}
-			return true
+			return true, false // Deletion occurred but no compaction needed
 		}
 	}
-	return false
+	return false, false // No deletion occurred
 }
 
 // findLeftBoundary finds the left (starting) boundary of a range search
@@ -278,23 +283,29 @@ func (n *btreeNode) getAll(result *[]int64) {
 
 // btree implements a B-tree data structure optimized for columnar indexes
 type btreeColumnar struct {
-	root    *btreeNode  // Root node of the B-tree
-	compare compareFunc // Function for comparing keys
-	size    int         // Number of keys in the tree
+	root                *btreeNode  // Root node of the B-tree
+	compare             compareFunc // Function for comparing keys
+	size                int         // Number of keys in the tree
+	totalDeletions      int         // Total number of pending deletions across all nodes
+	compactionThreshold float64     // Threshold ratio at which compaction is triggered (deletions/size)
 }
 
 // newBTree creates a new B-tree with the given compare function
 func newBTree(compare compareFunc) *btreeColumnar {
 	return &btreeColumnar{
 		root: &btreeNode{
-			keys:     make([]storage.ColumnValue, 0),
-			rowIDs:   make([]*fastmap.Int64Map[struct{}], 0),
-			children: nil,
-			isLeaf:   true,
-			compare:  compare,
+			keys:             make([]storage.ColumnValue, 0),
+			rowIDs:           make([]*fastmap.Int64Map[struct{}], 0),
+			children:         nil,
+			isLeaf:           true,
+			compare:          compare,
+			pendingDeletions: 0,
+			toBeCompacted:    false,
 		},
-		compare: compare,
-		size:    0,
+		compare:             compare,
+		size:                0,
+		totalDeletions:      0,
+		compactionThreshold: 0.25, // Default: compact when 25% of entries are marked for deletion
 	}
 }
 
@@ -306,11 +317,93 @@ func (t *btreeColumnar) Insert(key storage.ColumnValue, rowID int64) {
 
 // Remove removes a key and rowID from the B-tree
 func (t *btreeColumnar) Remove(key storage.ColumnValue, rowID int64) bool {
-	result := t.root.remove(key, rowID)
-	if result {
+	deleted, needsCompaction := t.root.remove(key, rowID)
+	if deleted {
 		t.size--
+
+		// Track deletions for compaction
+		if needsCompaction {
+			t.totalDeletions++
+
+			// Check if compaction threshold is reached
+			if float64(t.totalDeletions)/float64(t.size+t.totalDeletions) >= t.compactionThreshold {
+				t.compact()
+			}
+		}
 	}
-	return result
+	return deleted
+}
+
+// compact performs the physical removal of keys marked for deletion
+func (t *btreeColumnar) compact() {
+	if t.totalDeletions == 0 || t.root == nil {
+		return
+	}
+
+	// Compact the root node
+	t.compactNode(t.root)
+
+	// Reset tracking counters
+	t.totalDeletions = 0
+}
+
+// SetCompactionThreshold sets the threshold ratio at which compaction is triggered
+// The threshold should be between 0 and 1, representing the ratio of deletions to total entries
+func (t *btreeColumnar) SetCompactionThreshold(threshold float64) {
+	if threshold < 0 {
+		threshold = 0
+	} else if threshold > 1 {
+		threshold = 1
+	}
+	t.compactionThreshold = threshold
+}
+
+// GetCompactionThreshold gets the current compaction threshold
+func (t *btreeColumnar) GetCompactionThreshold() float64 {
+	return t.compactionThreshold
+}
+
+// ForceCompaction forces an immediate compaction of the tree
+func (t *btreeColumnar) ForceCompaction() {
+	t.compact()
+}
+
+// GetPendingDeletions returns the total number of pending deletions
+func (t *btreeColumnar) GetPendingDeletions() int {
+	return t.totalDeletions
+}
+
+// compactNode removes all keys with empty rowIDs maps from a node
+func (t *btreeColumnar) compactNode(node *btreeNode) {
+	if node == nil || !node.toBeCompacted || node.pendingDeletions == 0 {
+		return
+	}
+
+	// Create new slices with proper capacity (removing pending deletions)
+	newSize := len(node.keys) - node.pendingDeletions
+	newKeys := make([]storage.ColumnValue, 0, newSize)
+	newRowIDs := make([]*fastmap.Int64Map[struct{}], 0, newSize)
+
+	// Copy only valid entries (those with non-empty rowIDs maps)
+	for i := 0; i < len(node.keys); i++ {
+		if node.rowIDs[i].Len() > 0 {
+			newKeys = append(newKeys, node.keys[i])
+			newRowIDs = append(newRowIDs, node.rowIDs[i])
+		}
+	}
+
+	// Replace the node's data with the compacted data
+	node.keys = newKeys
+	node.rowIDs = newRowIDs
+	node.pendingDeletions = 0
+	node.toBeCompacted = false
+
+	// Recursively compact children (if node is not a leaf)
+	if !node.isLeaf {
+		for _, child := range node.children {
+			t.compactNode(child)
+		}
+	}
 }
 
 // ValueCount returns the number of occurrences of a key
@@ -413,13 +506,16 @@ func (t *btreeColumnar) Size() int {
 // Clear removes all entries from the B-tree
 func (t *btreeColumnar) Clear() {
 	t.root = &btreeNode{
-		keys:     make([]storage.ColumnValue, 0),
-		rowIDs:   make([]*fastmap.Int64Map[struct{}], 0),
-		children: nil,
-		isLeaf:   true,
-		compare:  t.compare,
+		keys:             make([]storage.ColumnValue, 0),
+		rowIDs:           make([]*fastmap.Int64Map[struct{}], 0),
+		children:         nil,
+		isLeaf:           true,
+		compare:          t.compare,
+		pendingDeletions: 0,
+		toBeCompacted:    false,
 	}
 	t.size = 0
+	t.totalDeletions = 0
 }
 
 // compareColumnValues compares two ColumnValue objects
@@ -814,6 +910,12 @@ func (idx *ColumnarIndex) RemoveBatch(entries map[int64][]storage.ColumnValue) e
 		}
 	}
 
+	// Force compaction after large batch operations if needed
+	if idx.valueTree.totalDeletions > 1000 || // Hard limit for very large deletions
+		float64(idx.valueTree.totalDeletions)/float64(idx.valueTree.size+idx.valueTree.totalDeletions) >= idx.valueTree.compactionThreshold {
+		idx.valueTree.compact()
+	}
+
 	return nil
 }
 
@@ -878,6 +980,23 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				return idx.valueTree.GetAll()
 			}
 		}
+	}
+
+	// Handle RangeExpression for range queries
+	if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
+		var minValue, maxValue storage.ColumnValue
+
+		if rangeExpr.MinValue != nil {
+			minValue = storage.ValueToPooledColumnValue(rangeExpr.MinValue, idx.dataType)
+			defer storage.PutPooledColumnValue(minValue)
+		}
+
+		if rangeExpr.MaxValue != nil {
+			maxValue = storage.ValueToPooledColumnValue(rangeExpr.MaxValue, idx.dataType)
+			defer storage.PutPooledColumnValue(maxValue)
+		}
+
+		return idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, rangeExpr.IncludeMin, rangeExpr.IncludeMax)
 	}
 
 	// Also check for AndExpression with range conditions
@@ -1057,4 +1176,35 @@ func (idx *ColumnarIndex) Close() error {
 	idx.nullRows = nil
 
 	return nil
+}
+
+// ForceCompaction forces an immediate compaction of the index
+func (idx *ColumnarIndex) ForceCompaction() {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	if idx.valueTree != nil {
+		idx.valueTree.ForceCompaction()
+	}
+}
+
+// SetCompactionThreshold sets the threshold ratio at which compaction is triggered
+func (idx *ColumnarIndex) SetCompactionThreshold(threshold float64) {
+	idx.mutex.Lock()
+	defer idx.mutex.Unlock()
+
+	if idx.valueTree != nil {
+		idx.valueTree.SetCompactionThreshold(threshold)
+	}
+}
+
+// GetPendingDeletions returns the total number of pending deletions
+func (idx *ColumnarIndex) GetPendingDeletions() int {
+	idx.mutex.RLock()
+	defer idx.mutex.RUnlock()
+
+	if idx.valueTree != nil {
+		return idx.valueTree.GetPendingDeletions()
+	}
+	return 0
 }
