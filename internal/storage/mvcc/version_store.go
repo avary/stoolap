@@ -449,6 +449,8 @@ func (vs *VersionStore) GetVisibleVersionsByIDs(rowIDs []int64, txnID int64) *fa
 		}
 	}
 
+	SIMDSortInt64s(rowIDs) // Sort rowIDs for consistent order in result
+
 	return result
 }
 

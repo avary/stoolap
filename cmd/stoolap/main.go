@@ -17,7 +17,7 @@ import (
 
 func main() {
 	// Parse command line flags
-	dbPath := flag.String("db", "file://stoolap.db?snapshot_interval=30&keep_snapshots=2", "Database path (file://<path> or memory://)")
+	dbPath := flag.String("db", "file://stoolap.db", "Database path (file://<path> or memory://)")
 	flag.Parse()
 
 	// Open the database

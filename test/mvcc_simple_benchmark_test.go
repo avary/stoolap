@@ -86,6 +86,7 @@ func BenchmarkMVCCInsertBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(insertCount), "rows/op")
 
 	for i := 0; i < b.N; i++ {
 		// Begin a transaction for the batch insert
@@ -184,6 +185,7 @@ func BenchmarkMVCCBulkInsertBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(insertCount), "rows/op")
 
 	for i := 0; i < b.N; i++ {
 		// Build a batch insert query with VALUES for multiple rows
@@ -319,6 +321,7 @@ func BenchmarkMVCCPrimaryKeyUpdateBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(updateCount), "rows/op")
 
 	updateQuery := fmt.Sprintf("UPDATE %s SET value = value * 2, active = !active WHERE id > ? AND id <= ?", tableName)
 
@@ -384,6 +387,7 @@ func BenchmarkMVCCColumnarIndexUpdateBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(updateCount), "rows/op")
 
 	updateQuery := fmt.Sprintf("UPDATE %s SET value = value * 2, active = !active WHERE value > ? AND value <= ?", tableName)
 
@@ -443,6 +447,7 @@ func BenchmarkMVCCNoIndexUpdateBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(updateCount), "rows/op")
 
 	updateQuery := fmt.Sprintf("UPDATE %s SET value = value * 2, active = !active WHERE value > ? AND value <= ?", tableName)
 
@@ -561,6 +566,7 @@ func BenchmarkMVCCPrimaryKeyDeleteBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(deleteCount), "rows/op")
 
 	for i := 0; i < b.N; i++ {
 		id := i * deleteCount
@@ -625,6 +631,7 @@ func BenchmarkMVCCColumnarIndexDeleteBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(deleteCount), "rows/op")
 
 	for i := 0; i < b.N; i++ {
 		id := i * deleteCount
@@ -683,6 +690,7 @@ func BenchmarkMVCCNoIndexDeleteBatch(b *testing.B) {
 
 	b.ResetTimer()
 	b.ReportAllocs()
+	b.ReportMetric(float64(deleteCount), "rows/op")
 
 	for i := 0; i < b.N; i++ {
 		id := i * deleteCount
@@ -700,6 +708,8 @@ func BenchmarkMVCCNoIndexDeleteBatch(b *testing.B) {
 			b.Fatalf("Expected to delete %d rows, but deleted %d", deleteCount, rowsAffected)
 		}
 	}
+
+	b.StopTimer()
 }
 
 // BenchmarkMVCCSelect provides a simple benchmark for MVCC select operations
@@ -788,7 +798,7 @@ func BenchmarkMVCCSelect(b *testing.B) {
 		b.ResetTimer()
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			v := float64(i + 1) // Cycle through existing IDs
+			v := float64((i % count) + 1) // Cycle through existing IDs
 
 			var id int
 			var name string

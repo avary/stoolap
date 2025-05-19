@@ -51,18 +51,62 @@ func (e *Executor) executeCountStar(ctx context.Context, tx storage.Transaction,
 		return nil, err
 	}
 
-	// For COUNT(*), we need to include all columns to ensure proper filtering
-	// The issue was that we were only selecting the first column, but WHERE clauses
-	// might reference other columns like 'active'
+	// FAST PATH: If there's no WHERE clause, we can directly ask the table for its row count
+	// This avoids scanning all rows and is much faster
+	if stmt.Where == nil {
+		// Get the table from the transaction
+		table, tableErr := tx.GetTable(tableName)
+		if tableErr == nil {
+			// Try to use the RowCount method if the table implements it
+			if countable, ok := table.(interface{ RowCount() int }); ok {
+				count := countable.RowCount()
+				
+				// The column name must be "COUNT(*)" because that's what's in the SQL query
+				columnName := "COUNT(*)"
 
-	// Get all column names for proper WHERE clause evaluation
-	columns := make([]string, len(schema.Columns))
-	for i, col := range schema.Columns {
-		columns[i] = col.Name
+				// For aliased expressions like "COUNT(*) AS total", use the alias
+				if len(stmt.Columns) == 1 {
+					if aliased, ok := stmt.Columns[0].(*parser.AliasedExpression); ok {
+						columnName = aliased.Alias.Value
+					}
+				}
+
+				return &ExecResult{
+					columns:      []string{columnName},
+					rows:         [][]interface{}{{int64(count)}},
+					isMemory:     true,
+					rowsAffected: 0,
+					lastInsertID: 0,
+				}, nil
+			}
+		}
 	}
 
-	// The key issue is that WHERE clauses in DELETE operations are handled at the storage level,
-	// but in COUNT(*) they're handled at the SQL level. Let's convert the SQL WHERE to a storage condition.
+	// SLOWER PATH: If there's a WHERE clause or the table doesn't support direct count
+	
+	// For COUNT(*), we need to select the minimum number of columns required for WHERE evaluation
+	var columnsToSelect []string
+	
+	if stmt.Where == nil {
+		// If there's no WHERE clause, we only need one column to count rows
+		columnsToSelect = []string{schema.Columns[0].Name}
+	} else {
+		// If there's a WHERE clause, extract the columns it references
+		whereColumns := getColumnsFromWhereClause(stmt.Where)
+		
+		// If we couldn't extract columns or the WHERE clause is complex, fall back to selecting all columns
+		if len(whereColumns) == 0 {
+			columnsToSelect = make([]string, len(schema.Columns))
+			for i, col := range schema.Columns {
+				columnsToSelect[i] = col.Name
+			}
+		} else {
+			// Only select the columns needed for the WHERE clause
+			columnsToSelect = whereColumns
+		}
+	}
+
+	// Convert SQL WHERE to a storage condition if possible
 	var whereExpr storage.Expression
 	if stmt.Where != nil {
 		whereExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
@@ -76,17 +120,17 @@ func (e *Executor) executeCountStar(ctx context.Context, tx storage.Transaction,
 				}
 			}
 		}
-	}
-
-	if whereExpr != nil {
-		if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
-			// If it's a simple expression, we need to prepare it for the schema
-			simpleExpr.PrepareForSchema(schema)
+		
+		if whereExpr != nil {
+			if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
+				// If it's a simple expression, we need to prepare it for the schema
+				simpleExpr.PrepareForSchema(schema)
+			}
 		}
 	}
 
 	// Execute the query with the condition pushed down to storage layer
-	result, err := tx.SelectWithAliases(tableName, columns, whereExpr, nil)
+	result, err := tx.SelectWithAliases(tableName, columnsToSelect, whereExpr, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -766,6 +810,26 @@ func getColumnsFromWhereClause(whereExpr parser.Expression) []string {
 		} else {
 			// For more complex expressions inside CAST, recursively extract columns
 			for _, col := range getColumnsFromWhereClause(expr.Expr) {
+				columns[col] = true
+			}
+		}
+
+	case *parser.BetweenExpression:
+		// Extract columns from BETWEEN expressions
+		// The column is the expression being evaluated
+		if expr.Expr != nil {
+			for _, col := range getColumnsFromWhereClause(expr.Expr) {
+				columns[col] = true
+			}
+		}
+		// Also check the range bounds
+		if expr.Lower != nil {
+			for _, col := range getColumnsFromWhereClause(expr.Lower) {
+				columns[col] = true
+			}
+		}
+		if expr.Upper != nil {
+			for _, col := range getColumnsFromWhereClause(expr.Upper) {
 				columns[col] = true
 			}
 		}

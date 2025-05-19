@@ -241,6 +241,40 @@ func GetRowIDsFromColumnarIndex(expr storage.Expression, index storage.Index) []
 		}
 	}
 
+	// Fast path for BetweenExpression directly on the indexed column
+	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok && indexColumnName != "" {
+		if betweenExpr.Column == indexColumnName {
+			// Use type assertion to handle different index implementations
+			if concreteIndex, ok := index.(*ColumnarIndex); ok {
+				return getRowIDsFromBetweenExpression(betweenExpr, concreteIndex)
+			} else {
+				// For any other index that implements FilteredRowIDs interface
+				if filteredIndex, ok := index.(interface {
+					GetFilteredRowIDs(expr storage.Expression) []int64
+				}); ok {
+					return filteredIndex.GetFilteredRowIDs(betweenExpr)
+				}
+			}
+		}
+	}
+
+	// Fast path for NullCheckExpression directly on the indexed column
+	if nullExpr, ok := expr.(*expression.NullCheckExpression); ok && indexColumnName != "" {
+		if nullExpr.GetColumnName() == indexColumnName {
+			// Use type assertion to handle different index implementations
+			if concreteIndex, ok := index.(*ColumnarIndex); ok {
+				return getRowIDsFromNullCheckExpression(nullExpr, concreteIndex)
+			} else {
+				// For any other index that implements FilteredRowIDs interface
+				if filteredIndex, ok := index.(interface {
+					GetFilteredRowIDs(expr storage.Expression) []int64
+				}); ok {
+					return filteredIndex.GetFilteredRowIDs(nullExpr)
+				}
+			}
+		}
+	}
+
 	// For AND expressions, extract the condition for this specific column if possible
 	if andExpr, ok := expr.(*expression.AndExpression); ok && indexColumnName != "" {
 		for _, subExpr := range andExpr.Expressions {
@@ -269,6 +303,34 @@ func GetRowIDsFromColumnarIndex(expr storage.Expression, index storage.Index) []
 							GetFilteredRowIDs(expr storage.Expression) []int64
 						}); ok {
 							return filteredIndex.GetFilteredRowIDs(rangeExpr)
+						}
+					}
+				}
+			} else if betweenExpr, ok := subExpr.(*expression.BetweenExpression); ok {
+				if betweenExpr.Column == indexColumnName {
+					// Use type assertion to handle different index implementations
+					if concreteIndex, ok := index.(*ColumnarIndex); ok {
+						return getRowIDsFromBetweenExpression(betweenExpr, concreteIndex)
+					} else {
+						// For any other index that implements FilteredRowIDs interface
+						if filteredIndex, ok := index.(interface {
+							GetFilteredRowIDs(expr storage.Expression) []int64
+						}); ok {
+							return filteredIndex.GetFilteredRowIDs(betweenExpr)
+						}
+					}
+				}
+			} else if nullExpr, ok := subExpr.(*expression.NullCheckExpression); ok {
+				if nullExpr.GetColumnName() == indexColumnName {
+					// Use type assertion to handle different index implementations
+					if concreteIndex, ok := index.(*ColumnarIndex); ok {
+						return getRowIDsFromNullCheckExpression(nullExpr, concreteIndex)
+					} else {
+						// For any other index that implements FilteredRowIDs interface
+						if filteredIndex, ok := index.(interface {
+							GetFilteredRowIDs(expr storage.Expression) []int64
+						}); ok {
+							return filteredIndex.GetFilteredRowIDs(nullExpr)
 						}
 					}
 				}
@@ -308,6 +370,59 @@ func getRowIDsFromRangeExpression(expr *expression.RangeExpression, index *Colum
 
 	// Get the row IDs within the range
 	return index.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, expr.IncludeMin, expr.IncludeMax)
+}
+
+// Helper for columnar index implementation with BetweenExpression
+func getRowIDsFromBetweenExpression(expr *expression.BetweenExpression, index *ColumnarIndex) []int64 {
+	// Optimize for BETWEEN queries
+	// Get the range bounds from the BETWEEN expression
+	var minValue, maxValue storage.ColumnValue
+
+	// Convert lower bound to appropriate column value
+	minValue = storage.ValueToPooledColumnValue(expr.LowerBound, index.dataType)
+	defer storage.PutPooledColumnValue(minValue)
+
+	// Convert upper bound to appropriate column value
+	maxValue = storage.ValueToPooledColumnValue(expr.UpperBound, index.dataType)
+	defer storage.PutPooledColumnValue(maxValue)
+
+	// Get the row IDs within the range, inclusivity is determined by BetweenExpression's Inclusive field
+	return index.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, expr.Inclusive, expr.Inclusive)
+}
+
+// Helper for columnar index implementation with NullCheckExpression
+func getRowIDsFromNullCheckExpression(expr *expression.NullCheckExpression, index *ColumnarIndex) []int64 {
+	// Determine if we're checking for NULL or NOT NULL
+	isNull := expr.IsNull()
+
+	if isNull {
+		// For IS NULL, we need to get all rows with NULL values for this column
+		index.mutex.RLock()
+		defer index.mutex.RUnlock()
+
+		if index.nullRows.Len() == 0 {
+			return nil // No NULL rows
+		}
+
+		// Allocate with exact capacity to avoid resizing
+		nullCount := index.nullRows.Len()
+		result := make([]int64, 0, nullCount)
+
+		// Extract all row IDs with NULL values
+		index.nullRows.ForEach(func(id int64, _ struct{}) bool {
+			result = append(result, id)
+			return true
+		})
+
+		return result
+	} else {
+		// For IS NOT NULL, we need to get all rows with non-NULL values
+		index.mutex.RLock()
+		defer index.mutex.RUnlock()
+
+		// Get all row IDs from the value tree (non-NULL values)
+		return index.valueTree.GetAll()
+	}
 }
 
 // Helper for columnar index implementation

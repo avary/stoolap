@@ -1574,7 +1574,6 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 	index := NewColumnarIndex(indexName, mt.versionStore.tableName,
 		columnName, columnID, dataType, mt.versionStore, isUnique)
 
-	fmt.Printf("Index building %s on column %s\n", indexName, columnName)
 	// Build the index from existing data
 	if err := index.Build(); err != nil {
 		index.Close()
@@ -1691,6 +1690,134 @@ func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOper
 	// Quick exit for nil expressions
 	if expr == nil {
 		return []PKOperationInfo{result}
+	}
+
+	// Handle BetweenExpression directly
+	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok {
+		// Check if this is operating on a primary key column
+		pkInfo := getOrCreatePKInfo(schema)
+		isPKColumn := false
+		for _, col := range schema.Columns {
+			if col.Name == betweenExpr.Column && col.PrimaryKey {
+				isPKColumn = true
+				break
+			}
+		}
+
+		if isPKColumn && pkInfo.pkType == storage.TypeInteger {
+			// Extract bounds for integer PK
+			var lowerBound, upperBound int64
+			
+			// Handle lower bound conversion based on type
+			switch v := betweenExpr.LowerBound.(type) {
+			case int:
+				lowerBound = int64(v)
+			case int64:
+				lowerBound = v
+			case float64:
+				lowerBound = int64(v)
+			default:
+				// If we can't convert to int64, we can't optimize
+				return []PKOperationInfo{result}
+			}
+
+			// Handle upper bound conversion based on type
+			switch v := betweenExpr.UpperBound.(type) {
+			case int:
+				upperBound = int64(v)
+			case int64:
+				upperBound = v
+			case float64:
+				upperBound = int64(v)
+			default:
+				// If we can't convert to int64, we can't optimize
+				return []PKOperationInfo{result}
+			}
+
+			// Create simple expressions for lower and upper bounds
+			// with appropriate operators based on inclusivity
+			minOp := storage.GT
+			if betweenExpr.Inclusive {
+				minOp = storage.GTE
+			}
+
+			maxOp := storage.LT
+			if betweenExpr.Inclusive {
+				maxOp = storage.LTE
+			}
+
+			// Create lower bound expression
+			minSimpleExpr := expression.NewSimpleExpression(
+				betweenExpr.Column,
+				minOp,
+				lowerBound,
+			)
+			minSimpleExpr.ColIndex = pkInfo.singlePKIndex
+			minSimpleExpr.IndexPrepped = true
+
+			// Create upper bound expression
+			maxSimpleExpr := expression.NewSimpleExpression(
+				betweenExpr.Column,
+				maxOp,
+				upperBound,
+			)
+			maxSimpleExpr.ColIndex = pkInfo.singlePKIndex
+			maxSimpleExpr.IndexPrepped = true
+
+			// Create PKOperationInfo for both bounds
+			minResult := PKOperationInfo{
+				ID:       lowerBound,
+				Expr:     minSimpleExpr,
+				Operator: minOp,
+				Valid:    true,
+			}
+
+			maxResult := PKOperationInfo{
+				ID:       upperBound,
+				Expr:     maxSimpleExpr,
+				Operator: maxOp,
+				Valid:    true,
+			}
+
+			// Get the actual bounds, adjusting for inclusive/exclusive
+			lowerVal := lowerBound
+			if minOp == storage.GT {
+				lowerVal++ // For exclusive bounds (id > X), add 1 to get the minimum possible value
+			}
+
+			upperVal := upperBound
+			if maxOp == storage.LT {
+				upperVal-- // For exclusive bounds (id < X), subtract 1 to get the maximum possible value
+			}
+
+			// Check if bounds are contradictory (min > max)
+			if lowerVal > upperVal {
+				result.Valid = true
+				result.EmptyResult = true
+				return []PKOperationInfo{result}
+			}
+
+			// If the range narrows to an exact value (id >= 5 AND id <= 5 or BETWEEN 5 AND 5)
+			if lowerVal == upperVal {
+				// Create an exact equality expression
+				simpleExpr := expression.NewSimpleExpression(
+					betweenExpr.Column,
+					storage.EQ,
+					lowerVal,
+				)
+				simpleExpr.ColIndex = pkInfo.singlePKIndex
+				simpleExpr.IndexPrepped = true
+
+				result.Expr = simpleExpr
+				result.Operator = storage.EQ
+				result.Valid = true
+				result.ID = lowerVal
+				return []PKOperationInfo{result}
+			}
+
+			// Return both bounds for range optimization
+			return []PKOperationInfo{minResult, maxResult}
+		}
 	}
 
 	// Handle RangeExpression directly

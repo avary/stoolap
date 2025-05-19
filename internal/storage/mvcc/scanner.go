@@ -147,18 +147,19 @@ func PutRowIDSlice(slice []int64) {
 
 // RangeScanner is a specialized scanner for efficient ID range queries
 type RangeScanner struct {
-	txnID         int64                          // Transaction ID for visibility checks
-	versionStore  *VersionStore                  // Access to versions
-	currentID     int64                          // Current ID in range
-	endID         int64                          // End ID in range (inclusive)
-	columnIndices []int                          // Columns to include
-	schema        storage.Schema                 // Schema information
-	err           error                          // Any scanning errors
-	projectedRow  storage.Row                    // Reused buffer for projection
-	currentRow    storage.Row                    // Current row being processed
-	batchSize     int                            // Size of batches for prefetching
-	currentBatch  *fastmap.Int64Map[*RowVersion] // Current batch of prefetched rows
-	inclusive     bool                           // Whether endID is inclusive
+	txnID           int64                          // Transaction ID for visibility checks
+	versionStore    *VersionStore                  // Access to versions
+	currentID       int64                          // Current ID in range
+	endID           int64                          // End ID in range (inclusive)
+	columnIndices   []int                          // Columns to include
+	schema          storage.Schema                 // Schema information
+	err             error                          // Any scanning errors
+	projectedRow    storage.Row                    // Reused buffer for projection
+	currentRow      storage.Row                    // Current row being processed
+	batchSize       int                            // Size of batches for prefetching
+	currentBatch    *fastmap.Int64Map[*RowVersion] // Current batch of prefetched rows
+	inclusive       bool                           // Whether endID is inclusive
+	currentBatchEnd int64                          // End of the current batch range
 }
 
 // NewRangeScanner creates a scanner optimized for ID range scans
@@ -172,16 +173,17 @@ func NewRangeScanner(
 	columnIndices []int,
 ) *RangeScanner {
 	return &RangeScanner{
-		txnID:         txnID,
-		versionStore:  versionStore,
-		currentID:     startID,
-		endID:         endID,
-		inclusive:     inclusive,
-		columnIndices: columnIndices,
-		schema:        schema,
-		batchSize:     1000,                                // Batch size for prefetching
-		currentBatch:  fastmap.NewInt64Map[*RowVersion](0), // Use a smaller initial capacity
-		projectedRow:  make(storage.Row, len(columnIndices)),
+		txnID:           txnID,
+		versionStore:    versionStore,
+		currentID:       startID,
+		endID:           endID,
+		inclusive:       inclusive,
+		columnIndices:   columnIndices,
+		schema:          schema,
+		batchSize:       1000, // Batch size for prefetching
+		currentBatch:    nil,  // Initialize to nil
+		projectedRow:    make(storage.Row, len(columnIndices)),
+		currentBatchEnd: 0, // Will be set in Next()
 	}
 }
 
@@ -205,26 +207,36 @@ func (s *RangeScanner) Next() bool {
 
 	// Fetch the next visible row
 	for s.currentID <= actualEnd {
-		// Check if we need to fetch a new batch
-		if s.currentBatch.Len() == 0 {
-			// Prepare batch of IDs to fetch
-			endBatch := s.currentID + int64(s.batchSize) - 1
-			if endBatch > actualEnd {
-				endBatch = actualEnd
+		// Check if we need to fetch a new batch:
+		// 1. If currentBatch is nil
+		// 2. If currentBatch is empty
+		// 3. If we've moved beyond the current batch's range
+		if s.currentBatch == nil || s.currentBatch.Len() == 0 || s.currentID > s.currentBatchEnd {
+			// Return the previous batch to the pool if it exists
+			if s.currentBatch != nil {
+				ReturnVisibleVersionMap(s.currentBatch)
+				s.currentBatch = nil
+			}
+
+			// Calculate new batch boundaries
+			batchStart := s.currentID
+			s.currentBatchEnd = batchStart + int64(s.batchSize) - 1
+			if s.currentBatchEnd > actualEnd {
+				s.currentBatchEnd = actualEnd
 			}
 
 			// Prepare ID slice for batch
-			ids := make([]int64, 0, endBatch-s.currentID+1)
-			for id := s.currentID; id <= endBatch; id++ {
+			ids := make([]int64, 0, s.currentBatchEnd-batchStart+1)
+			for id := batchStart; id <= s.currentBatchEnd; id++ {
 				ids = append(ids, id)
 			}
 
 			// Fetch batch of versions
 			s.currentBatch = s.versionStore.GetVisibleVersionsByIDs(ids, s.txnID)
 
-			// If batch is empty, we can skip to the next batch
+			// If batch is empty, we can skip to the next batch range
 			if s.currentBatch.Len() == 0 {
-				s.currentID = endBatch + 1
+				s.currentID = s.currentBatchEnd + 1
 				continue
 			}
 		}
@@ -239,8 +251,6 @@ func (s *RangeScanner) Next() bool {
 		// ID doesn't exist or is deleted, try next ID
 		s.currentBatch.Del(s.currentID)
 		s.currentID++
-
-		// If batch is empty after this deletion, we'll fetch a new batch next time
 	}
 
 	return false

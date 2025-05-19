@@ -999,6 +999,20 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		return idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, rangeExpr.IncludeMin, rangeExpr.IncludeMax)
 	}
 
+	// Handle BetweenExpression for BETWEEN queries
+	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok && betweenExpr.Column == idx.columnName {
+		// Convert lower and upper bounds to appropriate column values
+		lowerValue := storage.ValueToPooledColumnValue(betweenExpr.LowerBound, idx.dataType)
+		defer storage.PutPooledColumnValue(lowerValue)
+
+		upperValue := storage.ValueToPooledColumnValue(betweenExpr.UpperBound, idx.dataType)
+		defer storage.PutPooledColumnValue(upperValue)
+
+		// Use the index's range function with inclusivity based on the BetweenExpression's Inclusive field
+		return idx.GetRowIDsInRange([]storage.ColumnValue{lowerValue}, []storage.ColumnValue{upperValue}, 
+			betweenExpr.Inclusive, betweenExpr.Inclusive)
+	}
+
 	// Also check for AndExpression with range conditions
 	if andExpr, ok := expr.(*expression.AndExpression); ok && len(andExpr.Expressions) == 2 {
 		// Check if both expressions are for this column and represent a range
