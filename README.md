@@ -18,10 +18,10 @@ Stoolap is a high-performance, columnar SQL database written in pure Go with zer
 - **Pure Go Implementation**: Zero external dependencies for maximum portability
 - **ACID Transactions**: Full transaction support with MVCC (Multi-Version Concurrency Control)
 - **Fast Analytical Processing**: Columnar storage format optimized for analytical queries
-- **Advanced Indexing**: B-tree, bitmap, and multi-column indexes for high-performance data access
+- **Columnar Indexing**: Efficient single and multi-column indexes for high-performance data access
 - **Memory-First Design**: Optimized for in-memory performance with optional persistence
 - **Vectorized Execution**: SIMD-accelerated operations for high throughput
-- **SQL Support**: Rich SQL functionality including JOINs, aggregations, window functions, and more
+- **SQL Support**: Rich SQL functionality including JOINs, aggregations, and more
 - **JSON Support**: Native JSON data type with optimized storage
 - **Go SQL Driver**: Standard database/sql compatible driver
 
@@ -121,10 +121,11 @@ func main() {
 
 ### Connection Strings
 
-Stoolap supports two storage modes:
+Stoolap supports three storage modes:
 
 - **In-Memory**: `memory://` - Fast, non-persistent storage for maximum performance
-- **Persistent**: `file:///path/to/data` - Durable storage with WAL (Write-Ahead Logging)
+- **File-Based**: `file:///path/to/data` - Durable storage with persistence
+- **Database Engine**: `db:///path/to/data` - MVCC storage with transaction isolation and durability
 
 ## Supported SQL Features
 
@@ -143,7 +144,7 @@ Stoolap supports two storage modes:
 - **DML**: SELECT, INSERT, UPDATE, DELETE, MERGE
 - **Queries**: JOINs, GROUP BY, ORDER BY, LIMIT, OFFSET, subqueries, CTE (WITH), DISTINCT
 - **Indexing**: CREATE INDEX, unique constraints, primary keys, multi-column indexes
-- **Functions**: Aggregate, scalar, and window functions
+- **Functions**: Aggregate and scalar functions
 
 ## Performance Optimizations
 
@@ -153,7 +154,7 @@ Stoolap includes numerous performance optimizations:
 - **SIMD Operations**: Vectorized execution for arithmetic, comparisons, and functions
 - **Specialized Data Structures**: Custom B-trees and hashmaps for high-throughput operations
 - **Expression Pushdown**: Filters pushed to storage layer for faster execution
-- **Type-Specific Compression**: Optimized compression algorithms for different data types
+- **Type-Specific Optimization**: Optimized operations for different data types
 
 ## Development Status
 
@@ -163,8 +164,7 @@ Stoolap is under active development. While it provides ACID compliance and a ric
 
 Additional documentation:
 
-- [Data Types](docs/DATA_TYPES.md): Detailed information on supported data types
-- [JSON Support](docs/JSON_SUPPORT.md): JSON functionality and implementation details
+- [Wiki Pages](https://github.com/stoolap/stoolap/wiki): Detailed documentation on architecture, design decisions, and usage examples
 
 ## Contributing
 
