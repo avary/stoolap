@@ -20,7 +20,7 @@
       <div class="header-wrapper">
         <div class="logo">
           <a href="{{ '/' | relative_url }}" aria-label="Stoolap homepage">
-            <img src="{{ '/assets/img/logo.svg' | relative_url }}" alt="Stoolap" width="150" height="40">
+            <img src="{{ '/assets/img/logo-horizontal.svg' | relative_url }}" alt="Stoolap" width="180" height="54">
           </a>
         </div>
         
@@ -72,20 +72,10 @@
           </div>
           
           <div class="docs-nav-section">
-            <button class="docs-nav-toggle" aria-expanded="true">SQL Reference</button>
-            <ul>
-              <li><a href="{{ '/docs/sql-reference/data-types/' | relative_url }}" {% if page.url contains '/docs/sql-reference/data-types/' %}aria-current="page"{% endif %}>Data Types</a></li>
-              <li><a href="{{ '/docs/sql-reference/sql-commands/' | relative_url }}" {% if page.url contains '/docs/sql-reference/sql-commands/' %}aria-current="page"{% endif %}>SQL Commands</a></li>
-              <li><a href="{{ '/docs/sql-reference/aggregate-functions/' | relative_url }}" {% if page.url contains '/docs/sql-reference/aggregate-functions/' %}aria-current="page"{% endif %}>Aggregate Functions</a></li>
-              <li><a href="{{ '/docs/sql-reference/scalar-functions/' | relative_url }}" {% if page.url contains '/docs/sql-reference/scalar-functions/' %}aria-current="page"{% endif %}>Scalar Functions</a></li>
-              <li><a href="{{ '/docs/sql-reference/window-functions/' | relative_url }}" {% if page.url contains '/docs/sql-reference/window-functions/' %}aria-current="page"{% endif %}>Window Functions</a></li>
-            </ul>
-          </div>
-          
-          <div class="docs-nav-section">
             <button class="docs-nav-toggle" aria-expanded="true">Architecture</button>
             <ul>
-              <li><a href="{{ '/docs/architecture/architecture/' | relative_url }}" {% if page.url contains '/docs/architecture/architecture/' %}aria-current="page"{% endif %}>Architecture Overview</a></li>
+              <li><a href="{{ '/docs/architecture/' | relative_url }}" {% if page.url == '/docs/architecture/' %}aria-current="page"{% endif %}>Architecture Overview</a></li>
+              <li><a href="{{ '/docs/architecture/architecture/' | relative_url }}" {% if page.url contains '/docs/architecture/architecture/' %}aria-current="page"{% endif %}>Architecture Details</a></li>
               <li><a href="{{ '/docs/architecture/storage-engine/' | relative_url }}" {% if page.url contains '/docs/architecture/storage-engine/' %}aria-current="page"{% endif %}>Storage Engine</a></li>
               <li><a href="{{ '/docs/architecture/columnar-storage/' | relative_url }}" {% if page.url contains '/docs/architecture/columnar-storage/' %}aria-current="page"{% endif %}>Columnar Storage</a></li>
               <li><a href="{{ '/docs/architecture/mvcc-implementation/' | relative_url }}" {% if page.url contains '/docs/architecture/mvcc-implementation/' %}aria-current="page"{% endif %}>MVCC Implementation</a></li>
@@ -93,16 +83,6 @@
               <li><a href="{{ '/docs/architecture/indexing/' | relative_url }}" {% if page.url contains '/docs/architecture/indexing/' %}aria-current="page"{% endif %}>Indexing</a></li>
               <li><a href="{{ '/docs/architecture/unique-indexes/' | relative_url }}" {% if page.url contains '/docs/architecture/unique-indexes/' %}aria-current="page"{% endif %}>Unique Indexes</a></li>
               <li><a href="{{ '/docs/architecture/expression-pushdown/' | relative_url }}" {% if page.url contains '/docs/architecture/expression-pushdown/' %}aria-current="page"{% endif %}>Expression Pushdown</a></li>
-            </ul>
-          </div>
-          
-          <div class="docs-nav-section">
-            <button class="docs-nav-toggle" aria-expanded="true">Advanced Features</button>
-            <ul>
-              <li><a href="{{ '/docs/advanced-features/vectorized-execution/' | relative_url }}" {% if page.url contains '/docs/advanced-features/vectorized-execution/' %}aria-current="page"{% endif %}>Vectorized Execution</a></li>
-              <li><a href="{{ '/docs/advanced-features/json-operations/' | relative_url }}" {% if page.url contains '/docs/advanced-features/json-operations/' %}aria-current="page"{% endif %}>JSON Support</a></li>
-              <li><a href="{{ '/docs/advanced-features/pragma-commands/' | relative_url }}" {% if page.url contains '/docs/advanced-features/pragma-commands/' %}aria-current="page"{% endif %}>PRAGMA Commands</a></li>
-              <li><a href="{{ '/docs/advanced-features/date-time-handling/' | relative_url }}" {% if page.url contains '/docs/advanced-features/date-time-handling/' %}aria-current="page"{% endif %}>Date/Time Handling</a></li>
             </ul>
           </div>
         </nav>
@@ -122,7 +102,7 @@
     <div class="container">
       <div class="footer-content">
         <div class="footer-brand">
-          <img src="{{ '/assets/img/logo.svg' | relative_url }}" alt="Stoolap" width="120" height="32">
+          <img src="{{ '/assets/img/logo-horizontal.svg' | relative_url }}" alt="Stoolap" width="160" height="48">
           <p>High-performance columnar SQL database written in pure Go</p>
         </div>
         
@@ -132,8 +112,7 @@
             <ul>
               <li><a href="{{ '/docs/getting-started/installation/' | relative_url }}">Installation</a></li>
               <li><a href="{{ '/docs/getting-started/quickstart/' | relative_url }}">Quick Start</a></li>
-              <li><a href="{{ '/docs/architecture/architecture/' | relative_url }}">Architecture</a></li>
-              <li><a href="{{ '/docs/sql-reference/sql-commands/' | relative_url }}">SQL Reference</a></li>
+              <li><a href="{{ '/docs/architecture/' | relative_url }}">Architecture</a></li>
             </ul>
           </div>
           

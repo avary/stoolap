@@ -368,11 +368,14 @@ img {
 .logo {
   display: flex;
   align-items: center;
+  margin-right: var(--space-4);
 }
 
 .logo img {
   margin: 0;
   border-radius: 0;
+  max-width: 100%;
+  height: auto;
 }
 
 /* Main Navigation */
@@ -998,6 +1001,12 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
 @media (max-width: 768px) {
   :root {
     --sidebar-width: 240px;
+    --header-height: 70px;
+  }
+
+  .logo img {
+    width: 140px;
+    height: auto;
   }
   
   .main-nav {
@@ -1102,6 +1111,10 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
 @media (max-width: 640px) {
   :root {
     --header-height: 60px;
+  }
+  
+  .logo img {
+    width: 120px;
   }
   
   .hero-title {

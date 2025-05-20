@@ -7,7 +7,7 @@ title: Stoolap - High-performance columnar SQL database in Go
   <div class="container">
     <div class="hero-content">
       <div class="hero-text">
-        <h1 class="hero-title">Stoolap</h1>
+        <img src="{{ '/assets/img/logo-horizontal.svg' | relative_url }}" alt="Stoolap" class="hero-logo" width="300" height="90">
         <p class="hero-subtitle">High-performance columnar SQL database with zero dependencies</p>
         <p class="hero-description">A modern database engine written in pure Go that combines transactional and analytical capabilities in a single system.</p>
         <div class="hero-cta">
@@ -183,7 +183,7 @@ title: Stoolap - High-performance columnar SQL database in Go
       <div class="feature-card">
         <h3>Standard SQL</h3>
         <p>Use familiar SQL syntax with powerful extensions for modern applications.</p>
-        <a href="{{ '/docs/sql-reference/sql-commands/' | relative_url }}" class="link-arrow">SQL Reference</a>
+        <a href="{{ '/docs/' | relative_url }}" class="link-arrow">Documentation</a>
       </div>
       
       <div class="feature-card">
@@ -232,7 +232,7 @@ title: Stoolap - High-performance columnar SQL database in Go
     </div>
     
     <div class="cta-wrapper">
-      <a href="{{ '/docs/architecture/architecture/' | relative_url }}" class="btn btn-primary">Explore Architecture</a>
+      <a href="{{ '/docs/architecture/' | relative_url }}" class="btn btn-primary">Explore Architecture</a>
     </div>
   </div>
 </section>
@@ -258,6 +258,13 @@ title: Stoolap - High-performance columnar SQL database in Go
   left: 0;
   width: 100%;
   height: 60px;
+}
+
+.hero-logo {
+  max-width: 100%;
+  height: auto;
+  margin: 0 0 var(--space-4);
+  display: block;
 }
 
 .db-illustration {
