@@ -531,6 +531,52 @@ blockquote {
   opacity: 0.9;
 }
 
+/* Body state for menu open */
+body.menu-open {
+  overflow: hidden;
+}
+
+/* Sidebar expanded/collapsed states for mobile */
+@media (max-width: 768px) {
+  .sidebar-nav h3 {
+    cursor: pointer;
+    position: relative;
+  }
+  
+  .sidebar-nav h3:after {
+    content: '+';
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    transition: transform 0.3s ease;
+  }
+  
+  .sidebar-nav h3.expanded:after {
+    content: '-';
+  }
+  
+  .sidebar-nav ul {
+    display: none;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+  }
+  
+  .sidebar-nav ul.expanded {
+    display: block;
+    max-height: 500px;
+  }
+}
+
+/* Always show sidebar navigation on desktop */
+@media (min-width: 769px) {
+  .sidebar-nav ul {
+    display: block !important;
+    max-height: none !important;
+  }
+}
+
 /* Responsive Styles */
 @media (max-width: 992px) {
   .content.with-sidebar {
@@ -550,6 +596,7 @@ blockquote {
     top: 0;
     height: auto;
     overflow-y: visible;
+    margin-bottom: 2rem;
   }
   
   .footer-content {
@@ -579,6 +626,7 @@ blockquote {
     padding: 1.5rem;
     transition: right 0.3s ease;
     overflow-y: auto;
+    z-index: 1000;
   }
   
   .main-nav.active {
@@ -595,10 +643,19 @@ blockquote {
   
   .mobile-menu-toggle {
     display: flex;
+    z-index: 1001;
   }
   
-  .sidebar-nav h3 {
-    cursor: pointer;
+  /* Add overlay for mobile menu */
+  body.menu-open::after {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 999;
   }
   
   .footer-links {
@@ -636,5 +693,10 @@ blockquote {
   .doc-content pre,
   .doc-content code {
     font-size: 0.8rem;
+  }
+  
+  /* Fix container padding on small screens */
+  .container, .content {
+    padding: 0 1rem;
   }
 }

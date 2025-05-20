@@ -46,57 +46,50 @@
 
   <div class="wrapper">
     {% if page.layout == 'doc' %}
-    <div class="sidebar">
+    <aside class="sidebar">
       <nav class="sidebar-nav">
         <h3>Getting Started</h3>
         <ul>
-          <li><a href="{{ '/docs/installation/' | relative_url }}" {% if page.url contains '/docs/installation/' %}class="active"{% endif %}>Installation Guide</a></li>
-          <li><a href="{{ '/docs/quickstart/' | relative_url }}" {% if page.url contains '/docs/quickstart/' %}class="active"{% endif %}>Quick Start Tutorial</a></li>
-          <li><a href="{{ '/docs/connection-strings/' | relative_url }}" {% if page.url contains '/docs/connection-strings/' %}class="active"{% endif %}>Connection Strings</a></li>
+          <li><a href="{{ '/docs/getting-started/installation/' | relative_url }}" {% if page.url contains '/docs/getting-started/installation/' %}class="active"{% endif %}>Installation Guide</a></li>
+          <li><a href="{{ '/docs/getting-started/quickstart/' | relative_url }}" {% if page.url contains '/docs/getting-started/quickstart/' %}class="active"{% endif %}>Quick Start Tutorial</a></li>
+          <li><a href="{{ '/docs/getting-started/connection-strings/' | relative_url }}" {% if page.url contains '/docs/getting-started/connection-strings/' %}class="active"{% endif %}>Connection Strings</a></li>
         </ul>
         
         <h3>SQL Reference</h3>
         <ul>
-          <li><a href="{{ '/docs/data-types/' | relative_url }}" {% if page.url contains '/docs/data-types/' %}class="active"{% endif %}>Data Types</a></li>
-          <li><a href="{{ '/docs/sql-commands/' | relative_url }}" {% if page.url contains '/docs/sql-commands/' %}class="active"{% endif %}>SQL Commands</a></li>
-          <li><a href="{{ '/docs/aggregate-functions/' | relative_url }}" {% if page.url contains '/docs/aggregate-functions/' %}class="active"{% endif %}>Aggregate Functions</a></li>
-          <li><a href="{{ '/docs/scalar-functions/' | relative_url }}" {% if page.url contains '/docs/scalar-functions/' %}class="active"{% endif %}>Scalar Functions</a></li>
-          <li><a href="{{ '/docs/window-functions/' | relative_url }}" {% if page.url contains '/docs/window-functions/' %}class="active"{% endif %}>Window Functions</a></li>
-          <li><a href="{{ '/docs/cast-operations/' | relative_url }}" {% if page.url contains '/docs/cast-operations/' %}class="active"{% endif %}>CAST Operations</a></li>
-          <li><a href="{{ '/docs/null-handling/' | relative_url }}" {% if page.url contains '/docs/null-handling/' %}class="active"{% endif %}>NULL Handling</a></li>
-          <li><a href="{{ '/docs/join-operations/' | relative_url }}" {% if page.url contains '/docs/join-operations/' %}class="active"{% endif %}>JOIN Operations</a></li>
-          <li><a href="{{ '/docs/distinct-operations/' | relative_url }}" {% if page.url contains '/docs/distinct-operations/' %}class="active"{% endif %}>DISTINCT Operations</a></li>
-          <li><a href="{{ '/docs/parameter-binding/' | relative_url }}" {% if page.url contains '/docs/parameter-binding/' %}class="active"{% endif %}>Parameter Binding</a></li>
+          <li><a href="{{ '/docs/sql-reference/data-types/' | relative_url }}" {% if page.url contains '/docs/sql-reference/data-types/' %}class="active"{% endif %}>Data Types</a></li>
+          <li><a href="{{ '/docs/sql-reference/sql-commands/' | relative_url }}" {% if page.url contains '/docs/sql-reference/sql-commands/' %}class="active"{% endif %}>SQL Commands</a></li>
+          <li><a href="{{ '/docs/sql-reference/aggregate-functions/' | relative_url }}" {% if page.url contains '/docs/sql-reference/aggregate-functions/' %}class="active"{% endif %}>Aggregate Functions</a></li>
+          <li><a href="{{ '/docs/sql-reference/scalar-functions/' | relative_url }}" {% if page.url contains '/docs/sql-reference/scalar-functions/' %}class="active"{% endif %}>Scalar Functions</a></li>
+          <li><a href="{{ '/docs/sql-reference/window-functions/' | relative_url }}" {% if page.url contains '/docs/sql-reference/window-functions/' %}class="active"{% endif %}>Window Functions</a></li>
         </ul>
         
         <h3>Architecture</h3>
         <ul>
-          <li><a href="{{ '/docs/architecture/' | relative_url }}" {% if page.url contains '/docs/architecture/' %}class="active"{% endif %}>Architecture Overview</a></li>
-          <li><a href="{{ '/docs/storage-engine/' | relative_url }}" {% if page.url contains '/docs/storage-engine/' %}class="active"{% endif %}>Storage Engine</a></li>
-          <li><a href="{{ '/docs/columnar-storage/' | relative_url }}" {% if page.url contains '/docs/columnar-storage/' %}class="active"{% endif %}>Columnar Storage</a></li>
-          <li><a href="{{ '/docs/mvcc-implementation/' | relative_url }}" {% if page.url contains '/docs/mvcc-implementation/' %}class="active"{% endif %}>MVCC Implementation</a></li>
-          <li><a href="{{ '/docs/transaction-isolation/' | relative_url }}" {% if page.url contains '/docs/transaction-isolation/' %}class="active"{% endif %}>Transaction Isolation</a></li>
-          <li><a href="{{ '/docs/indexing/' | relative_url }}" {% if page.url contains '/docs/indexing/' %}class="active"{% endif %}>Indexing</a></li>
-          <li><a href="{{ '/docs/unique-indexes/' | relative_url }}" {% if page.url contains '/docs/unique-indexes/' %}class="active"{% endif %}>Unique Indexes</a></li>
-          <li><a href="{{ '/docs/expression-pushdown/' | relative_url }}" {% if page.url contains '/docs/expression-pushdown/' %}class="active"{% endif %}>Expression Pushdown</a></li>
+          <li><a href="{{ '/docs/architecture/architecture/' | relative_url }}" {% if page.url contains '/docs/architecture/architecture/' %}class="active"{% endif %}>Architecture Overview</a></li>
+          <li><a href="{{ '/docs/architecture/storage-engine/' | relative_url }}" {% if page.url contains '/docs/architecture/storage-engine/' %}class="active"{% endif %}>Storage Engine</a></li>
+          <li><a href="{{ '/docs/architecture/columnar-storage/' | relative_url }}" {% if page.url contains '/docs/architecture/columnar-storage/' %}class="active"{% endif %}>Columnar Storage</a></li>
+          <li><a href="{{ '/docs/architecture/mvcc-implementation/' | relative_url }}" {% if page.url contains '/docs/architecture/mvcc-implementation/' %}class="active"{% endif %}>MVCC Implementation</a></li>
+          <li><a href="{{ '/docs/architecture/transaction-isolation/' | relative_url }}" {% if page.url contains '/docs/architecture/transaction-isolation/' %}class="active"{% endif %}>Transaction Isolation</a></li>
+          <li><a href="{{ '/docs/architecture/indexing/' | relative_url }}" {% if page.url contains '/docs/architecture/indexing/' %}class="active"{% endif %}>Indexing</a></li>
+          <li><a href="{{ '/docs/architecture/unique-indexes/' | relative_url }}" {% if page.url contains '/docs/architecture/unique-indexes/' %}class="active"{% endif %}>Unique Indexes</a></li>
+          <li><a href="{{ '/docs/architecture/expression-pushdown/' | relative_url }}" {% if page.url contains '/docs/architecture/expression-pushdown/' %}class="active"{% endif %}>Expression Pushdown</a></li>
         </ul>
         
         <h3>Advanced Features</h3>
         <ul>
-          <li><a href="{{ '/docs/vectorized-execution/' | relative_url }}" {% if page.url contains '/docs/vectorized-execution/' %}class="active"{% endif %}>Vectorized Execution</a></li>
-          <li><a href="{{ '/docs/json-operations/' | relative_url }}" {% if page.url contains '/docs/json-operations/' %}class="active"{% endif %}>JSON Support</a></li>
-          <li><a href="{{ '/docs/pragma-commands/' | relative_url }}" {% if page.url contains '/docs/pragma-commands/' %}class="active"{% endif %}>PRAGMA Commands</a></li>
-          <li><a href="{{ '/docs/date-time-handling/' | relative_url }}" {% if page.url contains '/docs/date-time-handling/' %}class="active"{% endif %}>Date/Time Handling</a></li>
-          <li><a href="{{ '/docs/on-duplicate-key-update/' | relative_url }}" {% if page.url contains '/docs/on-duplicate-key-update/' %}class="active"{% endif %}>ON DUPLICATE KEY UPDATE</a></li>
-          <li><a href="{{ '/docs/performance-optimization/' | relative_url }}" {% if page.url contains '/docs/performance-optimization/' %}class="active"{% endif %}>Performance Optimization</a></li>
+          <li><a href="{{ '/docs/advanced-features/vectorized-execution/' | relative_url }}" {% if page.url contains '/docs/advanced-features/vectorized-execution/' %}class="active"{% endif %}>Vectorized Execution</a></li>
+          <li><a href="{{ '/docs/advanced-features/json-operations/' | relative_url }}" {% if page.url contains '/docs/advanced-features/json-operations/' %}class="active"{% endif %}>JSON Support</a></li>
+          <li><a href="{{ '/docs/advanced-features/pragma-commands/' | relative_url }}" {% if page.url contains '/docs/advanced-features/pragma-commands/' %}class="active"{% endif %}>PRAGMA Commands</a></li>
+          <li><a href="{{ '/docs/advanced-features/date-time-handling/' | relative_url }}" {% if page.url contains '/docs/advanced-features/date-time-handling/' %}class="active"{% endif %}>Date/Time Handling</a></li>
         </ul>
       </nav>
-    </div>
+    </aside>
     {% endif %}
     
-    <div class="content {% if page.layout == 'doc' %}with-sidebar{% endif %}">
+    <main class="content {% if page.layout == 'doc' %}with-sidebar{% endif %}">
       {{ content }}
-    </div>
+    </main>
   </div>
   
   <footer class="main-footer">
