@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% if page.title %}{{ page.title }} - {% endif %}{{ site.title }}</title>
+  <meta name="description" content="{% if page.description %}{{ page.description }}{% else %}{{ site.description }}{% endif %}">
+  <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+  <link rel="stylesheet" href="{{ '/assets/css/home.scss' | relative_url }}">
+  <link rel="icon" href="{{ '/assets/img/logo.svg' | relative_url }}" type="image/svg+xml">
+  {% seo %}
+</head>
+<body>
+  <header class="main-header">
+    <div class="container">
+      <div class="header-content">
+        <div class="logo">
+          <a href="{{ '/' | relative_url }}">
+            <img src="{{ '/assets/img/logo.svg' | relative_url }}" alt="{{ site.title }}" width="150">
+          </a>
+        </div>
+        
+        <nav class="main-nav">
+          <ul>
+            <li><a href="{{ '/' | relative_url }}">Home</a></li>
+            <li><a href="{{ '/docs/' | relative_url }}">Documentation</a></li>
+            <li><a href="{{ '/docs/quickstart/' | relative_url }}">Quick Start</a></li>
+            <li><a href="{{ site.github.repository_url }}" target="_blank">GitHub</a></li>
+          </ul>
+        </nav>
+        
+        <div class="theme-toggle" id="theme-toggle">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22ZM12 20C7.58172 20 4 16.4183 4 12C4 7.58172 7.58172 4 12 4C16.4183 4 20 7.58172 20 12C20 16.4183 16.4183 20 12 20ZM12 18C15.3137 18 18 15.3137 18 12C18 8.68629 15.3137 6 12 6C8.68629 6 6 8.68629 6 12C6 15.3137 8.68629 18 12 18Z"></path>
+          </svg>
+        </div>
+        
+        <div class="mobile-menu-toggle">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="wrapper">
+    {% if page.layout == 'doc' %}
+    <div class="sidebar">
+      <nav class="sidebar-nav">
+        <h3>Getting Started</h3>
+        <ul>
+          <li><a href="{{ '/docs/installation/' | relative_url }}" {% if page.url contains '/docs/installation/' %}class="active"{% endif %}>Installation Guide</a></li>
+          <li><a href="{{ '/docs/quickstart/' | relative_url }}" {% if page.url contains '/docs/quickstart/' %}class="active"{% endif %}>Quick Start Tutorial</a></li>
+          <li><a href="{{ '/docs/connection-strings/' | relative_url }}" {% if page.url contains '/docs/connection-strings/' %}class="active"{% endif %}>Connection Strings</a></li>
+        </ul>
+        
+        <h3>SQL Reference</h3>
+        <ul>
+          <li><a href="{{ '/docs/data-types/' | relative_url }}" {% if page.url contains '/docs/data-types/' %}class="active"{% endif %}>Data Types</a></li>
+          <li><a href="{{ '/docs/sql-commands/' | relative_url }}" {% if page.url contains '/docs/sql-commands/' %}class="active"{% endif %}>SQL Commands</a></li>
+          <li><a href="{{ '/docs/aggregate-functions/' | relative_url }}" {% if page.url contains '/docs/aggregate-functions/' %}class="active"{% endif %}>Aggregate Functions</a></li>
+          <li><a href="{{ '/docs/scalar-functions/' | relative_url }}" {% if page.url contains '/docs/scalar-functions/' %}class="active"{% endif %}>Scalar Functions</a></li>
+          <li><a href="{{ '/docs/window-functions/' | relative_url }}" {% if page.url contains '/docs/window-functions/' %}class="active"{% endif %}>Window Functions</a></li>
+          <li><a href="{{ '/docs/cast-operations/' | relative_url }}" {% if page.url contains '/docs/cast-operations/' %}class="active"{% endif %}>CAST Operations</a></li>
+          <li><a href="{{ '/docs/null-handling/' | relative_url }}" {% if page.url contains '/docs/null-handling/' %}class="active"{% endif %}>NULL Handling</a></li>
+          <li><a href="{{ '/docs/join-operations/' | relative_url }}" {% if page.url contains '/docs/join-operations/' %}class="active"{% endif %}>JOIN Operations</a></li>
+          <li><a href="{{ '/docs/distinct-operations/' | relative_url }}" {% if page.url contains '/docs/distinct-operations/' %}class="active"{% endif %}>DISTINCT Operations</a></li>
+          <li><a href="{{ '/docs/parameter-binding/' | relative_url }}" {% if page.url contains '/docs/parameter-binding/' %}class="active"{% endif %}>Parameter Binding</a></li>
+        </ul>
+        
+        <h3>Architecture</h3>
+        <ul>
+          <li><a href="{{ '/docs/architecture/' | relative_url }}" {% if page.url contains '/docs/architecture/' %}class="active"{% endif %}>Architecture Overview</a></li>
+          <li><a href="{{ '/docs/storage-engine/' | relative_url }}" {% if page.url contains '/docs/storage-engine/' %}class="active"{% endif %}>Storage Engine</a></li>
+          <li><a href="{{ '/docs/columnar-storage/' | relative_url }}" {% if page.url contains '/docs/columnar-storage/' %}class="active"{% endif %}>Columnar Storage</a></li>
+          <li><a href="{{ '/docs/mvcc-implementation/' | relative_url }}" {% if page.url contains '/docs/mvcc-implementation/' %}class="active"{% endif %}>MVCC Implementation</a></li>
+          <li><a href="{{ '/docs/transaction-isolation/' | relative_url }}" {% if page.url contains '/docs/transaction-isolation/' %}class="active"{% endif %}>Transaction Isolation</a></li>
+          <li><a href="{{ '/docs/indexing/' | relative_url }}" {% if page.url contains '/docs/indexing/' %}class="active"{% endif %}>Indexing</a></li>
+          <li><a href="{{ '/docs/unique-indexes/' | relative_url }}" {% if page.url contains '/docs/unique-indexes/' %}class="active"{% endif %}>Unique Indexes</a></li>
+          <li><a href="{{ '/docs/expression-pushdown/' | relative_url }}" {% if page.url contains '/docs/expression-pushdown/' %}class="active"{% endif %}>Expression Pushdown</a></li>
+        </ul>
+        
+        <h3>Advanced Features</h3>
+        <ul>
+          <li><a href="{{ '/docs/vectorized-execution/' | relative_url }}" {% if page.url contains '/docs/vectorized-execution/' %}class="active"{% endif %}>Vectorized Execution</a></li>
+          <li><a href="{{ '/docs/json-operations/' | relative_url }}" {% if page.url contains '/docs/json-operations/' %}class="active"{% endif %}>JSON Support</a></li>
+          <li><a href="{{ '/docs/pragma-commands/' | relative_url }}" {% if page.url contains '/docs/pragma-commands/' %}class="active"{% endif %}>PRAGMA Commands</a></li>
+          <li><a href="{{ '/docs/date-time-handling/' | relative_url }}" {% if page.url contains '/docs/date-time-handling/' %}class="active"{% endif %}>Date/Time Handling</a></li>
+          <li><a href="{{ '/docs/on-duplicate-key-update/' | relative_url }}" {% if page.url contains '/docs/on-duplicate-key-update/' %}class="active"{% endif %}>ON DUPLICATE KEY UPDATE</a></li>
+          <li><a href="{{ '/docs/performance-optimization/' | relative_url }}" {% if page.url contains '/docs/performance-optimization/' %}class="active"{% endif %}>Performance Optimization</a></li>
+        </ul>
+      </nav>
+    </div>
+    {% endif %}
+    
+    <div class="content {% if page.layout == 'doc' %}with-sidebar{% endif %}">
+      {{ content }}
+    </div>
+  </div>
+  
+  <footer class="main-footer">
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-logo">
+          <img src="{{ '/assets/img/logo.svg' | relative_url }}" alt="{{ site.title }}" width="120">
+          <p>High-performance columnar SQL database written in pure Go</p>
+        </div>
+        
+        <div class="footer-links">
+          <div class="footer-column">
+            <h4>Documentation</h4>
+            <ul>
+              <li><a href="{{ '/docs/installation/' | relative_url }}">Installation</a></li>
+              <li><a href="{{ '/docs/quickstart/' | relative_url }}">Quick Start</a></li>
+              <li><a href="{{ '/docs/architecture/' | relative_url }}">Architecture</a></li>
+              <li><a href="{{ '/docs/sql-commands/' | relative_url }}">SQL Reference</a></li>
+            </ul>
+          </div>
+          
+          <div class="footer-column">
+            <h4>Community</h4>
+            <ul>
+              <li><a href="{{ site.github.repository_url }}">GitHub</a></li>
+              <li><a href="{{ site.github.repository_url }}/issues">Issues</a></li>
+              <li><a href="{{ site.github.repository_url }}/discussions">Discussions</a></li>
+              <li><a href="{{ site.github.repository_url }}/releases">Releases</a></li>
+            </ul>
+          </div>
+          
+          <div class="footer-column">
+            <h4>Resources</h4>
+            <ul>
+              <li><a href="{{ '/docs/' | relative_url }}">Documentation</a></li>
+              <li><a href="https://go.dev" target="_blank">Go</a></li>
+              <li><a href="https://golang.org/pkg/database/sql/" target="_blank">database/sql</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      
+      <div class="footer-bottom">
+        <p>&copy; {{ site.time | date: '%Y' }} Stoolap Contributors. Licensed under MIT.</p>
+      </div>
+    </div>
+  </footer>
+  
+  <script src="{{ '/assets/js/theme.js' | relative_url }}"></script>
+  <script src="{{ '/assets/js/mobile-menu.js' | relative_url }}"></script>
+</body>
+</html>
