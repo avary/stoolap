@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="logo.svg" alt="Stoolap Logo" width="400">
+</div>
+
 # Stoolap
 
 Stoolap is a high-performance, columnar SQL database written in pure Go with zero dependencies. It combines OLTP (transaction) and OLAP (analytical) capabilities in a single engine, making it suitable for hybrid transactional/analytical processing (HTAP) workloads.
