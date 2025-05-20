@@ -908,6 +908,42 @@ func (e *MVCCEngine) ListTableIndexes(tableName string) (map[string]string, erro
 	return vs.ListIndexes(), nil
 }
 
+// GetAllIndexes returns all index objects for a table, including multi-column indexes
+func (e *MVCCEngine) GetAllIndexes(tableName string) ([]storage.Index, error) {
+	if !e.open.Load() {
+		return nil, errors.New("engine is not open")
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	// Check if the table exists
+	_, exists := e.schemas[tableName]
+	if !exists {
+		return nil, storage.ErrTableNotFound
+	}
+
+	// Get the version store
+	vs, exists := e.versionStores[tableName]
+	if !exists {
+		return []storage.Index{}, nil
+	}
+
+	// Lock the index mutex to ensure consistent access
+	vs.indexMutex.RLock()
+	defer vs.indexMutex.RUnlock()
+
+	// Create a slice to hold all index objects
+	indexes := make([]storage.Index, 0, len(vs.indexes))
+
+	// Add all indexes to the slice
+	for _, index := range vs.indexes {
+		indexes = append(indexes, index)
+	}
+
+	return indexes, nil
+}
+
 // GetIndex returns an index by name for a specific table
 func (e *MVCCEngine) GetIndex(tableName, indexName string) (storage.Index, error) {
 	if !e.open.Load() {

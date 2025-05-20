@@ -80,6 +80,10 @@ func (m *mockEngine) ListTableIndexes(tableName string) (map[string]string, erro
 	return nil, nil
 }
 
+func (m *mockEngine) GetAllIndexes(tableName string) ([]storage.Index, error) {
+	return nil, nil
+}
+
 // mockTransaction is a simple mock implementation of storage.Transaction
 type mockTransaction struct{}
 

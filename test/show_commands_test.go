@@ -123,7 +123,7 @@ func TestShowCommands(t *testing.T) {
 	}
 
 	// Verify columns
-	expectedColumns = []string{"Table", "Index Name", "Column Name", "Type", "Unique"}
+	expectedColumns = []string{"Table", "Index Name", "Column Name(s)", "Type", "Unique"}
 	columns = result.Columns()
 	if len(columns) != len(expectedColumns) {
 		t.Errorf("SHOW INDEXES result columns mismatch: got %v, want %v", columns, expectedColumns)

@@ -900,6 +900,8 @@ func (e *Executor) executeGlobalAggregation(ctx context.Context, tx storage.Tran
 	// Add the single result row
 	resultRows = append(resultRows, resultValues)
 
+	baseResult.Close() // Close the base result
+
 	// Create and return the result
 	return &ExecResult{
 		columns:  resultColumns,

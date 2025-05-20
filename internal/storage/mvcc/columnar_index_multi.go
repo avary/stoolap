@@ -3,514 +3,94 @@ package mvcc
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 
+	"github.com/stoolap/stoolap/internal/common"
+	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
 )
 
-// Ordering function type for comparing multi-column values
-type multiCompareFunc func(a, b []storage.ColumnValue) int
-
-// MultiColumnNode represents a node in the multi-column B-tree
-type multiColumnNode struct {
-	keys     [][]storage.ColumnValue // Multi-column keys stored in this node
-	rowIDs   [][]int64               // Row IDs for each key
-	children []*multiColumnNode      // Child nodes (nil for leaf nodes)
-	isLeaf   bool                    // Whether this is a leaf node
-	compare  multiCompareFunc        // Function for comparing keys
+// Pool for int64 set maps to reduce allocations
+var int64SetPool = sync.Pool{
+	New: func() interface{} {
+		return fastmap.NewInt64Map[struct{}](1000)
+	},
 }
 
-// findIndex returns the index where the key should be inserted
-func (n *multiColumnNode) findIndex(key []storage.ColumnValue) int {
-	// Binary search for the key
-	return sort.Search(len(n.keys), func(i int) bool {
-		return n.compare(n.keys[i], key) >= 0
-	})
+// GetInt64Set gets a set from the pool
+func GetInt64Set() *fastmap.Int64Map[struct{}] {
+	return int64SetPool.Get().(*fastmap.Int64Map[struct{}])
 }
 
-// insert inserts a key and rowID into the B-tree node
-func (n *multiColumnNode) insert(key []storage.ColumnValue, rowID int64) {
-	i := n.findIndex(key)
-
-	// If key already exists, just append the rowID
-	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
-		// Check if rowID already exists to avoid duplicates
-		for _, id := range n.rowIDs[i] {
-			if id == rowID {
-				return // rowID already exists, nothing to do
-			}
-		}
-
-		// Add rowID in sorted order
-		j := sort.Search(len(n.rowIDs[i]), func(j int) bool {
-			return n.rowIDs[i][j] >= rowID
-		})
-
-		// Insert at position j
-		if j == len(n.rowIDs[i]) {
-			// Append to end
-			n.rowIDs[i] = append(n.rowIDs[i], rowID)
-		} else {
-			// Insert at position j
-			n.rowIDs[i] = append(n.rowIDs[i][:j+1], n.rowIDs[i][j:]...)
-			n.rowIDs[i][j] = rowID
-		}
+// PutInt64Set returns a set to the pool
+func PutInt64Set(s *fastmap.Int64Map[struct{}]) {
+	if s == nil {
 		return
 	}
-
-	// Insert new key and rowID
-	n.keys = append(n.keys, nil)
-	n.rowIDs = append(n.rowIDs, nil)
-	copy(n.keys[i+1:], n.keys[i:])
-	copy(n.rowIDs[i+1:], n.rowIDs[i:])
-
-	// Create a deep copy of the key to ensure it won't be modified
-	keyCopy := make([]storage.ColumnValue, len(key))
-	copy(keyCopy, key)
-
-	n.keys[i] = keyCopy
-	n.rowIDs[i] = []int64{rowID}
+	s.Clear()
+	int64SetPool.Put(s)
 }
 
-// remove removes a rowID from a key in the B-tree node
-func (n *multiColumnNode) remove(key []storage.ColumnValue, rowID int64) bool {
-	i := n.findIndex(key)
-	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
-		// Find and remove the rowID
-		for j, id := range n.rowIDs[i] {
-			if id == rowID {
-				// Remove by swapping with last element and truncating
-				n.rowIDs[i][j] = n.rowIDs[i][len(n.rowIDs[i])-1]
-				n.rowIDs[i] = n.rowIDs[i][:len(n.rowIDs[i])-1]
-
-				// If no more rowIDs for this key, remove the key
-				if len(n.rowIDs[i]) == 0 {
-					copy(n.keys[i:], n.keys[i+1:])
-					copy(n.rowIDs[i:], n.rowIDs[i+1:])
-					n.keys = n.keys[:len(n.keys)-1]
-					n.rowIDs = n.rowIDs[:len(n.rowIDs)-1]
-				}
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// findLeftBoundary finds the left (starting) boundary of a range search
-func (n *multiColumnNode) findLeftBoundary(min []storage.ColumnValue, includeMin bool) int {
-	// Handle NULL or empty min case
-	if len(min) == 0 {
-		return 0 // Include all from beginning
-	}
-
-	// Use binary search
-	left, right := 0, len(n.keys)-1
-
-	// Special case for tiny arrays: linear scan might be faster
-	if right < 8 {
-		for i := 0; i <= right; i++ {
-			compare := n.compare(n.keys[i], min)
-			if includeMin && compare >= 0 {
-				return i
-			} else if !includeMin && compare > 0 {
-				return i
-			}
-		}
-		return right + 1
-	}
-
-	// Standard binary search with custom comparison function
-	for left <= right {
-		mid := left + (right-left)/2
-		compare := n.compare(n.keys[mid], min)
-
-		if includeMin {
-			// Looking for first key >= min
-			if compare < 0 {
-				left = mid + 1
-			} else {
-				// This could be a candidate, look to the left
-				right = mid - 1
-			}
-		} else {
-			// Looking for first key > min
-			if compare <= 0 {
-				left = mid + 1
-			} else {
-				// This could be a candidate, look to the left
-				right = mid - 1
-			}
-		}
-	}
-
-	// Left is now the index of the first key that should be included
-	return left
-}
-
-// findRightBoundary finds the right (ending) boundary of a range search
-func (n *multiColumnNode) findRightBoundary(max []storage.ColumnValue, includeMax bool) int {
-	// Handle NULL or empty max case
-	if len(max) == 0 {
-		return len(n.keys) // Include all to the end
-	}
-
-	// Use binary search
-	left, right := 0, len(n.keys)-1
-
-	// Special case for tiny arrays: linear scan might be faster
-	if right < 8 {
-		for i := 0; i <= right; i++ {
-			compare := n.compare(n.keys[i], max)
-			if includeMax && compare > 0 {
-				return i
-			} else if !includeMax && compare >= 0 {
-				return i
-			}
-		}
-		return right + 1
-	}
-
-	// Standard binary search with custom comparison function
-	for left <= right {
-		mid := left + (right-left)/2
-		compare := n.compare(n.keys[mid], max)
-
-		if includeMax {
-			// Looking for first key > max
-			if compare <= 0 {
-				left = mid + 1
-			} else {
-				// This could be a candidate, look to the left
-				right = mid - 1
-			}
-		} else {
-			// Looking for first key >= max
-			if compare < 0 {
-				left = mid + 1
-			} else {
-				// This could be a candidate, look to the left
-				right = mid - 1
-			}
-		}
-	}
-
-	// Left is now the index of the first key that should be excluded
-	return left
-}
-
-// rangeSearch finds all rowIDs in a range [min, max]
-func (n *multiColumnNode) rangeSearch(min, max []storage.ColumnValue, includeMin, includeMax bool, result *[]int64) {
-	if len(n.keys) == 0 {
-		return
-	}
-
-	// Get the start and end boundaries using optimized functions
-	startIdx := n.findLeftBoundary(min, includeMin)
-	endIdx := n.findRightBoundary(max, includeMax)
-
-	// Early return if no overlap
-	if startIdx >= len(n.keys) || endIdx <= 0 || startIdx >= endIdx {
-		return
-	}
-
-	// Fast path: If start and end are close, we can estimate the number of IDs
-	if endIdx-startIdx < 64 { // Small range optimization
-		// Estimate result capacity to reduce reallocations
-		estimatedCapacity := 0
-		for i := startIdx; i < endIdx; i++ {
-			estimatedCapacity += len(n.rowIDs[i])
-		}
-
-		// Pre-allocate result capacity if needed
-		if estimatedCapacity > 0 && cap(*result)-len(*result) < estimatedCapacity {
-			newResult := make([]int64, len(*result), len(*result)+estimatedCapacity)
-			copy(newResult, *result)
-			*result = newResult
-		}
-	}
-
-	// Collect all rowIDs in the range
-	for i := startIdx; i < endIdx; i++ {
-		// Direct append for the common case of 1 or few row IDs per key
-		if len(n.rowIDs[i]) == 1 {
-			*result = append(*result, n.rowIDs[i][0])
-		} else {
-			*result = append(*result, n.rowIDs[i]...)
-		}
-	}
-}
-
-// equalSearch finds all rowIDs with the given key
-func (n *multiColumnNode) equalSearch(key []storage.ColumnValue, result *[]int64) {
-	i := n.findIndex(key)
-	if i < len(n.keys) && n.compare(n.keys[i], key) == 0 {
-		// For single match optimization
-		if len(n.rowIDs[i]) == 1 {
-			*result = append(*result, n.rowIDs[i][0])
-			return
-		}
-		*result = append(*result, n.rowIDs[i]...)
-	}
-}
-
-// getAll returns all rowIDs in the node
-func (n *multiColumnNode) getAll(result *[]int64) {
-	for _, ids := range n.rowIDs {
-		*result = append(*result, ids...)
-	}
-}
-
-// multiColumnTree implements a B-tree data structure optimized for multi-column indexes
-type multiColumnTree struct {
-	root    *multiColumnNode // Root node of the B-tree
-	compare multiCompareFunc // Function for comparing keys
-	size    int              // Number of keys in the tree
-}
-
-// newMultiColumnTree creates a new B-tree with the given compare function
-func newMultiColumnTree(compare multiCompareFunc) *multiColumnTree {
-	return &multiColumnTree{
-		root: &multiColumnNode{
-			keys:     make([][]storage.ColumnValue, 0),
-			rowIDs:   make([][]int64, 0),
-			children: nil,
-			isLeaf:   true,
-			compare:  compare,
-		},
-		compare: compare,
-		size:    0,
-	}
-}
-
-// Insert adds a key and rowID to the B-tree
-func (t *multiColumnTree) Insert(key []storage.ColumnValue, rowID int64) {
-	t.root.insert(key, rowID)
-	t.size++
-}
-
-// Remove removes a key and rowID from the B-tree
-func (t *multiColumnTree) Remove(key []storage.ColumnValue, rowID int64) bool {
-	result := t.root.remove(key, rowID)
-	if result {
-		t.size--
-	}
-	return result
-}
-
-// ValueCount returns the number of occurrences of a key
-func (t *multiColumnTree) ValueCount(key []storage.ColumnValue) int {
-	i := t.root.findIndex(key)
-	if i < len(t.root.keys) && t.compare(t.root.keys[i], key) == 0 {
-		return len(t.root.rowIDs[i])
-	}
-	return 0
-}
-
-// RangeSearch finds all rowIDs in a range [min, max]
-func (t *multiColumnTree) RangeSearch(min, max []storage.ColumnValue, includeMin, includeMax bool) []int64 {
-	// Estimate capacity based on range size and tree characteristics
-	estimatedCapacity := t.estimateRangeSize(min, max)
-	result := make([]int64, 0, estimatedCapacity)
-
-	// Perform the range search
-	t.root.rangeSearch(min, max, includeMin, includeMax, &result)
-
-	// If result is much smaller than capacity, consider trimming
-	if len(result) > 0 && cap(result) > 2*len(result) && cap(result) > 1000 {
-		trimmedResult := make([]int64, len(result))
-		copy(trimmedResult, result)
-		return trimmedResult
-	}
-
-	return result
-}
-
-// estimateRangeSize estimates the number of rows in a given range
-func (t *multiColumnTree) estimateRangeSize(min, max []storage.ColumnValue) int {
-	// Default reasonable capacity
-	defaultCapacity := 100
-
-	// If tree is empty, return minimum capacity
-	if t.size == 0 || t.root == nil || len(t.root.keys) == 0 {
-		return defaultCapacity
-	}
-
-	// For unbounded ranges (no min or max), use a proportion of the tree size
-	if min == nil && max == nil {
-		return t.size
-	}
-
-	// Try to get a rough range size estimate
-	if min != nil && max != nil {
-		// Find the start and end boundaries
-		startIdx := t.root.findLeftBoundary(min, true)
-		endIdx := t.root.findRightBoundary(max, true)
-
-		// If we can determine the boundaries
-		if startIdx < len(t.root.keys) && endIdx <= len(t.root.keys) && startIdx < endIdx {
-			// Count the actual number of rowIDs in this range
-			estimateCap := 0
-			for i := startIdx; i < endIdx && i < len(t.root.keys); i++ {
-				estimateCap += len(t.root.rowIDs[i])
-			}
-
-			// Use actual count with some buffer
-			return estimateCap + 10
-		}
-
-		// If we have some range information but can't determine exact count
-		range_ratio := float64(endIdx-startIdx) / float64(len(t.root.keys))
-		if range_ratio > 0 && range_ratio <= 1.0 {
-			return int(float64(t.size)*range_ratio) + 10
-		}
-	}
-
-	// If we have only min or only max, use half the tree size as an estimate
-	if (min != nil && max == nil) || (min == nil && max != nil) {
-		return t.size/2 + 10
-	}
-
-	// Fallback to a reasonable default
-	return defaultCapacity
-}
-
-// EqualSearch finds all rowIDs with the given key
-func (t *multiColumnTree) EqualSearch(key []storage.ColumnValue) []int64 {
-	result := make([]int64, 0, 1) // Start with a reasonable capacity
-	t.root.equalSearch(key, &result)
-	return result
-}
-
-// GetAll returns all rowIDs in the B-tree
-func (t *multiColumnTree) GetAll() []int64 {
-	result := make([]int64, 0, t.size)
-	t.root.getAll(&result)
-	return result
-}
-
-// Size returns the number of keys in the B-tree
-func (t *multiColumnTree) Size() int {
-	return t.size
-}
-
-// Clear removes all entries from the B-tree
-func (t *multiColumnTree) Clear() {
-	t.root = &multiColumnNode{
-		keys:     make([][]storage.ColumnValue, 0),
-		rowIDs:   make([][]int64, 0),
-		children: nil,
-		isLeaf:   true,
-		compare:  t.compare,
-	}
-	t.size = 0
-}
-
-// compareMultiColumnValues compares two multi-column key slices
-func compareMultiColumnValues(a, b []storage.ColumnValue) int {
-	// Handle nil cases
-	if a == nil && b == nil {
-		return 0
-	}
-	if a == nil {
-		return -1
-	}
-	if b == nil {
-		return 1
-	}
-
-	// Compare each column in order
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-
-	for i := 0; i < minLen; i++ {
-		// Handle NULL values in comparison
-		aIsNull := a[i] == nil || a[i].IsNull()
-		bIsNull := b[i] == nil || b[i].IsNull()
-
-		if aIsNull && bIsNull {
-			continue // Both are NULL, compare next column
-		}
-		if aIsNull {
-			return -1 // NULL sorts before non-NULL
-		}
-		if bIsNull {
-			return 1 // non-NULL sorts after NULL
-		}
-
-		cmp, err := a[i].Compare(b[i])
-		if err != nil {
-			// Error handling - in production code would log this
-			continue
-		}
-
-		if cmp != 0 {
-			return cmp
-		}
-	}
-
-	// If all common columns are equal, shorter array comes first
-	if len(a) < len(b) {
-		return -1
-	}
-	if len(a) > len(b) {
-		return 1
-	}
-
-	return 0 // Completely equal
-}
-
-// MultiColumnarIndex represents an improved multi-column index implementation
-// using a B-tree data structure for efficient lookups and NULL tracking per column
+// MultiColumnarIndex is an enhanced index that supports queries across multiple columns
+// while also providing uniqueness constraint enforcement
 type MultiColumnarIndex struct {
-	name         string
-	tableName    string
-	columnNames  []string
-	columnIDs    []int
-	dataTypes    []storage.DataType
-	isUnique     bool
-	versionStore *VersionStore
+	name        string
+	tableName   string
+	columnNames []string
+	columnIDs   []int
+	dataTypes   []storage.DataType
 
-	// B-tree for values
-	valueTree *multiColumnTree
+	// Individual column indices for efficient per-column operations
+	columnIndices []*ColumnarIndex
 
-	// nullRowsByColumn tracks NULL rows per column - key is columnID
-	nullRowsByColumn map[int][]int64
+	// Map for efficient uniqueness checking
+	// The key is a binary representation of all column values
+	uniqueValues map[string]int64 // Value is the rowID
 
-	// mutex for thread-safety
+	vs *VersionStore // Version store for MVCC operations
+
+	isUnique bool
+
 	mutex sync.RWMutex
 }
 
-// NewMultiColumnarIndex creates a new MultiColumnarIndex
+// NewMultiColumnarIndex creates a new index for both uniqueness constraint enforcement
+// and efficient query operations using individual ColumnarIndex instances for each column
 func NewMultiColumnarIndex(
 	name string,
 	tableName string,
 	columnNames []string,
 	columnIDs []int,
 	dataTypes []storage.DataType,
-	versionStore *VersionStore,
+	vs *VersionStore,
 	isUnique bool) *MultiColumnarIndex {
 
 	idx := &MultiColumnarIndex{
-		name:             name,
-		tableName:        tableName,
-		columnNames:      columnNames,
-		columnIDs:        columnIDs,
-		dataTypes:        dataTypes,
-		valueTree:        newMultiColumnTree(compareMultiColumnValues),
-		nullRowsByColumn: make(map[int][]int64),
-		versionStore:     versionStore,
-		isUnique:         isUnique,
+		name:          name,
+		tableName:     tableName,
+		columnNames:   columnNames,
+		columnIDs:     columnIDs,
+		dataTypes:     dataTypes,
+		vs:            vs,
+		isUnique:      isUnique,
+		uniqueValues:  make(map[string]int64),
+		columnIndices: make([]*ColumnarIndex, len(columnNames)),
 	}
 
-	// Initialize nullRowsByColumn entries for each column
-	for _, colID := range columnIDs {
-		idx.nullRowsByColumn[colID] = make([]int64, 0, 16)
+	// Create individual ColumnarIndex instances for each column
+	for i, colName := range columnNames {
+		colIdx := NewColumnarIndex(
+			fmt.Sprintf("%s_%s", name, colName),
+			tableName,
+			colName,
+			columnIDs[i],
+			dataTypes[i],
+			vs,
+			false, // Not enforcing uniqueness at individual column level
+		)
+		idx.columnIndices[i] = colIdx
 	}
 
 	return idx
@@ -545,6 +125,9 @@ func (idx *MultiColumnarIndex) DataTypes() []storage.DataType {
 
 // IndexType returns the type of the index
 func (idx *MultiColumnarIndex) IndexType() storage.IndexType {
+	if idx.isUnique {
+		return "unique" // Using string literal directly as storage.UniqueIndex is not defined
+	}
 	return storage.ColumnarIndex
 }
 
@@ -553,132 +136,209 @@ func (idx *MultiColumnarIndex) IsUnique() bool {
 	return idx.isUnique
 }
 
-// Add adds values to the index
+// HasUniqueValues checks if the provided values already exist in the unique index
+func (idx *MultiColumnarIndex) HasUniqueValues(values []storage.ColumnValue) bool {
+	if !idx.isUnique || values == nil || len(values) == 0 {
+		return false
+	}
+
+	// Quick check that we have the expected number of values
+	if len(values) != len(idx.columnIDs) {
+		return false
+	}
+
+	// Generate the key for these values
+	key := idx.createKey(values)
+	if key == "" {
+		return false // NULL values don't violate uniqueness
+	}
+
+	// Check if this key exists in the uniqueness map
+	idx.mutex.RLock()
+	defer idx.mutex.RUnlock()
+	_, exists := idx.uniqueValues[key]
+	return exists
+}
+
+// createKey creates a unique key from column values with minimal allocations
+func (idx *MultiColumnarIndex) createKey(values []storage.ColumnValue) string {
+	if values == nil {
+		return ""
+	}
+
+	// Skip if any value is NULL - NULL values don't violate uniqueness
+	for _, val := range values {
+		if val == nil || val.IsNull() {
+			return ""
+		}
+	}
+
+	// Get a buffer from the pool
+	buf := common.GetBufferPool()
+	defer common.PutBufferPool(buf)
+
+	// Simple binary encoding of values
+	// Format: <value1-length><value1-bytes><value2-length><value2-bytes>...
+	for i, val := range values {
+		// Different serialization based on type
+		switch idx.dataTypes[i] {
+		case storage.INTEGER:
+			intVal := val.AsInterface().(int64)
+			// Write 8 bytes for int64, big-endian
+			buf.B = append(buf.B, byte((intVal>>56)&0xFF))
+			buf.B = append(buf.B, byte((intVal>>48)&0xFF))
+			buf.B = append(buf.B, byte((intVal>>40)&0xFF))
+			buf.B = append(buf.B, byte((intVal>>32)&0xFF))
+			buf.B = append(buf.B, byte((intVal>>24)&0xFF))
+			buf.B = append(buf.B, byte((intVal>>16)&0xFF))
+			buf.B = append(buf.B, byte((intVal>>8)&0xFF))
+			buf.B = append(buf.B, byte(intVal&0xFF))
+
+		case storage.FLOAT:
+			// Store string representation of float for consistency
+			strVal, _ := val.AsString()
+			// Write length prefix and then string bytes
+			buf.B = append(buf.B, byte(len(strVal)))
+			buf.B = append(buf.B, strVal...)
+
+		case storage.TEXT:
+			strVal := val.AsInterface().(string)
+			// For longer strings, use 2 bytes for length
+			if len(strVal) > 255 {
+				buf.B = append(buf.B, 255) // Marker for long string
+				buf.B = append(buf.B, byte((len(strVal)>>8)&0xFF))
+				buf.B = append(buf.B, byte(len(strVal)&0xFF))
+			} else {
+				buf.B = append(buf.B, byte(len(strVal)))
+			}
+			buf.B = append(buf.B, strVal...)
+
+		case storage.BOOLEAN:
+			if val.AsInterface().(bool) {
+				buf.B = append(buf.B, 1)
+			} else {
+				buf.B = append(buf.B, 0)
+			}
+
+		default:
+			// For other types, use string representation
+			strVal, _ := val.AsString()
+			buf.B = append(buf.B, byte(len(strVal)))
+			buf.B = append(buf.B, strVal...)
+		}
+
+		// Add a type marker byte between values for safety
+		if i < len(values)-1 {
+			buf.B = append(buf.B, byte(idx.dataTypes[i]))
+		}
+	}
+
+	// Convert to string - this is the only unavoidable allocation
+	return string(buf.B)
+}
+
+// Add adds values to the index, enforcing uniqueness and updating column indices
 func (idx *MultiColumnarIndex) Add(values []storage.ColumnValue, rowID int64, refID int64) error {
 	// Validate column count
 	if len(values) != len(idx.columnIDs) {
-		return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+		return fmt.Errorf("expected %d values for unique constraint, got %d",
+			len(idx.columnIDs), len(values))
 	}
 
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	// Track NULL values per column
-	hasAnyNull := false
-	for i, val := range values {
-		if val == nil || val.IsNull() {
-			hasAnyNull = true
-			colID := idx.columnIDs[i]
-
-			// Check if rowID already exists
-			exists := false
-			for _, id := range idx.nullRowsByColumn[colID] {
-				if id == rowID {
-					exists = true
-					break
-				}
-			}
-
-			if !exists {
-				idx.nullRowsByColumn[colID] = append(idx.nullRowsByColumn[colID], rowID)
-			}
-		}
-	}
-
-	// If any value is NULL, we don't add the row to the tree
-	// This is because NULL values are handled separately
-	if hasAnyNull {
-		return nil
-	}
-
-	// For unique indexes, check if the value combination already exists
+	// First check uniqueness if required
 	if idx.isUnique {
-		count := idx.valueTree.ValueCount(values)
-		if count > 0 {
-			return storage.NewUniqueConstraintError(
-				idx.name,
-				strings.Join(idx.columnNames, ","),
-				values[0],
-			)
+		key := idx.createKey(values)
+		if key != "" { // Skip NULL values for uniqueness check
+			idx.mutex.Lock()
+			defer idx.mutex.Unlock()
+
+			// Check for uniqueness violation
+			if _, exists := idx.uniqueValues[key]; exists {
+				return storage.NewUniqueConstraintError(
+					idx.name,
+					strings.Join(idx.columnNames, ","),
+					values[0],
+				)
+			}
+
+			// Add the key to the uniqueness map
+			idx.uniqueValues[key] = rowID
 		}
 	}
 
-	// Insert the values into the tree
-	idx.valueTree.Insert(values, rowID)
+	// Update individual column indices for query support
+	for i, colIdx := range idx.columnIndices {
+		err := colIdx.Add([]storage.ColumnValue{values[i]}, rowID, refID)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-// AddBatch adds multiple entries to the index in a single batch operation
-// This is more efficient than multiple individual Add operations
+// AddBatch adds multiple entries in batch mode
 func (idx *MultiColumnarIndex) AddBatch(entries map[int64][]storage.ColumnValue) error {
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	// For unique indexes, we need to check constraints first
+	// When adding in batch, first check uniqueness constraints (if applicable)
 	if idx.isUnique {
-		// First check all non-NULL value combinations for uniqueness
-		for _, values := range entries {
+		idx.mutex.Lock()
+		defer idx.mutex.Unlock()
+
+		// First check all entries for uniqueness
+		keysToAdd := make(map[string]int64)
+		for rowID, values := range entries {
 			// Validate column count
 			if len(values) != len(idx.columnIDs) {
-				return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+				return fmt.Errorf("expected %d values for unique constraint, got %d",
+					len(idx.columnIDs), len(values))
 			}
 
-			// Skip entries with NULL values
-			hasNull := false
-			for _, val := range values {
-				if val == nil || val.IsNull() {
-					hasNull = true
-					break
-				}
+			key := idx.createKey(values)
+			if key == "" {
+				continue // Skip NULL values
 			}
 
-			if !hasNull {
-				// Check uniqueness for full value set
-				count := idx.valueTree.ValueCount(values)
-				if count > 0 {
-					// Return unique constraint violation
-					return storage.NewUniqueConstraintError(
-						idx.name,
-						strings.Join(idx.columnNames, ","),
-						values[0],
-					)
-				}
+			// Check against existing keys
+			if _, exists := idx.uniqueValues[key]; exists {
+				return storage.NewUniqueConstraintError(
+					idx.name,
+					strings.Join(idx.columnNames, ","),
+					values[0],
+				)
 			}
+
+			// Check against other entries in this batch
+			if _, exists := keysToAdd[key]; exists {
+				return storage.NewUniqueConstraintError(
+					idx.name,
+					strings.Join(idx.columnNames, ","),
+					values[0],
+				)
+			}
+
+			keysToAdd[key] = rowID
+		}
+
+		// If all checks pass, add all entries to uniqueness map
+		for key, rowID := range keysToAdd {
+			idx.uniqueValues[key] = rowID
 		}
 	}
 
-	// Now process all entries
-	for rowID, values := range entries {
-		// Validate column count
-		if len(values) != len(idx.columnIDs) {
-			return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
-		}
-
-		// Track NULL values per column
-		hasAnyNull := false
-		for i, val := range values {
-			if val == nil || val.IsNull() {
-				hasAnyNull = true
-				colID := idx.columnIDs[i]
-
-				// Check if rowID already exists
-				exists := false
-				for _, id := range idx.nullRowsByColumn[colID] {
-					if id == rowID {
-						exists = true
-						break
-					}
-				}
-
-				if !exists {
-					idx.nullRowsByColumn[colID] = append(idx.nullRowsByColumn[colID], rowID)
-				}
+	// Process all entries for column indices
+	for i, colIdx := range idx.columnIndices {
+		// Prepare batch data for this column
+		columnBatch := make(map[int64][]storage.ColumnValue)
+		for rowID, values := range entries {
+			if len(values) != len(idx.columnIDs) {
+				continue // Skip invalid entries
 			}
+			columnBatch[rowID] = []storage.ColumnValue{values[i]}
 		}
 
-		// If no NULL values, add to the tree
-		if !hasAnyNull {
-			idx.valueTree.Insert(values, rowID)
+		// Add to column index
+		if err := colIdx.AddBatch(columnBatch); err != nil {
+			return err
 		}
 	}
 
@@ -689,97 +349,172 @@ func (idx *MultiColumnarIndex) AddBatch(entries map[int64][]storage.ColumnValue)
 func (idx *MultiColumnarIndex) Remove(values []storage.ColumnValue, rowID int64, refID int64) error {
 	// Validate column count
 	if len(values) != len(idx.columnIDs) {
-		return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+		return fmt.Errorf("expected %d values for unique constraint, got %d",
+			len(idx.columnIDs), len(values))
 	}
 
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
-
-	// Track NULL values per column
-	hasAnyNull := false
-	for i, val := range values {
-		if val == nil || val.IsNull() {
-			hasAnyNull = true
-			colID := idx.columnIDs[i]
-
-			// Find and remove rowID from nullRowsByColumn for this column
-			for j, id := range idx.nullRowsByColumn[colID] {
-				if id == rowID {
-					// Remove by swapping with the last element and truncating
-					lastIdx := len(idx.nullRowsByColumn[colID]) - 1
-					idx.nullRowsByColumn[colID][j] = idx.nullRowsByColumn[colID][lastIdx]
-					idx.nullRowsByColumn[colID] = idx.nullRowsByColumn[colID][:lastIdx]
-					break
-				}
+	// First update uniqueness map if applicable
+	if idx.isUnique {
+		key := idx.createKey(values)
+		if key != "" { // Only remove non-NULL values
+			idx.mutex.Lock()
+			// Only remove if rowID matches (important for concurrent operations)
+			if existingRowID, exists := idx.uniqueValues[key]; exists && existingRowID == rowID {
+				delete(idx.uniqueValues, key)
 			}
+			idx.mutex.Unlock()
 		}
 	}
 
-	// If any value is NULL, we don't need to remove from the tree
-	// because the row wasn't added to the tree in the first place
-	if hasAnyNull {
-		return nil
+	// Update individual column indices
+	for i, colIdx := range idx.columnIndices {
+		if err := colIdx.Remove([]storage.ColumnValue{values[i]}, rowID, refID); err != nil {
+			return err
+		}
 	}
 
-	// Remove from the tree
-	idx.valueTree.Remove(values, rowID)
 	return nil
 }
 
-// RemoveBatch removes multiple entries from the index in a single batch operation
-// This is more efficient than multiple individual Remove operations
+// RemoveBatch removes multiple entries in batch mode
 func (idx *MultiColumnarIndex) RemoveBatch(entries map[int64][]storage.ColumnValue) error {
-	idx.mutex.Lock()
-	defer idx.mutex.Unlock()
+	// First update uniqueness map if applicable
+	if idx.isUnique {
+		idx.mutex.Lock()
+		for rowID, values := range entries {
+			// Validate column count
+			if len(values) != len(idx.columnIDs) {
+				continue // Skip invalid entries
+			}
 
-	// Process all entries
-	for rowID, values := range entries {
-		// Validate column count
-		if len(values) != len(idx.columnIDs) {
-			return fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
-		}
+			key := idx.createKey(values)
+			if key == "" {
+				continue // Skip NULL values
+			}
 
-		// Track NULL values per column
-		hasAnyNull := false
-		for i, val := range values {
-			if val == nil || val.IsNull() {
-				hasAnyNull = true
-				colID := idx.columnIDs[i]
-
-				// Find and remove rowID from nullRowsByColumn for this column
-				for j, id := range idx.nullRowsByColumn[colID] {
-					if id == rowID {
-						// Remove by swapping with the last element and truncating
-						lastIdx := len(idx.nullRowsByColumn[colID]) - 1
-						idx.nullRowsByColumn[colID][j] = idx.nullRowsByColumn[colID][lastIdx]
-						idx.nullRowsByColumn[colID] = idx.nullRowsByColumn[colID][:lastIdx]
-						break
-					}
-				}
+			// Only remove if rowID matches
+			if existingRowID, exists := idx.uniqueValues[key]; exists && existingRowID == rowID {
+				delete(idx.uniqueValues, key)
 			}
 		}
+		idx.mutex.Unlock()
+	}
 
-		// If any value is NULL, we don't need to remove from the tree
-		// because the row wasn't added to the tree in the first place
-		if !hasAnyNull {
-			// Remove from the tree
-			idx.valueTree.Remove(values, rowID)
+	// Update individual column indices
+	for i, colIdx := range idx.columnIndices {
+		// Prepare batch data for this column
+		columnBatch := make(map[int64][]storage.ColumnValue)
+		for rowID, values := range entries {
+			if len(values) != len(idx.columnIDs) {
+				continue // Skip invalid entries
+			}
+			columnBatch[rowID] = []storage.ColumnValue{values[i]}
+		}
+
+		// Remove from column index
+		if err := colIdx.RemoveBatch(columnBatch); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
+// Find returns rows where column values exactly match the given values
 func (idx *MultiColumnarIndex) Find(values []storage.ColumnValue) ([]storage.IndexEntry, error) {
-	// Validate column count
-	if len(values) != len(idx.columnIDs) {
-		return nil, fmt.Errorf("expected %d values for multi-column index, got %d", len(idx.columnIDs), len(values))
+	if len(values) == 0 || len(values) > len(idx.columnIDs) {
+		return nil, fmt.Errorf("expected between 1 and %d values, got %d", len(idx.columnIDs), len(values))
 	}
 
-	// Get matching row IDs
-	rowIDs := idx.GetRowIDsEqual(values)
+	// Use column index for most selective column (usually the first one)
+	// For exact matches, we can use any of the column indices
+	colIdx := 0 // Start with first column by default
+	if len(values) < len(idx.columnIndices) {
+		// If partial match, use the last specified column
+		colIdx = len(values) - 1
+	}
+
+	// Get initial result set
+	rowIDs := idx.columnIndices[colIdx].GetRowIDsEqual([]storage.ColumnValue{values[colIdx]})
 	if len(rowIDs) == 0 {
 		return nil, nil
+	}
+
+	// If using all columns, verify the multi-column constraint
+	if len(values) == len(idx.columnIDs) && idx.isUnique {
+		key := idx.createKey(values)
+		if key == "" {
+			// NULL values - no uniqueness check needed
+			// Convert to index entries
+			result := make([]storage.IndexEntry, len(rowIDs))
+			for i, id := range rowIDs {
+				result[i] = storage.IndexEntry{RowID: id}
+			}
+			return result, nil
+		}
+
+		// Check uniqueness map for exact match
+		idx.mutex.RLock()
+		if matchRowID, exists := idx.uniqueValues[key]; exists {
+			// Return only the matching row ID
+			idx.mutex.RUnlock()
+			return []storage.IndexEntry{{RowID: matchRowID}}, nil
+		}
+		idx.mutex.RUnlock()
+	}
+
+	// For multi-column queries, filter the initial result set using other columns
+	if len(values) > 1 {
+		// Get a map from the pool and convert rowIDs to the map for O(1) lookups
+		rowIDMap := GetInt64Set()
+
+		for _, id := range rowIDs {
+			rowIDMap.Put(id, struct{}{})
+		}
+
+		// Filter using each column's index
+		for i := 0; i < len(values); i++ {
+			if i == colIdx {
+				continue // Skip the column we already used
+			}
+
+			// Get matches for this column
+			colMatches := idx.columnIndices[i].GetRowIDsEqual([]storage.ColumnValue{values[i]})
+			if len(colMatches) == 0 {
+				PutInt64Set(rowIDMap)
+				return nil, nil // No matches for this column
+			}
+
+			// Get a new map from the pool for this iteration
+			newRowIDMap := GetInt64Set()
+
+			// Intersect with current result set
+			for _, id := range colMatches {
+				if rowIDMap.Has(id) {
+					newRowIDMap.Put(id, struct{}{})
+				}
+			}
+
+			// If intersection is empty, early return
+			if newRowIDMap.Len() == 0 {
+				PutInt64Set(newRowIDMap)
+				PutInt64Set(rowIDMap)
+				return nil, nil
+			}
+
+			// Update current result set and release old map
+			PutInt64Set(rowIDMap)
+			rowIDMap = newRowIDMap
+		}
+
+		defer PutInt64Set(rowIDMap)
+
+		// Convert back to slice with proper pre-allocation
+		rowIDs = make([]int64, 0, rowIDMap.Len())
+		rowIDMap.Keys()(func(rowID int64) bool {
+			rowIDs = append(rowIDs, rowID)
+			return true
+		})
 	}
 
 	// Convert to index entries
@@ -791,743 +526,613 @@ func (idx *MultiColumnarIndex) Find(values []storage.ColumnValue) ([]storage.Ind
 	return result, nil
 }
 
-// GetRowIDsEqual returns row IDs with the given values
-func (idx *MultiColumnarIndex) GetRowIDsEqual(values []storage.ColumnValue) []int64 {
-	idx.mutex.RLock()
-	defer idx.mutex.RUnlock()
-
-	// Special case for nil values - return rows with NULL in first column
-	if values == nil {
-		colID := idx.columnIDs[0]
-		if len(idx.nullRowsByColumn[colID]) == 0 {
-			return nil
-		}
-		result := make([]int64, len(idx.nullRowsByColumn[colID]))
-		copy(result, idx.nullRowsByColumn[colID])
-		return result
-	}
-
-	// Validate column count
-	if len(values) != len(idx.columnIDs) {
-		return []int64{}
-	}
-
-	// Check for NULL values in any column
-	for i, val := range values {
-		if val == nil || val.IsNull() {
-			colID := idx.columnIDs[i]
-
-			// If NULL in this column is requested, return all rows with NULL in this column
-			if len(idx.nullRowsByColumn[colID]) == 0 {
-				return nil
-			}
-
-			// Return a copy of nullRows for this column
-			result := make([]int64, len(idx.nullRowsByColumn[colID]))
-			copy(result, idx.nullRowsByColumn[colID])
-			return result
-		}
-	}
-
-	// Use the tree to find matching rows
-	return idx.valueTree.EqualSearch(values)
-}
-
-// FindRange finds all row IDs where the values are in the given range
+// FindRange returns rows with values in the specified range
 func (idx *MultiColumnarIndex) FindRange(min, max []storage.ColumnValue,
 	minInclusive, maxInclusive bool) ([]storage.IndexEntry, error) {
 
-	// Get row IDs in the range
-	rowIDs := idx.GetRowIDsInRange(min, max, minInclusive, maxInclusive)
-	if len(rowIDs) == 0 {
-		return nil, nil
+	// Validate input
+	if (min != nil && len(min) > len(idx.columnIDs)) || (max != nil && len(max) > len(idx.columnIDs)) {
+		return nil, fmt.Errorf("expected no more than %d values for range query", len(idx.columnIDs))
 	}
 
-	// Convert to index entries
+	// Default to first column for range query if no specific column is specified
+	colIdx := 0
+
+	// If min/max specify values, ensure consistent length
+	minLen := 0
+	if min != nil {
+		minLen = len(min)
+	}
+
+	maxLen := 0
+	if max != nil {
+		maxLen = len(max)
+	}
+
+	// Use the most specific (longest) constraint for initial filtering
+	specificLen := minLen
+	if maxLen > minLen {
+		specificLen = maxLen
+	}
+
+	if specificLen > 0 {
+		// Get initial result set from most specific column for range query
+		colIdx = specificLen - 1 // Use the last column with a constraint
+
+		// Prepare column-specific min/max
+		var colMin, colMax []storage.ColumnValue
+		if minLen > colIdx {
+			colMin = []storage.ColumnValue{min[colIdx]}
+		}
+		if maxLen > colIdx {
+			colMax = []storage.ColumnValue{max[colIdx]}
+		}
+
+		// Get rows in range for selected column
+		rowIDs := idx.columnIndices[colIdx].GetRowIDsInRange(colMin, colMax, minInclusive, maxInclusive)
+		if len(rowIDs) == 0 {
+			return nil, nil // No results match the range
+		}
+
+		// For multi-column range query, we need to filter with other columns
+		if specificLen > 1 {
+			// Get a map from the pool and convert rowIDs to the map for O(1) lookups
+			rowIDMap := GetInt64Set()
+
+			for _, id := range rowIDs {
+				rowIDMap.Put(id, struct{}{})
+			}
+
+			// Filter using each column's range constraint
+			for i := 0; i < specificLen; i++ {
+				if i == colIdx {
+					continue // Skip the column we already used
+				}
+
+				// Prepare column-specific min/max
+				var colMin, colMax []storage.ColumnValue
+				if minLen > i {
+					colMin = []storage.ColumnValue{min[i]}
+				}
+				if maxLen > i {
+					colMax = []storage.ColumnValue{max[i]}
+				}
+
+				// Skip if no constraint for this column
+				if colMin == nil && colMax == nil {
+					continue
+				}
+
+				// Get matches for this column's range
+				colMatches := idx.columnIndices[i].GetRowIDsInRange(colMin, colMax, minInclusive, maxInclusive)
+				if len(colMatches) == 0 {
+					PutInt64Set(rowIDMap)
+					return nil, nil // No matches for this column
+				}
+
+				// Get a new map from the pool for this iteration
+				newRowIDMap := GetInt64Set()
+
+				// Intersect with current result set
+				for _, id := range colMatches {
+					if rowIDMap.Has(id) {
+						newRowIDMap.Put(id, struct{}{})
+					}
+				}
+
+				// If intersection is empty, early return
+				if newRowIDMap.Len() == 0 {
+					PutInt64Set(newRowIDMap)
+					PutInt64Set(rowIDMap)
+					return nil, nil
+				}
+
+				// Update current result set and release old map
+				PutInt64Set(rowIDMap)
+				rowIDMap = newRowIDMap
+			}
+
+			defer PutInt64Set(rowIDMap)
+
+			// Convert back to slice with proper pre-allocation
+			rowIDs = make([]int64, 0, rowIDMap.Len())
+			rowIDMap.Keys()(func(rowID int64) bool {
+				rowIDs = append(rowIDs, rowID)
+				return true
+			})
+		}
+
+		// Convert to index entries
+		result := make([]storage.IndexEntry, len(rowIDs))
+		for i, id := range rowIDs {
+			result[i] = storage.IndexEntry{RowID: id}
+		}
+
+		return result, nil
+	}
+
+	// If no specific range was provided, return all rows
+	// This is an uncommon case, but supported for completeness
+	rowIDs := idx.columnIndices[0].GetRowIDsInRange(nil, nil, false, false)
 	result := make([]storage.IndexEntry, len(rowIDs))
 	for i, id := range rowIDs {
 		result[i] = storage.IndexEntry{RowID: id}
 	}
 
 	return result, nil
+}
+
+// FindWithOperator finds all rows that match the operator and values
+func (idx *MultiColumnarIndex) FindWithOperator(op storage.Operator, values []storage.ColumnValue) ([]storage.IndexEntry, error) {
+	if len(values) == 0 || len(values) > len(idx.columnIDs) {
+		return nil, fmt.Errorf("expected between 1 and %d values, got %d", len(idx.columnIDs), len(values))
+	}
+
+	// For multi-column equality, use Find method
+	if op == storage.EQ && len(values) == len(idx.columnIDs) {
+		return idx.Find(values)
+	}
+
+	// For other operations, use column-specific operator
+	colIdx := len(values) - 1 // Use the last specified column
+	entries, err := idx.columnIndices[colIdx].FindWithOperator(op, []storage.ColumnValue{values[colIdx]})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	// For multi-column queries, filter the initial result set using other columns
+	if len(values) > 1 {
+		// Extract row IDs
+		rowIDs := make([]int64, len(entries))
+		for i, entry := range entries {
+			rowIDs[i] = entry.RowID
+		}
+
+		// Get a map from the pool and convert rowIDs to the map for O(1) lookups
+		rowIDMap := GetInt64Set()
+
+		for _, id := range rowIDs {
+			rowIDMap.Put(id, struct{}{})
+		}
+
+		// Filter using each column's index
+		for i := 0; i < len(values)-1; i++ { // Skip the last column we already used
+			// Get matches for this column
+			colMatches := idx.columnIndices[i].GetRowIDsEqual([]storage.ColumnValue{values[i]})
+			if len(colMatches) == 0 {
+				PutInt64Set(rowIDMap)
+				return nil, nil // No matches for this column
+			}
+
+			// Get a new map from the pool for this iteration
+			newRowIDMap := GetInt64Set()
+
+			// Intersect with current result set
+			for _, id := range colMatches {
+				if rowIDMap.Has(id) {
+					newRowIDMap.Put(id, struct{}{})
+				}
+			}
+
+			// If intersection is empty, early return
+			if newRowIDMap.Len() == 0 {
+				PutInt64Set(newRowIDMap)
+				PutInt64Set(rowIDMap)
+				return nil, nil
+			}
+
+			// Update current result set and release old map
+			PutInt64Set(rowIDMap)
+			rowIDMap = newRowIDMap
+		}
+
+		defer PutInt64Set(rowIDMap)
+
+		// Convert back to slice of IndexEntry with proper pre-allocation
+		result := make([]storage.IndexEntry, 0, rowIDMap.Len())
+		rowIDMap.Keys()(func(rowID int64) bool {
+			result = append(result, storage.IndexEntry{RowID: rowID})
+			return true
+		})
+		return result, nil
+	}
+
+	return entries, nil
+}
+
+// GetRowIDsEqual returns row IDs with values exactly matching the given values
+func (idx *MultiColumnarIndex) GetRowIDsEqual(values []storage.ColumnValue) []int64 {
+	if len(values) == 0 || len(values) > len(idx.columnIDs) {
+		return nil
+	}
+
+	// Find the first valid value to start with (handle nil values properly)
+	colIdx := 0 // Start with first column by default
+
+	// Find the first non-nil value to start with
+	for i := 0; i < len(values); i++ {
+		if values[i] != nil && !values[i].IsNull() {
+			colIdx = i
+			break
+		}
+	}
+
+	// Get initial result set
+	rowIDs := idx.columnIndices[colIdx].GetRowIDsEqual([]storage.ColumnValue{values[colIdx]})
+
+	if len(rowIDs) == 0 {
+		return nil
+	}
+
+	// If using all columns, verify the multi-column constraint
+	if len(values) == len(idx.columnIDs) && idx.isUnique {
+		key := idx.createKey(values)
+		if key == "" {
+			// NULL values - no uniqueness check needed
+			return rowIDs
+		}
+
+		// Check uniqueness map for exact match
+		idx.mutex.RLock()
+		if matchRowID, exists := idx.uniqueValues[key]; exists {
+			// Return only the matching row ID
+			idx.mutex.RUnlock()
+			return []int64{matchRowID}
+		}
+		idx.mutex.RUnlock()
+	}
+
+	// For multi-column queries, filter the initial result set using other columns
+	if len(values) > 1 {
+		// Get a map from the pool and convert rowIDs to the map for O(1) lookups
+		rowIDMap := GetInt64Set()
+
+		for _, id := range rowIDs {
+			rowIDMap.Put(id, struct{}{})
+		}
+
+		// Filter using each column's index
+		for i := 0; i < len(values); i++ {
+			if i == colIdx {
+				continue // Skip the column we already used
+			}
+
+			// Get matches for this column
+			colMatches := idx.columnIndices[i].GetRowIDsEqual([]storage.ColumnValue{values[i]})
+			if len(colMatches) == 0 {
+				PutInt64Set(rowIDMap)
+				return nil // No matches for this column
+			}
+
+			// Get a new map from the pool for this iteration
+			newRowIDMap := GetInt64Set()
+
+			// Intersect with current result set
+			for _, id := range colMatches {
+				if rowIDMap.Has(id) {
+					newRowIDMap.Put(id, struct{}{})
+				}
+			}
+
+			// If intersection is empty, early return
+			if newRowIDMap.Len() == 0 {
+				PutInt64Set(newRowIDMap)
+				PutInt64Set(rowIDMap)
+				return nil
+			}
+
+			// Update current result set and release old map
+			PutInt64Set(rowIDMap)
+			rowIDMap = newRowIDMap
+		}
+
+		defer PutInt64Set(rowIDMap)
+
+		// Convert back to slice with proper pre-allocation
+		rowIDs = make([]int64, 0, rowIDMap.Len())
+		rowIDMap.Keys()(func(rowID int64) bool {
+			rowIDs = append(rowIDs, rowID)
+			return true
+		})
+	}
+
+	return rowIDs
 }
 
 // GetRowIDsInRange returns row IDs with values in the given range
 func (idx *MultiColumnarIndex) GetRowIDsInRange(minValues, maxValues []storage.ColumnValue,
 	includeMin, includeMax bool) []int64 {
 
-	// Get the tree's lock to ensure consistent reads
-	idx.mutex.RLock()
-	defer idx.mutex.RUnlock()
-
-	// Case 1: Single column range scan on first column (most common case)
-	if len(minValues) == 1 && len(maxValues) == 1 && len(idx.columnIDs) > 0 {
-		// For a single column range query on the first column, we need to return all rows
-		// that have the first column value in the specified range, regardless of other columns
-
-		// Create a normalized version with the full idx.columnIDs array and
-		// put the range values in the first position
-		min := make([]storage.ColumnValue, len(idx.columnIDs))
-		max := make([]storage.ColumnValue, len(idx.columnIDs))
-
-		// Setting the first column, all other columns are nil (unbounded)
-		min[0] = minValues[0]
-		max[0] = maxValues[0]
-
-		// First get all matching rows with only the first column bounded
-		allRowIDs := make([]int64, 0)
-
-		// Go through all keys in the tree
-		for keyIndex, key := range idx.valueTree.root.keys {
-			// Skip keys with nil or empty first column
-			if len(key) == 0 || key[0] == nil {
-				continue
-			}
-
-			// Check if this key's first column is in the specified range
-			inRange := true
-
-			// Check minimum bound
-			if min[0] != nil {
-				cmp, err := key[0].Compare(min[0])
-				if err != nil || (includeMin && cmp < 0) || (!includeMin && cmp <= 0) {
-					inRange = false
-				}
-			}
-
-			// Check maximum bound if still in range
-			if inRange && max[0] != nil {
-				cmp, err := key[0].Compare(max[0])
-				if err != nil || (includeMax && cmp > 0) || (!includeMax && cmp >= 0) {
-					inRange = false
-				}
-			}
-
-			// If this key's first column is in range, add all its row IDs
-			if inRange {
-				allRowIDs = append(allRowIDs, idx.valueTree.root.rowIDs[keyIndex]...)
-			}
-		}
-
-		return allRowIDs
+	// Validate input
+	if (minValues != nil && len(minValues) > len(idx.columnIDs)) || (maxValues != nil && len(maxValues) > len(idx.columnIDs)) {
+		return nil
 	}
 
-	// Handle special case for single-column index (optimize for common operation)
-	if len(idx.columnIDs) == 1 && (minValues != nil || maxValues != nil) {
-		allRowIDs := make([]int64, 0)
+	// Default to first column for range query if no specific column is specified
+	colIdx := 0
+	min := minValues
+	max := maxValues
 
-		// Go through all keys in the tree
-		for keyIndex, key := range idx.valueTree.root.keys {
-			// Skip keys with nil or empty first column
-			if len(key) == 0 || key[0] == nil {
-				continue
-			}
-
-			// Check if this key's first column is in the specified range
-			inRange := true
-
-			// Check minimum bound
-			if len(minValues) > 0 && minValues[0] != nil {
-				cmp, err := key[0].Compare(minValues[0])
-				if err != nil || (includeMin && cmp < 0) || (!includeMin && cmp <= 0) {
-					inRange = false
-				}
-			}
-
-			// Check maximum bound if still in range
-			if inRange && maxValues != nil && len(maxValues) > 0 && maxValues[0] != nil {
-				cmp, err := key[0].Compare(maxValues[0])
-				if err != nil || (includeMax && cmp > 0) || (!includeMax && cmp >= 0) {
-					inRange = false
-				}
-			}
-
-			// If this key's first column is in range, add all its row IDs
-			if inRange {
-				allRowIDs = append(allRowIDs, idx.valueTree.root.rowIDs[keyIndex]...)
-			}
-		}
-
-		return allRowIDs
+	// If min/max specify values, ensure consistent length
+	minLen := 0
+	if min != nil {
+		minLen = len(min)
 	}
 
-	// Case 2: Multi-column range query
-	// For composite range queries, we need to check that each column's value
-	// falls within its specified range bounds
-
-	// Normalize min/max values to match the number of columns
-	min := make([]storage.ColumnValue, len(idx.columnIDs))
-	max := make([]storage.ColumnValue, len(idx.columnIDs))
-
-	// Copy min/max values (or leave as nil)
-	for i := 0; i < len(idx.columnIDs); i++ {
-		if i < len(minValues) && minValues[i] != nil {
-			min[i] = minValues[i]
-		}
-		if i < len(maxValues) && maxValues[i] != nil {
-			max[i] = maxValues[i]
-		}
+	maxLen := 0
+	if max != nil {
+		maxLen = len(max)
 	}
 
-	// Result will hold our matching row IDs
-	var result []int64
-
-	// For each key, check if it falls within the range for each column
-	for keyIndex, key := range idx.valueTree.root.keys {
-		inRange := true
-
-		// Check if this key falls within range for each column
-		for colIndex := 0; colIndex < len(idx.columnIDs); colIndex++ {
-			// Skip checks for columns where neither min nor max is specified
-			if (colIndex >= len(min) || min[colIndex] == nil) &&
-				(colIndex >= len(max) || max[colIndex] == nil) {
-				continue
-			}
-
-			// For a key that doesn't have this column or it's NULL, only skip the check
-			// if both min and max are set. If one is not set, treat as open range.
-			if colIndex >= len(key) || key[colIndex] == nil || key[colIndex].IsNull() {
-				// Don't include keys with NULL in columns that have range bounds
-				if (colIndex < len(min) && min[colIndex] != nil) ||
-					(colIndex < len(max) && max[colIndex] != nil) {
-					inRange = false
-					break
-				}
-				continue
-			}
-
-			// Check minimum bound if specified
-			if colIndex < len(min) && min[colIndex] != nil {
-				cmp, err := key[colIndex].Compare(min[colIndex])
-				if err != nil || (includeMin && cmp < 0) || (!includeMin && cmp <= 0) {
-					inRange = false
-					break
-				}
-			}
-
-			// Check maximum bound if specified
-			if colIndex < len(max) && max[colIndex] != nil {
-				cmp, err := key[colIndex].Compare(max[colIndex])
-				if err != nil || (includeMax && cmp > 0) || (!includeMax && cmp >= 0) {
-					inRange = false
-					break
-				}
-			}
-		}
-
-		// If the key is in range, add its row IDs to the result
-		if inRange {
-			rowIDs := idx.valueTree.root.rowIDs[keyIndex]
-			result = append(result, rowIDs...)
-		}
+	// Use the most specific (longest) constraint for initial filtering
+	specificLen := minLen
+	if maxLen > minLen {
+		specificLen = maxLen
 	}
 
-	return result
+	if specificLen > 0 {
+		// Get initial result set from most specific column for range query
+		colIdx = specificLen - 1 // Use the last column with a constraint
+
+		// Prepare column-specific min/max
+		var colMin, colMax []storage.ColumnValue
+		if minLen > colIdx {
+			colMin = []storage.ColumnValue{min[colIdx]}
+		}
+		if maxLen > colIdx {
+			colMax = []storage.ColumnValue{max[colIdx]}
+		}
+
+		// Get rows in range for selected column
+		rowIDs := idx.columnIndices[colIdx].GetRowIDsInRange(colMin, colMax, includeMin, includeMax)
+		if len(rowIDs) == 0 {
+			return nil // No results match the range
+		}
+
+		// For multi-column range query, we need to filter with other columns
+		if specificLen > 1 {
+			// Use the optimized sorted IDs intersection instead of maps
+			// This is much more efficient than the previous implementation
+			for i := 0; i < specificLen; i++ {
+				if i == colIdx {
+					continue // Skip the column we already used
+				}
+
+				// Prepare column-specific min/max
+				var colMin, colMax []storage.ColumnValue
+				if minLen > i {
+					colMin = []storage.ColumnValue{min[i]}
+				}
+				if maxLen > i {
+					colMax = []storage.ColumnValue{max[i]}
+				}
+
+				// Skip if no constraint for this column
+				if colMin == nil && colMax == nil {
+					continue
+				}
+
+				// Get matches for this column's range
+				colMatches := idx.columnIndices[i].GetRowIDsInRange(colMin, colMax, includeMin, includeMax)
+				if len(colMatches) == 0 {
+					return nil // No matches for this column
+				}
+
+				// Use the fast intersection function from columnar_iterator.go
+				rowIDs = intersectSortedIDs(rowIDs, colMatches)
+
+				// If intersection is empty, early return
+				if len(rowIDs) == 0 {
+					return nil
+				}
+			}
+		}
+
+		return rowIDs
+	}
+
+	// If no specific range was provided, return all rows
+	return idx.columnIndices[0].GetRowIDsInRange(nil, nil, false, false)
 }
 
-// FindWithOperator finds all entries that match the given operator and values
-func (idx *MultiColumnarIndex) FindWithOperator(op storage.Operator,
-	values []storage.ColumnValue) ([]storage.IndexEntry, error) {
-
-	if len(values) == 0 || len(values) > len(idx.columnIDs) {
-		return nil, fmt.Errorf("invalid number of values for multi-column index")
-	}
-
-	var rowIDs []int64
-
-	switch op {
-	case storage.EQ:
-		// For equality, all columns must match exactly
-		if len(values) != len(idx.columnIDs) {
-			// Pad with NULLs if needed
-			paddedValues := make([]storage.ColumnValue, len(idx.columnIDs))
-			copy(paddedValues, values)
-			// Remaining values are nil (NULL)
-			rowIDs = idx.GetRowIDsEqual(paddedValues)
-		} else {
-			rowIDs = idx.GetRowIDsEqual(values)
-		}
-
-	case storage.GT, storage.GTE, storage.LT, storage.LTE:
-		// For range queries, we need min and max bounds
-		var min, max []storage.ColumnValue
-		var includeMin, includeMax bool
-
-		if op == storage.GT || op == storage.GTE {
-			min = values
-			includeMin = op == storage.GTE
-		} else {
-			max = values
-			includeMax = op == storage.LTE
-		}
-
-		rowIDs = idx.GetRowIDsInRange(min, max, includeMin, includeMax)
-
-	case storage.ISNULL:
-		// Return rows where ANY of the columns is NULL
-		idx.mutex.RLock()
-
-		// If we're looking for NULL in a specific column
-		if len(values) == 1 && len(idx.columnIDs) > 1 {
-			for i, colName := range idx.columnNames {
-				if colName == values[0].AsInterface().(string) {
-					colID := idx.columnIDs[i]
-					if len(idx.nullRowsByColumn[colID]) > 0 {
-						rowIDs = make([]int64, len(idx.nullRowsByColumn[colID]))
-						copy(rowIDs, idx.nullRowsByColumn[colID])
-					}
-					break
-				}
-			}
-		} else {
-			// Get all rows with NULL in any column, avoiding duplicates
-			nullMap := make(map[int64]struct{})
-			for _, colID := range idx.columnIDs {
-				for _, rowID := range idx.nullRowsByColumn[colID] {
-					nullMap[rowID] = struct{}{}
-				}
-			}
-
-			if len(nullMap) > 0 {
-				rowIDs = make([]int64, 0, len(nullMap))
-				for rowID := range nullMap {
-					rowIDs = append(rowIDs, rowID)
-				}
-			}
-		}
-		idx.mutex.RUnlock()
-
-	case storage.ISNOTNULL:
-		// Return rows where all columns are non-NULL
-		idx.mutex.RLock()
-		allRows := idx.valueTree.GetAll()
-		idx.mutex.RUnlock()
-
-		if len(allRows) > 0 {
-			// Create a map of rows that have NULL in any column
-			nullMap := make(map[int64]struct{})
-			for _, colID := range idx.columnIDs {
-				for _, rowID := range idx.nullRowsByColumn[colID] {
-					nullMap[rowID] = struct{}{}
-				}
-			}
-
-			// Only include rows not in nullMap
-			if len(nullMap) == 0 {
-				rowIDs = allRows
-			} else {
-				rowIDs = make([]int64, 0, len(allRows)-len(nullMap))
-				for _, rowID := range allRows {
-					if _, exists := nullMap[rowID]; !exists {
-						rowIDs = append(rowIDs, rowID)
-					}
-				}
-			}
-		}
-	}
-
-	if len(rowIDs) == 0 {
-		return nil, nil
-	}
-
-	// Convert to index entries
-	result := make([]storage.IndexEntry, len(rowIDs))
-	for i, id := range rowIDs {
-		result[i] = storage.IndexEntry{RowID: id}
-	}
-
-	return result, nil
-}
-
-// GetFilteredRowIDs returns row IDs that match the given expression
-func (idx *MultiColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
+// GetRowIDsFromColumnarIndex is a specialized function for getting row IDs directly from this index
+// by applying expressions to it. It is used by GetFilteredRowIDs to provide fast paths for performance.
+func (idx *MultiColumnarIndex) GetRowIDsFromColumnarIndex(expr storage.Expression) []int64 {
+	// Implementation that provides direct fast paths instead of delegating to individual column indices
 	if expr == nil {
 		return nil
 	}
 
-	// Handle simple expressions
-	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
-		// Find which column this expression is for
-		colIndex := -1
-		for i, name := range idx.columnNames {
-			if simpleExpr.Column == name {
-				colIndex = i
+	// For multi-column AND expressions with simple equality conditions, we can use specialized fast paths
+	if andExpr, ok := expr.(*expression.AndExpression); ok {
+		// Check if this is a multi-column equality expression where each expression matches a column
+		// in this index - this is the most common case for multi-column indexes
+		columnExprMap := make(map[string]*expression.SimpleExpression)
+		rangeExprs := make(map[string]*expression.SimpleExpression)
+		allSimple := true
+
+		// Check if all sub-expressions are simple expressions on our columns
+		// and separate into equality and range conditions
+		for _, subExpr := range andExpr.Expressions {
+			if simpleExpr, ok := subExpr.(*expression.SimpleExpression); ok {
+				// Check if this column is part of our index
+				foundColumn := false
+				for _, colName := range idx.columnNames {
+					if simpleExpr.Column == colName {
+						if simpleExpr.Operator == storage.EQ {
+							columnExprMap[colName] = simpleExpr
+						} else if simpleExpr.Operator == storage.GT ||
+							simpleExpr.Operator == storage.GTE ||
+							simpleExpr.Operator == storage.LT ||
+							simpleExpr.Operator == storage.LTE {
+							// Store range expressions separately
+							rangeExprs[colName] = simpleExpr
+						}
+						foundColumn = true
+						break
+					}
+				}
+				if !foundColumn {
+					allSimple = false
+					break
+				}
+			} else {
+				allSimple = false
 				break
 			}
 		}
 
-		// If we found the column, proceed
-		if colIndex >= 0 {
-			// Convert the expression value to a column value
-			value := storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataTypes[colIndex])
-			defer storage.PutPooledColumnValue(value)
+		// If we have equality expressions for multiple columns in our index,
+		// we can use GetRowIDsEqual for a direct fast path
+		if allSimple && len(columnExprMap) > 1 {
+			// Collect values in the right order for our multi-column index
+			values := make([]storage.ColumnValue, len(idx.columnNames))
+			valuesProvided := 0
 
-			// Create a values array with just this value in the correct position
-			values := make([]storage.ColumnValue, len(idx.columnIDs))
-			values[colIndex] = value
+			for i, colName := range idx.columnNames {
+				if expr, exists := columnExprMap[colName]; exists {
+					values[i] = storage.ValueToPooledColumnValue(expr.Value, idx.dataTypes[i])
+					defer storage.PutPooledColumnValue(values[i])
+					valuesProvided++
+				} else {
+					// This is a partial match (not all columns provided)
+					// We'll trim the values array later
+					values[i] = nil
+				}
+			}
 
-			// Branch based on operator
-			switch simpleExpr.Operator {
-			case storage.EQ:
-				// Acquire a read lock
-				idx.mutex.RLock()
-				defer idx.mutex.RUnlock()
+			// Only use this fast path if we have at least 2 columns specified
+			if valuesProvided >= 2 {
+				// For partial matches, trim the values array to only include specified columns
+				if valuesProvided < len(idx.columnNames) {
+					trimmedValues := make([]storage.ColumnValue, valuesProvided)
+					valueIndex := 0
+					for i, colName := range idx.columnNames {
+						if _, exists := columnExprMap[colName]; exists {
+							trimmedValues[valueIndex] = values[i]
+							valueIndex++
+						}
+					}
+					values = trimmedValues
+				}
 
-				// Manual search through all keys
-				var result []int64
+				// First get results using the equality conditions
+				result := idx.GetRowIDsEqual(values)
 
-				// For first column equality, we may be able to do a more focused search
-				if colIndex == 0 {
-					// Check if we can get the value as a string for easier comparison
-					stringValue, isString := simpleExpr.Value.(string)
+				// If we also have range conditions, filter the results further
+				if len(rangeExprs) > 0 && len(result) > 0 {
+					// Process each range expression to further filter the results
+					for colName, rangeExpr := range rangeExprs {
+						for i, indexColName := range idx.columnNames {
+							if colName == indexColName {
+								// Convert the expression to column-specific range
+								var minValue, maxValue storage.ColumnValue
+								var includeMin, includeMax bool
 
-					// Scan keys to find matches
-					for i, key := range idx.valueTree.root.keys {
-						if len(key) > 0 && key[0] != nil && !key[0].IsNull() {
-							// For string values, direct comparison may be more reliable
-							if isString && key[0].Type() == storage.TEXT {
-								keyString := key[0].AsInterface().(string)
-								if keyString == stringValue {
-									result = append(result, idx.valueTree.root.rowIDs[i]...)
+								// Setup range based on operator type
+								if rangeExpr.Operator == storage.GT || rangeExpr.Operator == storage.GTE {
+									minValue = storage.ValueToPooledColumnValue(rangeExpr.Value, idx.dataTypes[i])
+									defer storage.PutPooledColumnValue(minValue)
+									includeMin = rangeExpr.Operator == storage.GTE
+								} else {
+									maxValue = storage.ValueToPooledColumnValue(rangeExpr.Value, idx.dataTypes[i])
+									defer storage.PutPooledColumnValue(maxValue)
+									includeMax = rangeExpr.Operator == storage.LTE
 								}
-							} else {
-								// Use column value comparison
-								cmp, err := key[0].Compare(value)
-								if err == nil && cmp == 0 {
-									result = append(result, idx.valueTree.root.rowIDs[i]...)
+
+								// Get the range condition results
+								rangeResult := idx.columnIndices[i].GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
+
+								// Intersect with our current results
+								if len(rangeResult) > 0 {
+									result = intersectSortedIDs(result, rangeResult)
+									if len(result) == 0 {
+										return nil // Empty result after intersection, exit early
+									}
+								} else {
+									return nil // No matches for this range condition
 								}
+								break
 							}
 						}
 					}
-					return result
 				}
 
-				// For other columns, we need to scan all keys and check the specific column
-				for i, key := range idx.valueTree.root.keys {
-					// Skip keys that don't have the column or where it's NULL
-					if colIndex >= len(key) || key[colIndex] == nil || key[colIndex].IsNull() {
-						continue
-					}
-
-					// Check equality
-					cmp, err := key[colIndex].Compare(value)
-					if err == nil && cmp == 0 {
-						// This key matches, add its row IDs
-						result = append(result, idx.valueTree.root.rowIDs[i]...)
-					}
-				}
-				return result
-
-			case storage.GT, storage.GTE, storage.LT, storage.LTE:
-				// Set up range query
-				var min, max []storage.ColumnValue
-				var includeMin, includeMax bool
-
-				if simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE {
-					min = values
-					includeMin = simpleExpr.Operator == storage.GTE
-				} else {
-					max = values
-					includeMax = simpleExpr.Operator == storage.LTE
-				}
-
-				// Acquire a read lock
-				idx.mutex.RLock()
-				defer idx.mutex.RUnlock()
-
-				if colIndex == 0 {
-					// For first column range, we can use optimized range search
-					var singleColMin, singleColMax []storage.ColumnValue
-
-					// Only create min/max arrays if the operator requires them
-					if simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE {
-						singleColMin = []storage.ColumnValue{value}
-					} else if simpleExpr.Operator == storage.LT || simpleExpr.Operator == storage.LTE {
-						singleColMax = []storage.ColumnValue{value}
-					}
-
-					return idx.GetRowIDsInRange(singleColMin, singleColMax, includeMin, includeMax)
-				}
-
-				// For other columns, scan all keys
-				var result []int64
-				for i, key := range idx.valueTree.root.keys {
-					// Skip keys that don't have this column or it's NULL
-					if colIndex >= len(key) || key[colIndex] == nil || key[colIndex].IsNull() {
-						continue
-					}
-
-					// Check if this key matches the range condition
-					inRange := true
-
-					// Check minimum bound if specified
-					if min != nil && min[colIndex] != nil {
-						cmp, err := key[colIndex].Compare(min[colIndex])
-						if err != nil || (includeMin && cmp < 0) || (!includeMin && cmp <= 0) {
-							inRange = false
-						}
-					}
-
-					// Check maximum bound if specified
-					if inRange && max != nil && max[colIndex] != nil {
-						cmp, err := key[colIndex].Compare(max[colIndex])
-						if err != nil || (includeMax && cmp > 0) || (!includeMax && cmp >= 0) {
-							inRange = false
-						}
-					}
-
-					// This key is in range, add its row IDs
-					if inRange {
-						result = append(result, idx.valueTree.root.rowIDs[i]...)
-					}
-				}
-				return result
-
-			case storage.ISNULL:
-				idx.mutex.RLock()
-				defer idx.mutex.RUnlock()
-
-				// Get rows with NULL in specified column
-				colID := idx.columnIDs[colIndex]
-				if len(idx.nullRowsByColumn[colID]) == 0 {
-					return nil
-				}
-				result := make([]int64, len(idx.nullRowsByColumn[colID]))
-				copy(result, idx.nullRowsByColumn[colID])
-				return result
-
-			case storage.ISNOTNULL:
-				idx.mutex.RLock()
-				defer idx.mutex.RUnlock()
-
-				// Get all rows without NULL in specified column
-				allRows := idx.valueTree.GetAll()
-				colID := idx.columnIDs[colIndex]
-
-				if len(idx.nullRowsByColumn[colID]) == 0 {
-					return allRows
-				}
-
-				// Create a map of rows with NULL in specified column for quick lookup
-				nullMap := make(map[int64]struct{})
-				for _, rowID := range idx.nullRowsByColumn[colID] {
-					nullMap[rowID] = struct{}{}
-				}
-
-				// Only include rows not in nullMap
-				result := make([]int64, 0, len(allRows)-len(nullMap))
-				for _, rowID := range allRows {
-					if _, exists := nullMap[rowID]; !exists {
-						result = append(result, rowID)
-					}
-				}
 				return result
 			}
 		}
-	}
 
-	// Handle AND expressions for range queries or multi-column conditions
-	if andExpr, ok := expr.(*expression.AndExpression); ok && len(andExpr.Expressions) == 2 {
-		expr1, ok1 := andExpr.Expressions[0].(*expression.SimpleExpression)
-		expr2, ok2 := andExpr.Expressions[1].(*expression.SimpleExpression)
+		// Special case for multi-column AND with range conditions
+		// If we have range expressions on multiple columns in our index
+		if allSimple && len(rangeExprs) > 0 {
+			var result []int64
+			var firstCol bool = true
 
-		if ok1 && ok2 {
-			// Case 1: Range query on same column (e.g., col > 10 AND col < 20)
-			if expr1.Column == expr2.Column {
-				// Find which column this is in our index
-				colIndex := -1
-				for i, name := range idx.columnNames {
-					if expr1.Column == name {
-						colIndex = i
+			// Process each column's range conditions
+			for colName, rangeExpr := range rangeExprs {
+				for i, indexColName := range idx.columnNames {
+					if colName == indexColName {
+						// Convert the expression to column-specific range
+						var minValue, maxValue storage.ColumnValue
+						var includeMin, includeMax bool
+
+						// Setup range based on operator type
+						if rangeExpr.Operator == storage.GT || rangeExpr.Operator == storage.GTE {
+							minValue = storage.ValueToPooledColumnValue(rangeExpr.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(minValue)
+							includeMin = rangeExpr.Operator == storage.GTE
+						} else {
+							maxValue = storage.ValueToPooledColumnValue(rangeExpr.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(maxValue)
+							includeMax = rangeExpr.Operator == storage.LTE
+						}
+
+						// Get the range condition results
+						rangeResult := idx.columnIndices[i].GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
+
+						// For first column, initialize result; otherwise intersect
+						if firstCol {
+							result = rangeResult
+							firstCol = false
+						} else if len(rangeResult) > 0 {
+							result = intersectSortedIDs(result, rangeResult)
+							if len(result) == 0 {
+								return nil // Empty result after intersection, exit early
+							}
+						} else {
+							return nil // No matches for this range condition
+						}
 						break
 					}
 				}
+			}
 
-				if colIndex >= 0 {
-					// Prepare values arrays
-					var min, max []storage.ColumnValue
-					var includeMin, includeMax bool
-					var hasRange bool
+			// If we also have equality conditions, filter the results further
+			if len(columnExprMap) > 0 && len(result) > 0 {
+				for colName, eqExpr := range columnExprMap {
+					for i, indexColName := range idx.columnNames {
+						if colName == indexColName {
+							// Get equality results
+							eqValue := storage.ValueToPooledColumnValue(eqExpr.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(eqValue)
+							eqResult := idx.columnIndices[i].GetRowIDsEqual([]storage.ColumnValue{eqValue})
 
-					minValues := make([]storage.ColumnValue, len(idx.columnIDs))
-					maxValues := make([]storage.ColumnValue, len(idx.columnIDs))
-
-					// Check if expr1 is a lower bound and expr2 is an upper bound
-					if (expr1.Operator == storage.GT || expr1.Operator == storage.GTE) &&
-						(expr2.Operator == storage.LT || expr2.Operator == storage.LTE) {
-
-						minValues[colIndex] = storage.ValueToPooledColumnValue(expr1.Value, idx.dataTypes[colIndex])
-						defer storage.PutPooledColumnValue(minValues[colIndex])
-						includeMin = expr1.Operator == storage.GTE
-
-						maxValues[colIndex] = storage.ValueToPooledColumnValue(expr2.Value, idx.dataTypes[colIndex])
-						defer storage.PutPooledColumnValue(maxValues[colIndex])
-						includeMax = expr2.Operator == storage.LTE
-
-						min = minValues
-						max = maxValues
-						hasRange = true
-					}
-
-					// Check if expr2 is a lower bound and expr1 is an upper bound
-					if (expr2.Operator == storage.GT || expr2.Operator == storage.GTE) &&
-						(expr1.Operator == storage.LT || expr1.Operator == storage.LTE) {
-
-						minValues[colIndex] = storage.ValueToPooledColumnValue(expr2.Value, idx.dataTypes[colIndex])
-						defer storage.PutPooledColumnValue(minValues[colIndex])
-						includeMin = expr2.Operator == storage.GTE
-
-						maxValues[colIndex] = storage.ValueToPooledColumnValue(expr1.Value, idx.dataTypes[colIndex])
-						defer storage.PutPooledColumnValue(maxValues[colIndex])
-						includeMax = expr1.Operator == storage.LTE
-
-						min = minValues
-						max = maxValues
-						hasRange = true
-					}
-
-					if hasRange {
-						if colIndex == 0 {
-							// For first column, use range query directly
-							singleColMin := []storage.ColumnValue{min[colIndex]}
-							singleColMax := []storage.ColumnValue{max[colIndex]}
-							return idx.GetRowIDsInRange(singleColMin, singleColMax, includeMin, includeMax)
-						} else {
-							// For other columns, need custom filtering
-							idx.mutex.RLock()
-							defer idx.mutex.RUnlock()
-
-							var result []int64
-							for i, key := range idx.valueTree.root.keys {
-								// Skip keys that don't have this column or it's NULL
-								if colIndex >= len(key) || key[colIndex] == nil || key[colIndex].IsNull() {
-									continue
+							// Intersect with our current results
+							if len(eqResult) > 0 {
+								result = intersectSortedIDs(result, eqResult)
+								if len(result) == 0 {
+									return nil // Empty result after intersection
 								}
-
-								// Check minimum bound
-								if min[colIndex] != nil {
-									cmp, err := key[colIndex].Compare(min[colIndex])
-									if err != nil || (includeMin && cmp < 0) || (!includeMin && cmp <= 0) {
-										continue
-									}
-								}
-
-								// Check maximum bound
-								if max[colIndex] != nil {
-									cmp, err := key[colIndex].Compare(max[colIndex])
-									if err != nil || (includeMax && cmp > 0) || (!includeMax && cmp >= 0) {
-										continue
-									}
-								}
-
-								// This key is in range, add its row IDs
-								result = append(result, idx.valueTree.root.rowIDs[i]...)
+							} else {
+								return nil // No matches for this equality condition
 							}
-							return result
+							break
 						}
 					}
-				}
-			}
-
-			// Case 2: Conditions on different columns (e.g., country = 'USA' AND city = 'New York')
-			// Find column indices
-			col1Index, col2Index := -1, -1
-			for i, name := range idx.columnNames {
-				if expr1.Column == name {
-					col1Index = i
-				}
-				if expr2.Column == name {
-					col2Index = i
-				}
-			}
-
-			// If both columns are in our index
-			if col1Index >= 0 && col2Index >= 0 {
-				// Convert expression values to column values
-				val1 := storage.ValueToPooledColumnValue(expr1.Value, idx.dataTypes[col1Index])
-				defer storage.PutPooledColumnValue(val1)
-
-				val2 := storage.ValueToPooledColumnValue(expr2.Value, idx.dataTypes[col2Index])
-				defer storage.PutPooledColumnValue(val2)
-
-				idx.mutex.RLock()
-				defer idx.mutex.RUnlock()
-
-				var result []int64
-
-				// Evaluate each expression based on its operator
-				evalExpr := func(key []storage.ColumnValue, colIdx int, val storage.ColumnValue, op storage.Operator) (bool, error) {
-					// Ensure the key has this column and it's not NULL
-					if colIdx >= len(key) || key[colIdx] == nil || key[colIdx].IsNull() {
-						return false, nil
-					}
-
-					// Compare values
-					cmp, err := key[colIdx].Compare(val)
-					if err != nil {
-						return false, err
-					}
-
-					// Evaluate based on operator
-					switch op {
-					case storage.EQ:
-						return cmp == 0, nil
-					case storage.GT:
-						return cmp > 0, nil
-					case storage.GTE:
-						return cmp >= 0, nil
-					case storage.LT:
-						return cmp < 0, nil
-					case storage.LTE:
-						return cmp <= 0, nil
-					default:
-						return false, nil
-					}
-				}
-
-				// For each key in the tree
-				for i, key := range idx.valueTree.root.keys {
-					// Check first expression
-					matches1, err1 := evalExpr(key, col1Index, val1, expr1.Operator)
-					if err1 != nil || !matches1 {
-						continue
-					}
-
-					// Check second expression
-					matches2, err2 := evalExpr(key, col2Index, val2, expr2.Operator)
-					if err2 != nil || !matches2 {
-						continue
-					}
-
-					// Both expressions matched, add the row IDs
-					result = append(result, idx.valueTree.root.rowIDs[i]...)
-				}
-
-				return result
-			}
-		} else {
-			// Try individual expression approach - handle cases where expressions aren't simple expressions
-			// Evaluate both sides separately and intersect results
-			result1 := idx.GetFilteredRowIDs(andExpr.Expressions[0])
-			if len(result1) == 0 {
-				return nil // Short-circuit if first expression returns no rows
-			}
-
-			result2 := idx.GetFilteredRowIDs(andExpr.Expressions[1])
-			if len(result2) == 0 {
-				return nil // Short-circuit if second expression returns no rows
-			}
-
-			// Find the intersection of the two result sets
-			rowMap := make(map[int64]struct{}, len(result1))
-			for _, id := range result1 {
-				rowMap[id] = struct{}{}
-			}
-
-			var result []int64
-			for _, id := range result2 {
-				if _, exists := rowMap[id]; exists {
-					result = append(result, id)
 				}
 			}
 
@@ -1535,77 +1140,587 @@ func (idx *MultiColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int6
 		}
 	}
 
-	// For other expressions, we can't use this index efficiently
-	return nil
+	// Delegate to the regular path
+	return idx.getFilteredRowIDsImpl(expr)
 }
 
-// Build builds the index from existing data
-func (idx *MultiColumnarIndex) Build() error {
-	// Clear existing data
-	idx.mutex.Lock()
-
-	if idx.valueTree != nil {
-		idx.valueTree.Clear()
-	} else {
-		idx.valueTree = newMultiColumnTree(compareMultiColumnValues)
+// unionSortedIDs efficiently combines two sorted arrays of int64s into a single sorted array
+// with no duplicates, similar to the SQL UNION operation
+func unionSortedIDs(a, b []int64) []int64 {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
 	}
 
-	// Clear nullRowsByColumn
-	for colID := range idx.nullRowsByColumn {
-		idx.nullRowsByColumn[colID] = make([]int64, 0)
-	}
-	idx.mutex.Unlock()
+	// Pre-allocate result with a reasonable capacity
+	result := make([]int64, 0, len(a)+len(b)/2) // Assuming ~50% overlap as a heuristic
 
-	// Get all visible versions from the version store
-	if idx.versionStore == nil {
+	// Use a merge algorithm similar to merge sort to efficiently combine the arrays
+	i, j := 0, 0
+
+	for i < len(a) && j < len(b) {
+		if a[i] < b[j] {
+			result = append(result, a[i])
+			i++
+		} else if a[i] > b[j] {
+			result = append(result, b[j])
+			j++
+		} else {
+			// Equal values - add only once and advance both indices
+			result = append(result, a[i])
+			i++
+			j++
+		}
+	}
+
+	// Add any remaining elements
+	if i < len(a) {
+		result = append(result, a[i:]...)
+	}
+	if j < len(b) {
+		result = append(result, b[j:]...)
+	}
+
+	return result
+}
+
+// getFilteredRowIDsImpl is the implementation logic for GetFilteredRowIDs
+// This exists as a separate method to make the fast-path logic in GetRowIDsFromColumnarIndex cleaner
+func (idx *MultiColumnarIndex) getFilteredRowIDsImpl(expr storage.Expression) []int64 {
+	// Special optimization for AndExpressions with multiple columns
+	if andExpr, ok := expr.(*expression.AndExpression); ok {
+		return idx.handleAndExpression(andExpr)
+	}
+	if expr == nil {
 		return nil
 	}
 
-	// Use transaction ID 0 to see all committed data
-	visibleVersions := idx.versionStore.GetAllVisibleVersions(0)
+	// Fast path for SimpleExpression with equality or NULL checks (most common cases)
+	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
+		// Find the column index that matches this expression
+		for i, colName := range idx.columnNames {
+			if simpleExpr.Column == colName {
+				// Direct fast path based on operator for better performance
+				switch simpleExpr.Operator {
+				case storage.EQ:
+					// Convert the expression value to a ColumnValue with the correct type
+					valueCol := storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataTypes[i])
+					defer storage.PutPooledColumnValue(valueCol)
+					return idx.columnIndices[i].GetRowIDsEqual([]storage.ColumnValue{valueCol})
 
-	// Process each visible row
-	visibleVersions.ForEach(func(rowID int64, version *RowVersion) bool {
-		if version.IsDeleted {
-			return true
+				case storage.GT, storage.GTE, storage.LT, storage.LTE:
+					// Range query - simple inequality with optimized fast path
+					var minValue, maxValue storage.ColumnValue
+					var includeMin, includeMax bool
+
+					if simpleExpr.Operator == storage.GT || simpleExpr.Operator == storage.GTE {
+						minValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataTypes[i])
+						defer storage.PutPooledColumnValue(minValue)
+						includeMin = simpleExpr.Operator == storage.GTE
+					} else {
+						maxValue = storage.ValueToPooledColumnValue(simpleExpr.Value, idx.dataTypes[i])
+						defer storage.PutPooledColumnValue(maxValue)
+						includeMax = simpleExpr.Operator == storage.LTE
+					}
+
+					return idx.columnIndices[i].GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
+
+				case storage.ISNULL, storage.ISNOTNULL:
+					// Use the optimized NULL check fast path
+					return idx.columnIndices[i].GetFilteredRowIDs(simpleExpr)
+
+				default:
+					// For other operators, delegate to the column index implementation
+					return idx.columnIndices[i].GetFilteredRowIDs(simpleExpr)
+				}
+			}
 		}
+	}
 
-		// Extract values for each indexed column
-		values := make([]storage.ColumnValue, len(idx.columnIDs))
+	// Fast path for RangeExpression (optimized range queries)
+	if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
+		// Find the column index that matches this range expression
+		for i, colName := range idx.columnNames {
+			if rangeExpr.Column == colName {
+				// Direct fast path using GetRowIDsInRange for better performance
+				var minValue, maxValue storage.ColumnValue
 
-		for i, colID := range idx.columnIDs {
-			if int(colID) < len(version.Data) {
-				values[i] = version.Data[colID]
-			} else {
-				// Column doesn't exist in this row, treat as NULL
-				values[i] = nil
+				if rangeExpr.MinValue != nil {
+					minValue = storage.ValueToPooledColumnValue(rangeExpr.MinValue, idx.dataTypes[i])
+					defer storage.PutPooledColumnValue(minValue)
+				}
+
+				if rangeExpr.MaxValue != nil {
+					maxValue = storage.ValueToPooledColumnValue(rangeExpr.MaxValue, idx.dataTypes[i])
+					defer storage.PutPooledColumnValue(maxValue)
+				}
+
+				return idx.columnIndices[i].GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue},
+					rangeExpr.IncludeMin, rangeExpr.IncludeMax)
+			}
+		}
+	}
+
+	// Fast path for BetweenExpression (BETWEEN queries)
+	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok {
+		// Find the column index that matches this between expression
+		for i, colName := range idx.columnNames {
+			if betweenExpr.Column == colName {
+				// Convert lower and upper bounds to appropriate column values
+				lowerValue := storage.ValueToPooledColumnValue(betweenExpr.LowerBound, idx.dataTypes[i])
+				defer storage.PutPooledColumnValue(lowerValue)
+
+				upperValue := storage.ValueToPooledColumnValue(betweenExpr.UpperBound, idx.dataTypes[i])
+				defer storage.PutPooledColumnValue(upperValue)
+
+				// Use the optimized range fast path with proper inclusivity
+				return idx.columnIndices[i].GetRowIDsInRange([]storage.ColumnValue{lowerValue}, []storage.ColumnValue{upperValue},
+					betweenExpr.Inclusive, betweenExpr.Inclusive)
+			}
+		}
+	}
+
+	// Fast path for AndExpression with range conditions on a single column
+	if andExpr, ok := expr.(*expression.AndExpression); ok {
+		if len(andExpr.Expressions) == 2 {
+			// Check if both expressions are SimpleExpressions for the same column
+			expr1, ok1 := andExpr.Expressions[0].(*expression.SimpleExpression)
+			expr2, ok2 := andExpr.Expressions[1].(*expression.SimpleExpression)
+
+			if ok1 && ok2 && expr1.Column == expr2.Column {
+				// Find the column index
+				for i, colName := range idx.columnNames {
+					if expr1.Column == colName {
+						// Check for range patterns like (col > X AND col < Y)
+						var minValue, maxValue storage.ColumnValue
+						var includeMin, includeMax bool
+						var hasRange bool
+
+						// Check if expr1 is a lower bound and expr2 is an upper bound
+						if (expr1.Operator == storage.GT || expr1.Operator == storage.GTE) &&
+							(expr2.Operator == storage.LT || expr2.Operator == storage.LTE) {
+							minValue = storage.ValueToPooledColumnValue(expr1.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(minValue)
+							includeMin = expr1.Operator == storage.GTE
+							maxValue = storage.ValueToPooledColumnValue(expr2.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(maxValue)
+							includeMax = expr2.Operator == storage.LTE
+							hasRange = true
+						}
+
+						// Check if expr2 is a lower bound and expr1 is an upper bound
+						if (expr2.Operator == storage.GT || expr2.Operator == storage.GTE) &&
+							(expr1.Operator == storage.LT || expr1.Operator == storage.LTE) {
+							minValue = storage.ValueToPooledColumnValue(expr2.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(minValue)
+							includeMin = expr2.Operator == storage.GTE
+							maxValue = storage.ValueToPooledColumnValue(expr1.Value, idx.dataTypes[i])
+							defer storage.PutPooledColumnValue(maxValue)
+							includeMax = expr1.Operator == storage.LTE
+							hasRange = true
+						}
+
+						if hasRange {
+							return idx.columnIndices[i].GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, includeMin, includeMax)
+						}
+					}
+				}
 			}
 		}
 
-		// Add to index
-		idx.Add(values, rowID, 0)
+		// For other AND expressions, delegate to the standard path for intersection
+		var result []int64
+		var firstResult bool = true
 
-		return true
-	})
+		for _, subExpr := range andExpr.Expressions {
+			// Get results for this sub-expression
+			subResult := idx.getFilteredRowIDsImpl(subExpr)
+			if len(subResult) == 0 {
+				return nil // Empty intersection
+			}
+
+			// For first result, initialize result set
+			if firstResult {
+				result = subResult
+				firstResult = false
+				continue
+			}
+
+			// Use the optimized sorted intersection function
+			// This is much more efficient than using maps
+			result = intersectSortedIDs(result, subResult)
+
+			// If intersection is empty, early return
+			if len(result) == 0 {
+				return nil
+			}
+		}
+
+		return result
+	}
+
+	// Handle OR expressions - union results from each sub-expression
+	if orExpr, ok := expr.(*expression.OrExpression); ok {
+		var result []int64
+		var firstExpr = true
+
+		for _, subExpr := range orExpr.Expressions {
+			// Get results for this sub-expression
+			subResult := idx.getFilteredRowIDsImpl(subExpr)
+
+			// For first expression, initialize result
+			if firstExpr {
+				result = subResult
+				firstExpr = false
+				continue
+			}
+
+			// For subsequent expressions, use optimized union operation
+			if len(subResult) > 0 {
+				result = unionSortedIDs(result, subResult)
+			}
+		}
+
+		return result
+	}
+
+	// For unsupported expressions, return nil
+	return nil
+}
+
+// GetFilteredRowIDs returns row IDs that match the given expression
+func (idx *MultiColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
+	// Fast path for IS NOT NULL/IS NULL expressions
+	if nullCheckExpr, ok := expr.(*expression.NullCheckExpression); ok {
+		columnName := nullCheckExpr.GetColumnName()
+
+		// Find which column in our multi-column index this expression is for
+		colIdx := -1
+		for i, colName := range idx.columnNames {
+			if colName == columnName {
+				colIdx = i
+				break
+			}
+		}
+
+		// If we found the column, delegate to the single-column index
+		if colIdx >= 0 && colIdx < len(idx.columnIndices) {
+			result := idx.columnIndices[colIdx].GetFilteredRowIDs(nullCheckExpr)
+			return result
+		}
+	}
+
+	// Try to use other specialized fast paths if possible
+	result := idx.GetRowIDsFromColumnarIndex(expr)
+	if result != nil {
+		return result
+	}
+
+	return idx.getFilteredRowIDsImpl(expr)
+}
+
+// Build builds or rebuilds the index from the version store
+func (idx *MultiColumnarIndex) Build() error {
+	// Clear uniqueness map if using unique constraint
+	if idx.isUnique {
+		idx.mutex.Lock()
+		idx.uniqueValues = make(map[string]int64)
+		idx.mutex.Unlock()
+	}
+
+	// Build each column index
+	for _, colIdx := range idx.columnIndices {
+		if err := colIdx.Build(); err != nil {
+			return err
+		}
+	}
+
+	// If using unique constraint, rebuild the uniqueness map
+	if idx.isUnique && idx.vs != nil {
+		// Get all visible versions from the version store
+		visibleVersions := idx.vs.GetAllVisibleVersions(0)
+
+		// Process each visible row
+		visibleVersions.ForEach(func(rowID int64, version *RowVersion) bool {
+			if version.IsDeleted {
+				return true
+			}
+
+			// Extract values for all columns in this index
+			values := make([]storage.ColumnValue, len(idx.columnIDs))
+			for i, colID := range idx.columnIDs {
+				if int(colID) < len(version.Data) {
+					values[i] = version.Data[colID]
+				} else {
+					// Column doesn't exist in this row, treat as NULL
+					values[i] = nil
+				}
+			}
+
+			// Create uniqueness key and add to map
+			key := idx.createKey(values)
+			if key != "" {
+				idx.mutex.Lock()
+				idx.uniqueValues[key] = rowID
+				idx.mutex.Unlock()
+			}
+
+			return true
+		})
+	}
 
 	return nil
 }
 
-// Close releases resources held by the index
+// handleAndExpression is a specialized function for handling AND expressions
+// that optimizes for expressions involving multiple columns in the multi-column index
+func (idx *MultiColumnarIndex) handleAndExpression(andExpr *expression.AndExpression) []int64 {
+	// First, organize expressions by column for better pushdown
+	// Use a regular map here as this is a string map with infrequent operations
+	columnExprs := make(map[string][]storage.Expression)
+
+	// Classify expressions by their column
+	for _, subExpr := range andExpr.Expressions {
+		// For SimpleExpression, we can determine the column directly
+		if simpleExpr, ok := subExpr.(*expression.SimpleExpression); ok {
+			columnExprs[simpleExpr.Column] = append(columnExprs[simpleExpr.Column], simpleExpr)
+		} else if nullExpr, ok := subExpr.(*expression.NullCheckExpression); ok {
+			columnExprs[nullExpr.GetColumnName()] = append(columnExprs[nullExpr.GetColumnName()], nullExpr)
+		} else if rangeExpr, ok := subExpr.(*expression.RangeExpression); ok {
+			columnExprs[rangeExpr.Column] = append(columnExprs[rangeExpr.Column], rangeExpr)
+		} else if betweenExpr, ok := subExpr.(*expression.BetweenExpression); ok {
+			columnExprs[betweenExpr.Column] = append(columnExprs[betweenExpr.Column], betweenExpr)
+		}
+		// Other expression types will be handled by the fallback path
+	}
+
+	// Check if we have expressions for columns in our index
+	var columnsToUse []int
+	for i, colName := range idx.columnNames {
+		if _, exists := columnExprs[colName]; exists {
+			columnsToUse = append(columnsToUse, i)
+		}
+	}
+
+	// If we have expressions for multiple columns that are part of this index,
+	// apply each column's conditions separately using the column indices
+	if len(columnsToUse) > 1 {
+		var result []int64
+		var firstCol = true
+
+		// For each column in our index that has conditions
+		for _, colIdx := range columnsToUse {
+			colName := idx.columnNames[colIdx]
+			colExprs := columnExprs[colName]
+
+			// If multiple expressions for this column, combine them with AND
+			var colResult []int64
+			if len(colExprs) > 1 {
+				// Create a combined AND expression for just this column
+				colAndExpr := &expression.AndExpression{
+					Expressions: colExprs,
+				}
+				// Get results using the column's index
+				colResult = idx.columnIndices[colIdx].GetFilteredRowIDs(colAndExpr)
+			} else if len(colExprs) == 1 {
+				// Single expression, use directly
+				colResult = idx.columnIndices[colIdx].GetFilteredRowIDs(colExprs[0])
+			}
+
+			// If any column returns no results, the intersection will be empty
+			if len(colResult) == 0 {
+				return nil
+			}
+
+			// Build the result through intersection
+			if firstCol {
+				result = colResult
+				firstCol = false
+			} else {
+				// Use optimized intersection of sorted IDs
+				result = intersectSortedIDs(result, colResult)
+
+				// Early exit if intersection becomes empty
+				if len(result) == 0 {
+					return nil
+				}
+			}
+		}
+
+		// Check for expressions not related to our columns
+		var otherExprs []storage.Expression
+		for _, subExpr := range andExpr.Expressions {
+			isHandled := false
+
+			// Check if this expression was for a column we already processed
+			if simpleExpr, ok := subExpr.(*expression.SimpleExpression); ok {
+				for _, colName := range idx.columnNames {
+					if simpleExpr.Column == colName {
+						isHandled = true
+						break
+					}
+				}
+			} else if nullExpr, ok := subExpr.(*expression.NullCheckExpression); ok {
+				for _, colName := range idx.columnNames {
+					if nullExpr.GetColumnName() == colName {
+						isHandled = true
+						break
+					}
+				}
+			} else if rangeExpr, ok := subExpr.(*expression.RangeExpression); ok {
+				for _, colName := range idx.columnNames {
+					if rangeExpr.Column == colName {
+						isHandled = true
+						break
+					}
+				}
+			} else if betweenExpr, ok := subExpr.(*expression.BetweenExpression); ok {
+				for _, colName := range idx.columnNames {
+					if betweenExpr.Column == colName {
+						isHandled = true
+						break
+					}
+				}
+			}
+
+			// If not handled yet, add to other expressions
+			if !isHandled {
+				otherExprs = append(otherExprs, subExpr)
+			}
+		}
+
+		// If we have other expressions, apply them to our current result
+		if len(otherExprs) > 0 && len(result) > 0 {
+			// Process each expression separately
+			for _, otherExpr := range otherExprs {
+				// Process using standard method
+				otherResult := idx.standardGetFilteredRowIDs(otherExpr)
+				if len(otherResult) == 0 {
+					return nil
+				}
+
+				// Intersect with current result
+				result = intersectSortedIDs(result, otherResult)
+				if len(result) == 0 {
+					return nil
+				}
+			}
+		}
+
+		return result
+	}
+
+	// If we only have expressions for one or zero of our columns,
+	// fall back to the standard implementation
+	return idx.standardGetFilteredRowIDs(andExpr)
+}
+
+// standardGetFilteredRowIDs is the standard implementation for filtering rows
+// when we don't have specialized optimizations
+func (idx *MultiColumnarIndex) standardGetFilteredRowIDs(expr storage.Expression) []int64 {
+	// Handle AND expressions
+	if andExpr, ok := expr.(*expression.AndExpression); ok {
+		var result []int64
+		var firstResult bool = true
+
+		for _, subExpr := range andExpr.Expressions {
+			// Get results for this sub-expression
+			subResult := idx.getFilteredRowIDsImpl(subExpr)
+			if len(subResult) == 0 {
+				return nil // Empty intersection
+			}
+
+			// For first result, initialize result set
+			if firstResult {
+				result = subResult
+				firstResult = false
+				continue
+			}
+
+			// Use the optimized sorted intersection function
+			// This is much more efficient than using maps
+			result = intersectSortedIDs(result, subResult)
+
+			// If intersection is empty, early return
+			if len(result) == 0 {
+				return nil
+			}
+		}
+
+		return result
+	}
+
+	// Handle OR expressions - union results from each sub-expression
+	if orExpr, ok := expr.(*expression.OrExpression); ok {
+		var result []int64
+		var firstExpr = true
+
+		for _, subExpr := range orExpr.Expressions {
+			// Get results for this sub-expression
+			subResult := idx.getFilteredRowIDsImpl(subExpr)
+
+			// For first expression, initialize result
+			if firstExpr {
+				result = subResult
+				firstExpr = false
+				continue
+			}
+
+			// For subsequent expressions, use optimized union operation
+			if len(subResult) > 0 {
+				result = unionSortedIDs(result, subResult)
+			}
+		}
+
+		return result
+	}
+
+	// For specific column expressions, delegate to the appropriate single column index
+	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
+		for i, colName := range idx.columnNames {
+			if simpleExpr.Column == colName {
+				return idx.columnIndices[i].GetFilteredRowIDs(expr)
+			}
+		}
+	} else if nullExpr, ok := expr.(*expression.NullCheckExpression); ok {
+		for i, colName := range idx.columnNames {
+			if nullExpr.GetColumnName() == colName {
+				return idx.columnIndices[i].GetFilteredRowIDs(expr)
+			}
+		}
+	} else if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
+		for i, colName := range idx.columnNames {
+			if rangeExpr.Column == colName {
+				return idx.columnIndices[i].GetFilteredRowIDs(expr)
+			}
+		}
+	} else if betweenExpr, ok := expr.(*expression.BetweenExpression); ok {
+		for i, colName := range idx.columnNames {
+			if betweenExpr.Column == colName {
+				return idx.columnIndices[i].GetFilteredRowIDs(expr)
+			}
+		}
+	}
+
+	// For unsupported expressions, return empty result
+	return nil
+}
+
+// Close releases any resources
 func (idx *MultiColumnarIndex) Close() error {
 	idx.mutex.Lock()
 	defer idx.mutex.Unlock()
 
-	// Clear valueTree and nullRowsByColumn to free memory
-	if idx.valueTree != nil {
-		idx.valueTree.Clear()
-		idx.valueTree = nil
+	// Close column indices
+	for _, colIdx := range idx.columnIndices {
+		if err := colIdx.Close(); err != nil {
+			return err
+		}
 	}
 
-	for colID := range idx.nullRowsByColumn {
-		idx.nullRowsByColumn[colID] = nil
-	}
-	idx.nullRowsByColumn = nil
-
+	// Clear uniqueness map
+	idx.uniqueValues = nil
 	return nil
 }

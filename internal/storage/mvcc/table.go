@@ -263,12 +263,12 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 					return storage.NewUniqueConstraintError(idx.Name(), colNames[0], values[0])
 				}
 			}
-		} else {
-			// For other indexes, use the standard Find method
-			entries, err := idx.Find(values)
-			if err == nil && len(entries) > 0 {
-				// Found existing entries, uniqueness constraint violated
-				return storage.NewUniqueConstraintError(idx.Name(), strings.Join(colNames, ","), values[0])
+		} else if multiColumnarIdx, ok := idx.(*MultiColumnarIndex); ok {
+			if len(values) > 1 && values != nil {
+				// Check if the multi-columnar index has this combination of values
+				if multiColumnarIdx.HasUniqueValues(values) {
+					return storage.NewUniqueConstraintError(idx.Name(), strings.Join(colNames, ", "), values[0])
+				}
 			}
 		}
 	}
@@ -400,6 +400,12 @@ func (mt *MVCCTable) InsertBatch(rows []storage.Row) error {
 	// NOW update the auto-increment counter if needed - AFTER checking existence
 	if maxExplicitPK > 0 && mt.versionStore != nil && maxExplicitPK > mt.versionStore.GetCurrentAutoIncrementValue() {
 		mt.versionStore.SetAutoIncrementCounter(maxExplicitPK)
+	}
+
+	for i, row := range rows {
+		if err := mt.CheckUniqueConstraints(row); err != nil {
+			return fmt.Errorf("uniqueness constraint violated in row %d: %w", i, err)
+		}
 	}
 
 	// If we got here, none of the rows exist, so insert them all
@@ -1458,9 +1464,23 @@ func (mt *MVCCTable) Scan(columnIndices []int, where storage.Expression) (storag
 		filterExpr = filterExpr.PrepareForSchema(schema)
 
 		// Try to optimize with columnar indexes using the new direct row ID approach
-		rowIDs := mt.GetFilteredRowIDs(filterExpr)
+		rowIDs, usedIndex := mt.GetFilteredRowIDsWithIndex(filterExpr)
 		if len(rowIDs) > 0 {
-			// Create the optimized columnar iterator for better performance
+			// Check if we're using a multi-column index
+			if multiColIndex, isMulti := usedIndex.(*MultiColumnarIndex); isMulti {
+				// Create the optimized multi-columnar iterator for better performance
+				return NewMultiColumnarIndexIterator(
+					mt.versionStore,
+					rowIDs,
+					mt.txnID,
+					schema,
+					columnIndices,
+					multiColIndex.ColumnNames(),
+					multiColIndex.ColumnIDs(),
+				), nil
+			}
+
+			// Otherwise use standard columnar iterator for single-column index
 			return NewColumnarIndexIterator(
 				mt.versionStore,
 				rowIDs,
@@ -1499,84 +1519,114 @@ func (mt *MVCCTable) DropColumn(name string) error {
 // CreateIndex creates an index on the table
 // This method maintains the custom indexName provided by the user when creating the index
 func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bool) error {
-	// For now, we only support columnar indexes
-	if len(columns) != 1 {
-		return errors.New("only single-column indexes are supported")
-	}
-
-	// Get column name
-	columnName := columns[0]
-
 	// Check if an index already exists for this column
 	if mt.versionStore == nil {
 		return fmt.Errorf("invalid table: version store is nil")
 	}
 
-	var indexIdentifier string
-	// Generate default name for backward compatibility
-	if isUnique {
-		indexIdentifier = fmt.Sprintf("unique_columnar_%s_%s", mt.Name(), columnName)
-	} else {
-		indexIdentifier = fmt.Sprintf("columnar_%s_%s", mt.Name(), columnName)
-	}
-
 	// First check if we've already got a matching index - either by column name or by index name
 	mt.versionStore.indexMutex.RLock()
-	_, columnarExists := mt.versionStore.indexes[indexIdentifier]
-
 	// Check if there's an index with this name already
 	indexExists := false
-	if !columnarExists {
-		for _, idx := range mt.versionStore.indexes {
-			if idx.Name() == indexName {
-				indexExists = true
-				break
-			}
+	for _, idx := range mt.versionStore.indexes {
+		if idx.Name() == indexName {
+			indexExists = true
+			break
 		}
 	}
 	mt.versionStore.indexMutex.RUnlock()
 
 	// If the index already exists, just return (IF NOT EXISTS case)
-	if columnarExists || indexExists {
+	if indexExists {
 		return nil
 	}
 
-	// Get schema information for the column
+	// Get schema information
 	schema, err := mt.versionStore.GetTableSchema()
 	if err != nil {
 		return fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	// Find column ID and data type
-	columnID := -1
-	var dataType storage.DataType
-	var isPrimaryKey bool
+	// Create different types of indexes based on column count
+	var index storage.Index
 
-	for i, col := range schema.Columns {
-		if col.Name == columnName {
-			columnID = i
-			dataType = col.Type
-			isPrimaryKey = col.PrimaryKey
-			break
+	if len(columns) == 1 {
+		// Single-column index case
+		columnName := columns[0]
+
+		// Find column ID and data type
+		columnID := -1
+		var dataType storage.DataType
+		var isPrimaryKey bool
+
+		for i, col := range schema.Columns {
+			if col.Name == columnName {
+				columnID = i
+				dataType = col.Type
+				isPrimaryKey = col.PrimaryKey
+				break
+			}
 		}
-	}
 
-	if columnID == -1 {
-		return fmt.Errorf("column %s not found in schema", columnName)
-	}
+		if columnID == -1 {
+			return fmt.Errorf("column %s not found in schema", columnName)
+		}
 
-	// Prevent creating indexes on primary key column
-	if isPrimaryKey {
-		return fmt.Errorf("cannot create index on primary key column %s", columnName)
-	}
+		// Prevent creating indexes on primary key column
+		if isPrimaryKey {
+			return fmt.Errorf("cannot create index on primary key column %s", columnName)
+		}
 
-	// Create a columnar index with the specified name
-	index := NewColumnarIndex(indexName, mt.versionStore.tableName,
-		columnName, columnID, dataType, mt.versionStore, isUnique)
+		// Create a standard columnar index
+		index = NewColumnarIndex(indexName, mt.versionStore.tableName,
+			columnName, columnID, dataType, mt.versionStore, isUnique)
+	} else {
+		// Multi-column index case
+		// Collect column IDs and data types
+		columnIDs := make([]int, len(columns))
+		dataTypes := make([]storage.DataType, len(columns))
+		hasPrimaryKey := false
+
+		for i, columnName := range columns {
+			found := false
+			for j, col := range schema.Columns {
+				if col.Name == columnName {
+					columnIDs[i] = j
+					dataTypes[i] = col.Type
+					found = true
+					if col.PrimaryKey {
+						hasPrimaryKey = true
+					}
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("column %s not found in schema", columnName)
+			}
+		}
+
+		// Prevent creating indexes that include primary key columns
+		if hasPrimaryKey {
+			return fmt.Errorf("cannot create index including primary key column")
+		}
+
+		// Create a multi-column index
+		index = NewMultiColumnarIndex(
+			indexName,
+			mt.versionStore.tableName,
+			columns,
+			columnIDs,
+			dataTypes,
+			mt.versionStore,
+			isUnique,
+		)
+	}
 
 	// Build the index from existing data
 	if err := index.Build(); err != nil {
-		index.Close()
+		if closeableIndex, ok := index.(interface{ Close() error }); ok {
+			closeableIndex.Close()
+		}
 		return err
 	}
 
@@ -1587,17 +1637,8 @@ func (mt *MVCCTable) CreateIndex(indexName string, columns []string, isUnique bo
 
 	// Record this operation in the WAL if the engine has persistence enabled
 	if mt.engine != nil && mt.engine.persistence != nil && mt.engine.persistence.IsEnabled() {
-		// Convert to bytes for WAL
-		indexData, err := SerializeIndexMetadata(&ColumnarIndex{
-			name:         indexName,
-			tableName:    mt.versionStore.tableName,
-			columnName:   columnName,
-			columnID:     columnID,
-			dataType:     dataType,
-			versionStore: mt.versionStore,
-			isUnique:     isUnique,
-		})
-
+		// SerializeIndexMetadata already supports multi-column indexes
+		indexData, err := SerializeIndexMetadata(index)
 		if err != nil {
 			fmt.Printf("Warning: Failed to serialize index metadata for WAL: %v\n", err)
 		} else {
@@ -1672,417 +1713,6 @@ type PKOperationInfo struct {
 
 	// Special marker for empty result (contradictory conditions)
 	EmptyResult bool
-}
-
-// GetPKOperationInfo optimizes and analyzes a filter expression for primary key operations
-// Returns information that can be used for fast path execution
-// It's especially useful for range narrowing in expressions like "id > 10 AND id < 20"
-func GetPKOperationInfo(expr storage.Expression, schema storage.Schema) []PKOperationInfo {
-	// Default result with invalid state
-	result := PKOperationInfo{
-		ID:          0,
-		Expr:        nil,
-		Operator:    storage.EQ,
-		Valid:       false,
-		EmptyResult: false,
-	}
-
-	// Quick exit for nil expressions
-	if expr == nil {
-		return []PKOperationInfo{result}
-	}
-
-	// Handle BetweenExpression directly
-	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok {
-		// Check if this is operating on a primary key column
-		pkInfo := getOrCreatePKInfo(schema)
-		isPKColumn := false
-		for _, col := range schema.Columns {
-			if col.Name == betweenExpr.Column && col.PrimaryKey {
-				isPKColumn = true
-				break
-			}
-		}
-
-		if isPKColumn && pkInfo.pkType == storage.TypeInteger {
-			// Extract bounds for integer PK
-			var lowerBound, upperBound int64
-			
-			// Handle lower bound conversion based on type
-			switch v := betweenExpr.LowerBound.(type) {
-			case int:
-				lowerBound = int64(v)
-			case int64:
-				lowerBound = v
-			case float64:
-				lowerBound = int64(v)
-			default:
-				// If we can't convert to int64, we can't optimize
-				return []PKOperationInfo{result}
-			}
-
-			// Handle upper bound conversion based on type
-			switch v := betweenExpr.UpperBound.(type) {
-			case int:
-				upperBound = int64(v)
-			case int64:
-				upperBound = v
-			case float64:
-				upperBound = int64(v)
-			default:
-				// If we can't convert to int64, we can't optimize
-				return []PKOperationInfo{result}
-			}
-
-			// Create simple expressions for lower and upper bounds
-			// with appropriate operators based on inclusivity
-			minOp := storage.GT
-			if betweenExpr.Inclusive {
-				minOp = storage.GTE
-			}
-
-			maxOp := storage.LT
-			if betweenExpr.Inclusive {
-				maxOp = storage.LTE
-			}
-
-			// Create lower bound expression
-			minSimpleExpr := expression.NewSimpleExpression(
-				betweenExpr.Column,
-				minOp,
-				lowerBound,
-			)
-			minSimpleExpr.ColIndex = pkInfo.singlePKIndex
-			minSimpleExpr.IndexPrepped = true
-
-			// Create upper bound expression
-			maxSimpleExpr := expression.NewSimpleExpression(
-				betweenExpr.Column,
-				maxOp,
-				upperBound,
-			)
-			maxSimpleExpr.ColIndex = pkInfo.singlePKIndex
-			maxSimpleExpr.IndexPrepped = true
-
-			// Create PKOperationInfo for both bounds
-			minResult := PKOperationInfo{
-				ID:       lowerBound,
-				Expr:     minSimpleExpr,
-				Operator: minOp,
-				Valid:    true,
-			}
-
-			maxResult := PKOperationInfo{
-				ID:       upperBound,
-				Expr:     maxSimpleExpr,
-				Operator: maxOp,
-				Valid:    true,
-			}
-
-			// Get the actual bounds, adjusting for inclusive/exclusive
-			lowerVal := lowerBound
-			if minOp == storage.GT {
-				lowerVal++ // For exclusive bounds (id > X), add 1 to get the minimum possible value
-			}
-
-			upperVal := upperBound
-			if maxOp == storage.LT {
-				upperVal-- // For exclusive bounds (id < X), subtract 1 to get the maximum possible value
-			}
-
-			// Check if bounds are contradictory (min > max)
-			if lowerVal > upperVal {
-				result.Valid = true
-				result.EmptyResult = true
-				return []PKOperationInfo{result}
-			}
-
-			// If the range narrows to an exact value (id >= 5 AND id <= 5 or BETWEEN 5 AND 5)
-			if lowerVal == upperVal {
-				// Create an exact equality expression
-				simpleExpr := expression.NewSimpleExpression(
-					betweenExpr.Column,
-					storage.EQ,
-					lowerVal,
-				)
-				simpleExpr.ColIndex = pkInfo.singlePKIndex
-				simpleExpr.IndexPrepped = true
-
-				result.Expr = simpleExpr
-				result.Operator = storage.EQ
-				result.Valid = true
-				result.ID = lowerVal
-				return []PKOperationInfo{result}
-			}
-
-			// Return both bounds for range optimization
-			return []PKOperationInfo{minResult, maxResult}
-		}
-	}
-
-	// Handle RangeExpression directly
-	if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
-		// Check if this is operating on a primary key column
-		pkInfo := getOrCreatePKInfo(schema)
-		isPKColumn := false
-		for _, col := range schema.Columns {
-			if col.Name == rangeExpr.Column && col.PrimaryKey {
-				isPKColumn = true
-				break
-			}
-		}
-
-		if isPKColumn {
-			// Since primary keys are always Int64, we can directly use the pre-computed Int64 values
-			if pkInfo.pkType == storage.TypeInteger {
-				// Extract min value (lower bound)
-				var minResult, maxResult PKOperationInfo
-
-				// Handle min value if available
-				if rangeExpr.MinValue != nil {
-					// Use pre-computed Int64Min value directly
-					minValue := rangeExpr.Int64Min
-
-					// Create operator based on inclusivity
-					minOp := storage.GT
-					if rangeExpr.IncludeMin {
-						minOp = storage.GTE
-					}
-
-					// Create simple expression for lower bound
-					minSimpleExpr := expression.NewSimpleExpression(
-						rangeExpr.Column,
-						minOp,
-						minValue,
-					)
-					minSimpleExpr.ColIndex = pkInfo.singlePKIndex
-					minSimpleExpr.IndexPrepped = true
-
-					minResult = PKOperationInfo{
-						ID:       minValue,
-						Expr:     minSimpleExpr,
-						Operator: minOp,
-						Valid:    true,
-					}
-				}
-
-				// Handle max value if available
-				if rangeExpr.MaxValue != nil {
-					// Use pre-computed Int64Max value directly
-					maxValue := rangeExpr.Int64Max
-
-					// Create operator based on inclusivity
-					maxOp := storage.LT
-					if rangeExpr.IncludeMax {
-						maxOp = storage.LTE
-					}
-
-					// Create simple expression for upper bound
-					maxSimpleExpr := expression.NewSimpleExpression(
-						rangeExpr.Column,
-						maxOp,
-						maxValue,
-					)
-					maxSimpleExpr.ColIndex = pkInfo.singlePKIndex
-					maxSimpleExpr.IndexPrepped = true
-
-					maxResult = PKOperationInfo{
-						ID:       maxValue,
-						Expr:     maxSimpleExpr,
-						Operator: maxOp,
-						Valid:    true,
-					}
-				}
-
-				// Check if we have both bounds
-				if minResult.Valid && maxResult.Valid {
-					// Get the actual bounds, adjusting for inclusive/exclusive
-					lowerVal := minResult.ID
-					if minResult.Operator == storage.GT {
-						lowerVal++ // For exclusive bounds (id > X), we add 1 to get the minimum possible value
-					}
-
-					upperVal := maxResult.ID
-					if maxResult.Operator == storage.LT {
-						upperVal-- // For exclusive bounds (id < X), we subtract 1 to get the maximum possible value
-					}
-
-					// Check if bounds are contradictory (min > max)
-					if lowerVal > upperVal {
-						result.Valid = true
-						result.EmptyResult = true
-						return []PKOperationInfo{result}
-					}
-
-					// If the range narrows to an exact value (id >= 5 AND id <= 5)
-					if lowerVal == upperVal {
-						// Create an exact equality expression
-						simpleExpr := expression.NewSimpleExpression(
-							rangeExpr.Column,
-							storage.EQ,
-							lowerVal,
-						)
-						simpleExpr.ColIndex = pkInfo.singlePKIndex
-						simpleExpr.IndexPrepped = true
-
-						result.Expr = simpleExpr
-						result.Operator = storage.EQ
-						result.Valid = true
-						result.ID = lowerVal
-						return []PKOperationInfo{result}
-					}
-
-					// Return both bounds for range optimization
-					return []PKOperationInfo{minResult, maxResult}
-				} else if minResult.Valid {
-					// Only have lower bound
-					return []PKOperationInfo{minResult}
-				} else if maxResult.Valid {
-					// Only have upper bound
-					return []PKOperationInfo{maxResult}
-				}
-			}
-		}
-	}
-
-	// Try to use our fast PK detector/optimizer
-	simpleExpr, ok := expression.PrimaryKeyDetector(expr, schema)
-	if ok {
-		// We have an optimized expression
-		result.Expr = simpleExpr
-		result.Operator = simpleExpr.Operator
-		result.Valid = true
-
-		// For integer PKs, also extract the ID for legacy code paths
-		if simpleExpr.ValueType == storage.TypeInteger {
-			result.ID = simpleExpr.Int64Value
-		}
-
-		return []PKOperationInfo{result}
-	}
-
-	// For complex AND expressions, check for special cases
-	if andExpr, ok := expr.(*expression.AndExpression); ok && len(andExpr.Expressions) == 2 {
-		// Try to extract operations on the same PK column
-		pkInfoMap := make(map[string][]PKOperationInfo)
-
-		// Extract PK info for all subexpressions
-		for _, subExpr := range andExpr.Expressions {
-			pkInfos := GetPKOperationInfo(subExpr, schema)
-			if len(pkInfos) == 1 {
-				if pkInfos[0].Valid && pkInfos[0].Expr != nil {
-					pkInfoMap[pkInfos[0].Expr.Column] = append(pkInfoMap[pkInfos[0].Expr.Column], pkInfos[0])
-				}
-			}
-		}
-
-		// Look for contradictions or range expressions on the same PK
-		for _, infoList := range pkInfoMap {
-			if len(infoList) >= 2 {
-				// Look for EQ operations on the same column
-				eqValues := make(map[int64]bool)
-				for _, info := range infoList {
-					if info.Operator == storage.EQ && info.ID != 0 {
-						eqValues[info.ID] = true
-					}
-				}
-
-				if len(eqValues) > 1 {
-					// Contradiction: x = 1 AND x = 2
-					result.Valid = true
-					result.EmptyResult = true
-					return []PKOperationInfo{result}
-				} else if len(eqValues) == 1 {
-					// Multiple conditions but only one equality value
-					// Return it as the canonical expression
-					for _, info := range infoList {
-						if info.Operator == storage.EQ {
-							return []PKOperationInfo{info}
-						}
-					}
-				}
-
-				// Range narrowing for GT/LT combinations on integer PKs
-				// This optimizes expressions like "id > 10 AND id < 20"
-				var minBound, maxBound PKOperationInfo
-
-				// First, extract any lower and upper bounds on integers
-				for _, info := range infoList {
-					// Only process integer expressions
-					if info.Expr != nil && info.Expr.ValueType == storage.TypeInteger {
-						if info.Operator == storage.GT || info.Operator == storage.GTE {
-							// Lower bound (id > X or id >= X)
-							if minBound.Expr == nil || info.Expr.Int64Value > minBound.Expr.Int64Value {
-								minBound = info // Keep highest minimum value
-							}
-						} else if info.Operator == storage.LT || info.Operator == storage.LTE {
-							// Upper bound (id < X or id <= X)
-							if maxBound.Expr == nil || info.Expr.Int64Value < maxBound.Expr.Int64Value {
-								maxBound = info // Keep lowest maximum value
-							}
-						}
-					}
-				}
-
-				// Handle optimization for both upper and lower bounds
-				// First, if we only have an upper bound, use that
-				if minBound.Expr == nil && maxBound.Expr != nil {
-					// Just return the upper bound as it's all we have
-					return []PKOperationInfo{maxBound}
-				}
-
-				// If we only have a lower bound, use that
-				if minBound.Expr != nil && maxBound.Expr == nil {
-					// Just return the lower bound as it's all we have
-					return []PKOperationInfo{minBound}
-				}
-
-				// If we have both bounds, check if we can optimize further
-				if minBound.Expr != nil && maxBound.Expr != nil {
-					// Get the actual bounds, adjusting for inclusive/exclusive
-					lowerVal := minBound.Expr.Int64Value
-					if minBound.Operator == storage.GT {
-						lowerVal++ // For exclusive bounds (id > X), we add 1 to get the minimum possible value
-					}
-
-					upperVal := maxBound.Expr.Int64Value
-					if maxBound.Operator == storage.LT {
-						upperVal-- // For exclusive bounds (id < X), we subtract 1 to get the maximum possible value
-					}
-
-					// Check if bounds are contradictory (min > max)
-					if lowerVal > upperVal {
-						result.Valid = true
-						result.EmptyResult = true
-						return []PKOperationInfo{result}
-					}
-
-					// If the range narrows to an exact value (id >= 5 AND id <= 5)
-					if lowerVal == upperVal {
-						// Create an exact equality expression
-						simpleExpr := expression.NewSimpleExpression(
-							minBound.Expr.Column,
-							storage.EQ,
-							lowerVal,
-						)
-						simpleExpr.ColIndex = minBound.Expr.ColIndex
-						simpleExpr.IndexPrepped = true
-
-						result.Expr = simpleExpr
-						result.Operator = storage.EQ
-						result.Valid = true
-						result.ID = lowerVal
-						return []PKOperationInfo{result}
-					}
-
-					return []PKOperationInfo{minBound, maxBound}
-				}
-			}
-		}
-	}
-
-	// Return default "not optimizable" result
-	return []PKOperationInfo{result}
 }
 
 // singleRowScanner is a simple scanner that returns a single row
@@ -2282,15 +1912,8 @@ func (mt *MVCCTable) CreateColumnarIndex(columnName string, isUnique bool, custo
 
 	// Record the creation in the WAL if persistence is enabled
 	if mt.engine != nil && mt.engine.persistence != nil && mt.engine.persistence.IsEnabled() {
-		// Get the column information for the index
-		columnarIndex, ok := index.(*ColumnarIndex)
-		if !ok {
-			fmt.Printf("Warning: Index %s is not a columnar index, skipping WAL recording\n", index.Name())
-			return nil
-		}
-
 		// Serialize the index metadata for WAL recording
-		indexData, serErr := SerializeIndexMetadata(columnarIndex)
+		indexData, serErr := SerializeIndexMetadata(index)
 		if serErr != nil {
 			fmt.Printf("Warning: Failed to serialize index metadata for WAL: %v\n", serErr)
 			return nil
@@ -2438,15 +2061,22 @@ func (mt *MVCCTable) DropColumnarIndex(indexIdentifier string) error {
 // GetFilteredRowIDs extracts row IDs that match the expression using columnar indexes
 // This is optimized for direct iteration over row IDs without materializing intermediate rows
 func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
+	rowIDs, _ := mt.GetFilteredRowIDsWithIndex(expr)
+	return rowIDs
+}
+
+// GetFilteredRowIDsWithIndex is an extended version of GetFilteredRowIDs that also returns
+// the index used to filter the rowIDs, which is useful for choosing the appropriate iterator
+func (mt *MVCCTable) GetFilteredRowIDsWithIndex(expr storage.Expression) ([]int64, storage.Index) {
 	// Fast exit for nil expression or nil version store
 	if expr == nil || mt.versionStore == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Fetch schema and prepare expression (cached during a query)
 	schema, err := mt.versionStore.GetTableSchema()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	// Ensure the expression is prepared with schema
@@ -2460,7 +2090,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		index, err := mt.GetColumnarIndex(simpleExpr.Column)
 		if err == nil {
 			// Special fast path for equality on exact match index
-			return GetRowIDsFromColumnarIndex(simpleExpr, index)
+			return GetRowIDsFromColumnarIndex(simpleExpr, index), index
 		}
 	}
 
@@ -2470,17 +2100,124 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		index, err := mt.GetColumnarIndex(simpleExpr.Column)
 		if err == nil {
 			// Use the optimized path for this index
-			return GetRowIDsFromColumnarIndex(simpleExpr, index)
+			return GetRowIDsFromColumnarIndex(simpleExpr, index), index
 		}
 	}
 
+	// Fast path for NullCheck expressions
+	if nullExpr, ok := expr.(*expression.NullCheckExpression); ok {
+		// Get the index directly using our consistent method
+		index, err := mt.GetColumnarIndex(nullExpr.GetColumnName())
+		if err == nil {
+			// Use the optimized path for this index
+			return GetRowIDsFromColumnarIndex(nullExpr, index), index
+		}
+	}
+
+	// Fast path for range expressions
 	if rangeExpr, ok := expr.(*expression.RangeExpression); ok {
-		// Fast path for range expressions on a single column
 		// Get the index directly using our consistent method
 		index, err := mt.GetColumnarIndex(rangeExpr.Column)
 		if err == nil {
 			// Use the optimized path for this index
-			return index.GetFilteredRowIDs(rangeExpr)
+			return index.GetFilteredRowIDs(rangeExpr), index
+		}
+	}
+
+	// Fast path for between expressions
+	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok {
+		// Get the index directly using our consistent method
+		index, err := mt.GetColumnarIndex(betweenExpr.Column)
+		if err == nil {
+			// Use the optimized path for this index
+			return GetRowIDsFromColumnarIndex(betweenExpr, index), index
+		}
+	}
+
+	// Fast path for OR expressions with optimized sorting approach
+	if orExpr, ok := expr.(*expression.OrExpression); ok {
+		// Check if we can optimize the OR expression
+		if len(orExpr.Expressions) == 2 {
+			expr1, ok1 := orExpr.Expressions[0].(*expression.SimpleExpression)
+			expr2, ok2 := orExpr.Expressions[1].(*expression.SimpleExpression)
+
+			// Check if both expressions are for the same column
+			if ok1 && ok2 && expr1.Column == expr2.Column {
+				// Get the index for this column
+				index, err := mt.GetColumnarIndex(expr1.Column)
+				if err == nil {
+					// Get results for each condition
+					rowIDs1 := GetRowIDsFromColumnarIndex(expr1, index)
+					rowIDs2 := GetRowIDsFromColumnarIndex(expr2, index)
+
+					// Union the results using the optimized unionSortedIDs function
+					if len(rowIDs1) > 0 || len(rowIDs2) > 0 {
+						result := unionSortedIDs(rowIDs1, rowIDs2)
+						return result, index
+					}
+				}
+			}
+		}
+
+		// For more complex OR expressions, try to extract column references
+		columnRefs := extractColumnReferences(expr)
+		if len(columnRefs) > 0 {
+			// Check if we have a multi-column index that can handle this
+			if len(columnRefs) > 1 {
+				multiIndex := mt.findMultiColumnIndex(columnRefs)
+				if multiIndex != nil {
+					return multiIndex.GetFilteredRowIDs(expr), multiIndex
+				}
+			}
+
+			// Process each condition to gather results
+			var result []int64
+			var firstResult = true
+			var bestIndex storage.Index
+
+			for _, subExpr := range orExpr.Expressions {
+				// Extract columns from this sub-expression
+				subColumns := extractColumnReferences(subExpr)
+				if len(subColumns) == 0 {
+					continue
+				}
+
+				// Try to find an index for this sub-expression
+				var index storage.Index
+				var rowIDs []int64
+
+				if len(subColumns) == 1 {
+					// Single column expression
+					colIndex, err := mt.GetColumnarIndex(subColumns[0])
+					if err == nil {
+						rowIDs = GetRowIDsFromColumnarIndex(subExpr, colIndex)
+						index = colIndex
+					}
+				} else {
+					// Multi-column expression
+					multiIndex := mt.findMultiColumnIndex(subColumns)
+					if multiIndex != nil {
+						rowIDs = multiIndex.GetFilteredRowIDs(subExpr)
+						index = multiIndex
+					}
+				}
+
+				if len(rowIDs) > 0 {
+					if firstResult {
+						// First result becomes our initial set
+						result = rowIDs
+						bestIndex = index
+						firstResult = false
+					} else {
+						// Union with previous results
+						result = unionSortedIDs(result, rowIDs)
+					}
+				}
+			}
+
+			if !firstResult {
+				return result, bestIndex
+			}
 		}
 	}
 
@@ -2498,12 +2235,18 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				index, err := mt.GetColumnarIndex(colName)
 				if err == nil {
 					// Let the index handle the AND condition directly
-					return index.GetFilteredRowIDs(andExpr)
+					return index.GetFilteredRowIDs(andExpr), index
 				}
 			} else {
 				// Case 2: Conditions on different columns (e.g., x > 10 AND y = true)
-				// This is very common in multi-column filtering
+				// First check if we have a multi-column index that includes both columns
+				multiIndex := mt.findMultiColumnIndex([]string{expr1.Column, expr2.Column})
+				if multiIndex != nil {
+					// If we have a multi-column index, use it directly
+					return multiIndex.GetFilteredRowIDs(andExpr), multiIndex
+				}
 
+				// Otherwise fall back to using individual column indexes
 				// Determine which expression is more likely to be selective
 				// Equality conditions typically filter out more rows than range conditions
 				var moreSelectiveExpr, lessSelectiveExpr *expression.SimpleExpression
@@ -2530,17 +2273,18 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 					// Get matching row IDs from more selective condition first
 					rowIDs1 := GetRowIDsFromColumnarIndex(moreSelectiveExpr, indexSelective)
 					if len(rowIDs1) == 0 {
-						return nil
+						return nil, nil
 					}
 
 					// Get matching row IDs from less selective condition
 					rowIDs2 := GetRowIDsFromColumnarIndex(lessSelectiveExpr, indexLessSelective)
 					if len(rowIDs2) == 0 {
-						return nil
+						return nil, nil
 					}
 
-					// Intersect the results and return
-					return intersectSortedIDs(rowIDs1, rowIDs2)
+					// Intersect the results and return with the more selective index
+					// We choose this one because it's likely to provide better filtering
+					return intersectSortedIDs(rowIDs1, rowIDs2), indexSelective
 				}
 			}
 		}
@@ -2549,7 +2293,19 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 	// Try to extract column references to find usable indexes
 	columnRefs := extractColumnReferences(expr)
 	if len(columnRefs) == 0 {
-		return nil
+		return nil, nil
+	}
+
+	// Check if we have a multi-column index that can handle this query
+	if len(columnRefs) > 1 {
+		multiIndex := mt.findMultiColumnIndex(columnRefs)
+		if multiIndex != nil {
+			// Get filtered row IDs using the multi-column index
+			rowIDs := multiIndex.GetFilteredRowIDs(expr)
+			if len(rowIDs) > 0 {
+				return rowIDs, multiIndex
+			}
+		}
 	}
 
 	// Optimization: if there's only one column reference, retrieve directly
@@ -2557,13 +2313,14 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		colName := columnRefs[0]
 		index, err := mt.GetColumnarIndex(colName)
 		if err == nil {
-			return GetRowIDsFromColumnarIndex(expr, index)
+			return GetRowIDsFromColumnarIndex(expr, index), index
 		}
 	}
 
 	// Standard path for multiple conditions on different columns
 	var matchingRowIDs []int64
 	var foundIndex bool
+	var usedIndex storage.Index
 
 	// Create a list of available columnar indexes for these columns
 	availableIndexColumns := make([]string, 0, len(columnRefs))
@@ -2576,7 +2333,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 
 	// Optimization: If no indexes are available, return early
 	if len(availableIndexColumns) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// Try to find the most selective index first (the one likely to have the fewest matches)
@@ -2603,6 +2360,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				if len(rowIDs) > 0 {
 					matchingRowIDs = rowIDs
 					foundIndex = true
+					usedIndex = index
 
 					// Remove this column from the processing list
 					for i := 0; i < len(availableIndexColumns); i++ {
@@ -2621,7 +2379,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		// Skip if we've already processed this column
 		if foundIndex && matchingRowIDs != nil && len(matchingRowIDs) == 0 {
 			// Short circuit if we already have an empty result set
-			return nil
+			return nil, nil
 		}
 
 		// Try to get a columnar index for this column
@@ -2638,6 +2396,7 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 				// First index found
 				matchingRowIDs = rowIDs
 				foundIndex = true
+				usedIndex = index
 			} else {
 				// Intersect with previous results using optimized intersection
 				matchingRowIDs = intersectSortedIDs(matchingRowIDs, rowIDs)
@@ -2645,35 +2404,63 @@ func (mt *MVCCTable) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		}
 	}
 
-	return matchingRowIDs
+	return matchingRowIDs, usedIndex
 }
 
-// Helper function to check if an expression has an equality condition on a column
-func hasEqualityCondition(expr storage.Expression, columnName string) bool {
-	// Check simple expression
-	if simpleExpr, ok := expr.(*expression.SimpleExpression); ok {
-		return simpleExpr.Column == columnName && simpleExpr.Operator == storage.EQ
+// findMultiColumnIndex tries to find a multi-column index that includes all the specified columns
+func (mt *MVCCTable) findMultiColumnIndex(columnNames []string) *MultiColumnarIndex {
+	if len(columnNames) < 2 || mt.versionStore == nil {
+		return nil
 	}
 
-	// Check AND expression
-	if andExpr, ok := expr.(*expression.AndExpression); ok {
-		for _, subExpr := range andExpr.Expressions {
-			if hasEqualityCondition(subExpr, columnName) {
-				return true
+	// Create a map for O(1) lookups of column names
+	columnSet := make(map[string]bool, len(columnNames))
+	for _, colName := range columnNames {
+		columnSet[colName] = true
+	}
+
+	// Check all indexes
+	mt.versionStore.indexMutex.RLock()
+	defer mt.versionStore.indexMutex.RUnlock()
+
+	for _, idx := range mt.versionStore.indexes {
+		// Skip non-multi-columnar indexes
+		multiIdx, isMulti := idx.(*MultiColumnarIndex)
+		if !isMulti {
+			continue
+		}
+
+		// Check if this index contains all our columns
+		indexColumns := multiIdx.ColumnNames()
+
+		// Check the number of columns first - if the index has fewer columns than our query,
+		// it can't possibly contain all the required columns
+		if len(indexColumns) < len(columnNames) {
+			continue
+		}
+
+		// Check if all query columns are in this index
+		allColumnsFound := true
+		for _, colName := range columnNames {
+			found := false
+			for _, indexCol := range indexColumns {
+				if colName == indexCol {
+					found = true
+					break
+				}
 			}
+			if !found {
+				allColumnsFound = false
+				break
+			}
+		}
+
+		if allColumnsFound {
+			return multiIdx
 		}
 	}
 
-	// Check OR expression
-	if orExpr, ok := expr.(*expression.OrExpression); ok {
-		for _, subExpr := range orExpr.Expressions {
-			if hasEqualityCondition(subExpr, columnName) {
-				return true
-			}
-		}
-	}
-
-	return false
+	return nil
 }
 
 // GetRowsWithFilter uses columnar indexes to filter rows based on an expression
@@ -2715,77 +2502,6 @@ func (mt *MVCCTable) GetRowsWithFilter(expr storage.Expression) *fastmap.Int64Ma
 				}
 			}
 		}
-	}
-
-	return result
-}
-
-func extractColumnReferences(expr storage.Expression) []string {
-	columnSet := make(map[string]bool)
-
-	// Helper function to process a single expression
-	var processExpression func(e storage.Expression)
-	processExpression = func(e storage.Expression) {
-		if e == nil {
-			return
-		}
-
-		// Try different expression types to extract column references
-		switch typedExpr := e.(type) {
-		case *expression.SimpleExpression:
-			// Simple expressions directly reference columns
-			if typedExpr.Column != "" {
-				columnSet[typedExpr.Column] = true
-			}
-
-		case *expression.AndExpression:
-			// Process each child expression of AND
-			for _, child := range typedExpr.Expressions {
-				processExpression(child)
-			}
-
-		case *expression.OrExpression:
-			// Process each child expression of OR
-			for _, child := range typedExpr.Expressions {
-				processExpression(child)
-			}
-
-		case *expression.BetweenExpression:
-			// BETWEEN expressions reference a column
-			if typedExpr.Column != "" {
-				columnSet[typedExpr.Column] = true
-			}
-
-		case *expression.RangeExpression:
-			// RangeExpression references a column
-			if typedExpr.Column != "" {
-				columnSet[typedExpr.Column] = true
-			}
-
-		case *expression.InListExpression:
-			// IN expressions reference a column
-			if typedExpr.Column != "" {
-				columnSet[typedExpr.Column] = true
-			}
-
-		case *expression.CastExpression:
-			// Cast expressions may reference a column
-			if typedExpr.Column != "" {
-				columnSet[typedExpr.Column] = true
-			}
-		}
-	}
-
-	// Process the top-level expression
-	if expr != nil {
-		processExpression(expr)
-	}
-
-	// Convert set to slice
-	var result []string
-
-	for col := range columnSet {
-		result = append(result, col)
 	}
 
 	return result

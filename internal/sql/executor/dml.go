@@ -767,6 +767,15 @@ func createWhereExpression(ctx context.Context, expr parser.Expression, registry
 				}
 			}
 		} else if binaryExpr.Operator == "OR" {
+			// Special case optimization for "column = true OR column = false" which is equivalent to "column IS NOT NULL"
+			if isBooleanEqualityPair(ctx, binaryExpr) {
+				colName, isBoolean := extractBooleanOrColumn(ctx, binaryExpr)
+				if colName != "" && isBoolean {
+					// Directly create IS NOT NULL expression instead of OR
+					return expression.NewIsNotNullExpression(colName)
+				}
+			}
+
 			// For OR expressions, optimize both sides
 			leftExpr := createWhereExpression(ctx, binaryExpr.Left, registry)
 			rightExpr := createWhereExpression(ctx, binaryExpr.Right, registry)
@@ -1047,6 +1056,74 @@ func isLiteral(expr parser.Expression) bool {
 	default:
 		return false
 	}
+}
+
+// isBooleanEqualityPair checks if an expression is like "column = true OR column = false"
+func isBooleanEqualityPair(ctx context.Context, expr *parser.InfixExpression) bool {
+	if expr.Operator != "OR" {
+		return false
+	}
+
+	// Check if both sides are equality comparisons
+	leftInfix, leftOk := expr.Left.(*parser.InfixExpression)
+	rightInfix, rightOk := expr.Right.(*parser.InfixExpression)
+
+	if !leftOk || !rightOk || leftInfix.Operator != "=" || rightInfix.Operator != "=" {
+		return false
+	}
+
+	// Check if both sides reference the same column
+	leftCol := extractColumnName(leftInfix)
+	rightCol := extractColumnName(rightInfix)
+
+	if leftCol == "" || rightCol == "" || leftCol != rightCol {
+		return false
+	}
+
+	// Check if the values are true and false boolean literals
+	leftValue := getLiteralValue(ctx, leftInfix.Right)
+	rightValue := getLiteralValue(ctx, rightInfix.Right)
+
+	leftBool, leftIsBool := leftValue.(bool)
+	rightBool, rightIsBool := rightValue.(bool)
+
+	// True when one side is true and one side is false
+	return leftIsBool && rightIsBool && leftBool != rightBool
+}
+
+// extractBooleanOrColumn extracts the column name from a "column = true OR column = false" expression
+// and returns whether it appears to be a boolean comparison
+func extractBooleanOrColumn(ctx context.Context, expr *parser.InfixExpression) (string, bool) {
+	if expr.Operator != "OR" {
+		return "", false
+	}
+
+	// Extract the column name from the left side
+	leftInfix, leftOk := expr.Left.(*parser.InfixExpression)
+	if !leftOk || leftInfix.Operator != "=" {
+		return "", false
+	}
+
+	colName := extractColumnName(leftInfix)
+	if colName == "" {
+		return "", false
+	}
+
+	// Verify we have boolean literals on both sides
+	leftValue := getLiteralValue(ctx, leftInfix.Right)
+	rightInfix, rightOk := expr.Right.(*parser.InfixExpression)
+
+	if !rightOk || rightInfix.Operator != "=" {
+		return "", false
+	}
+
+	rightValue := getLiteralValue(ctx, rightInfix.Right)
+
+	leftBool, leftIsBool := leftValue.(bool)
+	rightBool, rightIsBool := rightValue.(bool)
+
+	// Return true only if we have a boolean column compared with true OR false
+	return colName, leftIsBool && rightIsBool && leftBool != rightBool
 }
 
 // extractColumnAndValue extracts the column name and literal value from a binary expression

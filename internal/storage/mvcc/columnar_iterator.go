@@ -1,6 +1,8 @@
 package mvcc
 
 import (
+	"slices"
+
 	"github.com/stoolap/stoolap/internal/fastmap"
 	"github.com/stoolap/stoolap/internal/storage"
 	"github.com/stoolap/stoolap/internal/storage/expression"
@@ -200,7 +202,13 @@ func (it *ColumnarIndexIterator) Close() error {
 
 // Helper for direct access to row IDs from columnar index
 func GetRowIDsFromColumnarIndex(expr storage.Expression, index storage.Index) []int64 {
-	// Extract the column name from the index
+	// First check for MultiColumnarIndex
+	if multiIndex, ok := index.(*MultiColumnarIndex); ok {
+		// MultiColumnarIndex has its own efficient implementations for filtering
+		return multiIndex.GetFilteredRowIDs(expr)
+	}
+
+	// Extract the column name from the single-column index
 	var indexColumnName string
 	if bi, ok := index.(*ColumnarIndex); ok {
 		indexColumnName = bi.columnName
@@ -542,25 +550,19 @@ func intersectSortedIDs(a []int64, b []int64) []int64 {
 		return nil // Ranges don't overlap at all
 	}
 
-	// Use merge-like algorithm for linear time intersection
-	// Pre-allocate with exact capacity to avoid reallocations
-	result := make([]int64, 0, min(len(a), len(b)))
-	i, j := 0, 0
-
-	// Main intersection loop
-	for i < len(a) && j < len(b) {
-		if a[i] < b[j] {
-			i++
-		} else if a[i] > b[j] {
-			j++
-		} else {
-			// Equal values - add to result
-			result = append(result, a[i])
-			i++
-			j++
-		}
+	// Ensure 'a' is the smaller array for better performance
+	if len(a) > len(b) {
+		a, b = b, a
 	}
 
+	// Binary search approach for very different sized arrays
+	result := make([]int64, 0, len(a))
+	for _, val := range a {
+		// Use binary search instead of linear search
+		if _, ok := slices.BinarySearch(b, val); ok {
+			result = append(result, val)
+		}
+	}
 	return result
 }
 

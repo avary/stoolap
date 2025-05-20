@@ -185,54 +185,91 @@ func (e *Executor) executeShowIndexes(ctx context.Context, tx storage.Transactio
 		return nil, err
 	}
 
-	// Get indexes - we'll use the engine to list table indexes
-	// To be improved in the future with proper transaction-aware index listing
-	indexes, err := e.engine.ListTableIndexes(tableName)
-	if err != nil {
-		return nil, err
-	}
-
 	// Create columns for the result
-	columns := []string{"Table", "Index Name", "Column Name", "Type", "Unique"}
+	columns := []string{"Table", "Index Name", "Column Name(s)", "Type", "Unique"}
 
-	// Process the index names to extract more information
-	rows := make([][]interface{}, 0, len(indexes))
-	for indexName, colName := range indexes {
-		// Extract information from the index name
-		// This is a temporary solution until we have proper index metadata
+	// We'll build the result rows directly by getting all indexes from the engine
+	rows := make([][]interface{}, 0)
 
-		// Get more accurate index information from storage layer
-		indexType := "BTREE" // Default type
-		columnName := colName
-		isUnique := false
-
-		// Try to get the index from storage to get its real properties
-		index, err := e.engine.GetIndex(tableName, indexName)
-		if err == nil && index != nil {
-			// Use the real index properties instead of guessing from the name
-			indexType = string(index.IndexType())
-			isUnique = index.IsUnique()
-		} else {
-			// Fallback to name-based heuristics if we can't get the actual index
-			// Check for columnar indexes - they are usually prefixed with "columnar_"
-			if strings.HasPrefix(indexName, "columnar_") {
-				indexType = "COLUMNAR"
-			} else if strings.HasPrefix(indexName, "unique_") {
-				// Unique indexes often have a "unique_" prefix
-				isUnique = true
-				if strings.HasPrefix(indexName, "unique_columnar_") {
-					indexType = "COLUMNAR"
-				}
-			}
+	// Get all indexes directly from the engine, bypassing the index name mapping
+	allIndexes, err := e.engine.GetAllIndexes(tableName)
+	if err != nil {
+		// Fall back to the older ListTableIndexes method if GetAllIndexes isn't implemented
+		// but modify our approach to handle its limitations
+		indexes, err := e.engine.ListTableIndexes(tableName)
+		if err != nil {
+			return nil, err
 		}
 
-		rows = append(rows, []interface{}{
-			tableName,
-			indexName,
-			columnName,
-			indexType,
-			isUnique,
-		})
+		// Process the index names to extract more information
+		for indexName, colName := range indexes {
+			// Try to get the actual index to get complete information
+			index, err := e.engine.GetIndex(tableName, indexName)
+			if err == nil && index != nil {
+				// Use the real index properties
+				indexType := string(index.IndexType())
+				isUnique := index.IsUnique()
+
+				// Get all column names for this index
+				columnNames := index.ColumnNames()
+				allColumnsStr := strings.Join(columnNames, ", ")
+
+				// Add a single row for the index with all columns joined
+				rows = append(rows, []interface{}{
+					tableName,
+					indexName,
+					allColumnsStr,
+					indexType,
+					isUnique,
+				})
+			} else {
+				// Fallback to name-based heuristics if we can't get the actual index
+				indexType := "BTREE" // Default type
+				isUnique := false
+
+				// Check for columnar indexes - they are usually prefixed with "columnar_"
+				if strings.HasPrefix(indexName, "columnar_") {
+					indexType = "COLUMNAR"
+				} else if strings.HasPrefix(indexName, "unique_") {
+					// Unique indexes often have a "unique_" prefix
+					isUnique = true
+					if strings.HasPrefix(indexName, "unique_columnar_") {
+						indexType = "COLUMNAR"
+					}
+				}
+
+				// Add a single row for this index
+				rows = append(rows, []interface{}{
+					tableName,
+					indexName,
+					colName,
+					indexType,
+					isUnique,
+				})
+			}
+		}
+	} else {
+		// Process all indexes from GetAllIndexes
+		for _, index := range allIndexes {
+			indexName := index.Name()
+			indexType := string(index.IndexType())
+			isUnique := index.IsUnique()
+
+			// Get all column names for this index
+			columnNames := index.ColumnNames()
+
+			// Create a comma-separated string of all column names
+			allColumnsStr := strings.Join(columnNames, ", ")
+
+			// Add a single row for this index with all columns joined
+			rows = append(rows, []interface{}{
+				tableName,
+				indexName,
+				allColumnsStr,
+				indexType,
+				isUnique,
+			})
+		}
 	}
 
 	// Return as a result object

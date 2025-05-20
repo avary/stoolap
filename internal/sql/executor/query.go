@@ -60,7 +60,7 @@ func (e *Executor) executeCountStar(ctx context.Context, tx storage.Transaction,
 			// Try to use the RowCount method if the table implements it
 			if countable, ok := table.(interface{ RowCount() int }); ok {
 				count := countable.RowCount()
-				
+
 				// The column name must be "COUNT(*)" because that's what's in the SQL query
 				columnName := "COUNT(*)"
 
@@ -83,17 +83,17 @@ func (e *Executor) executeCountStar(ctx context.Context, tx storage.Transaction,
 	}
 
 	// SLOWER PATH: If there's a WHERE clause or the table doesn't support direct count
-	
+
 	// For COUNT(*), we need to select the minimum number of columns required for WHERE evaluation
 	var columnsToSelect []string
-	
+
 	if stmt.Where == nil {
 		// If there's no WHERE clause, we only need one column to count rows
 		columnsToSelect = []string{schema.Columns[0].Name}
 	} else {
 		// If there's a WHERE clause, extract the columns it references
 		whereColumns := getColumnsFromWhereClause(stmt.Where)
-		
+
 		// If we couldn't extract columns or the WHERE clause is complex, fall back to selecting all columns
 		if len(whereColumns) == 0 {
 			columnsToSelect = make([]string, len(schema.Columns))
@@ -120,7 +120,7 @@ func (e *Executor) executeCountStar(ctx context.Context, tx storage.Transaction,
 				}
 			}
 		}
-		
+
 		if whereExpr != nil {
 			if simpleExpr, ok := whereExpr.(*expression.SimpleExpression); ok {
 				// If it's a simple expression, we need to prepare it for the schema

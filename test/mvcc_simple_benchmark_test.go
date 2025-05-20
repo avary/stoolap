@@ -853,7 +853,7 @@ func BenchmarkMVCCSelect(b *testing.B) {
 		b.Fatalf("Failed to drop index: %v", err)
 	}
 
-	filteredQuery := fmt.Sprintf("SELECT id, name, value, active FROM %s WHERE value > ? AND value <= ?", tableName)
+	filteredQuery := fmt.Sprintf("SELECT id, name, value, active FROM %s WHERE value > ? AND value <= ? AND active = true", tableName)
 
 	b.Run("RangeNoIndex", func(b *testing.B) {
 		b.ResetTimer()
@@ -882,8 +882,8 @@ func BenchmarkMVCCSelect(b *testing.B) {
 			}
 			rows.Close()
 
-			if rowCount != 100 {
-				b.Fatalf("Expected 100 rows, got %d", rowCount)
+			if rowCount != 50 {
+				b.Fatalf("Expected 50 rows, got %d", rowCount)
 			}
 		}
 	})
@@ -922,6 +922,51 @@ func BenchmarkMVCCSelect(b *testing.B) {
 
 			if rowCount != 100 {
 				b.Fatalf("Expected 100 rows, got %d", rowCount)
+			}
+		}
+	})
+
+	_, err = db.Exec(fmt.Sprintf("DROP COLUMNAR INDEX ON %s (value)", tableName))
+	if err != nil {
+		b.Fatalf("Failed to create index: %v", err)
+	}
+
+	_, err = db.Exec(fmt.Sprintf("CREATE INDEX multi_idx_test ON %s (value, active)", tableName))
+	if err != nil {
+		b.Fatalf("Failed to create index: %v", err)
+	}
+
+	filteredQuery = fmt.Sprintf("SELECT id, name, value, active FROM %s WHERE value > ? AND value <= ? AND active = true", tableName)
+
+	b.Run("RangeWithMultiColumnarIndex", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rows, err := db.Query(
+				filteredQuery,
+				float64(0), float64(100))
+			if err != nil {
+				b.Fatalf("Range select failed: %v", err)
+			}
+
+			// Process all rows to ensure query is fully executed
+			var id int
+			var name string
+			var value float64
+			var active bool
+			rowCount := 0
+			for rows.Next() {
+				err := rows.Scan(&id, &name, &value, &active)
+				if err != nil {
+					rows.Close()
+					b.Fatalf("Row scan failed: %v", err)
+				}
+				rowCount++
+			}
+			rows.Close()
+
+			if rowCount != 50 {
+				b.Fatalf("Expected 50 rows, got %d", rowCount)
 			}
 		}
 	})

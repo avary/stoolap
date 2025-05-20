@@ -232,6 +232,8 @@ func TestWhereClause(t *testing.T) {
 				rowCount++
 			}
 
+			result.Close()
+
 			if rowCount != tc.expected {
 				t.Errorf("Expected %d rows, got %d rows", tc.expected, rowCount)
 			}

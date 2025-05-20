@@ -3,6 +3,7 @@ package mvcc
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -425,11 +426,7 @@ func (t *btreeColumnar) RangeSearch(min, max storage.ColumnValue, includeMin, in
 	t.root.rangeSearch(min, max, includeMin, includeMax, &result)
 
 	// If result is much smaller than capacity, consider trimming
-	if len(result) > 0 && cap(result) > 2*len(result) && cap(result) > 1000 {
-		trimmedResult := make([]int64, len(result))
-		copy(trimmedResult, result)
-		return trimmedResult
-	}
+	result = slices.Clip(result)
 
 	return result
 }
@@ -999,6 +996,39 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		return idx.GetRowIDsInRange([]storage.ColumnValue{minValue}, []storage.ColumnValue{maxValue}, rangeExpr.IncludeMin, rangeExpr.IncludeMax)
 	}
 
+	// Handle NullCheckExpression for IS NULL and IS NOT NULL queries
+	if nullCheckExpr, ok := expr.(*expression.NullCheckExpression); ok && nullCheckExpr.GetColumnName() == idx.columnName {
+		if nullCheckExpr.IsNull() {
+			// IS NULL check - get all NULL values
+			idx.mutex.RLock()
+			defer idx.mutex.RUnlock()
+
+			// If no NULL values, return empty slice
+			if idx.nullRows.Len() == 0 {
+				return nil
+			}
+
+			// Allocate with exact capacity needed
+			nullCount := idx.nullRows.Len()
+			result := make([]int64, 0, nullCount)
+
+			// Collect all NULL row IDs
+			idx.nullRows.ForEach(func(id int64, _ struct{}) bool {
+				result = append(result, id)
+				return true
+			})
+
+			return result
+		} else {
+			// IS NOT NULL check - get all non-NULL values
+			idx.mutex.RLock()
+			defer idx.mutex.RUnlock()
+
+			// Return all values in the tree (which are non-NULL by definition)
+			return idx.valueTree.GetAll()
+		}
+	}
+
 	// Handle BetweenExpression for BETWEEN queries
 	if betweenExpr, ok := expr.(*expression.BetweenExpression); ok && betweenExpr.Column == idx.columnName {
 		// Convert lower and upper bounds to appropriate column values
@@ -1009,7 +1039,7 @@ func (idx *ColumnarIndex) GetFilteredRowIDs(expr storage.Expression) []int64 {
 		defer storage.PutPooledColumnValue(upperValue)
 
 		// Use the index's range function with inclusivity based on the BetweenExpression's Inclusive field
-		return idx.GetRowIDsInRange([]storage.ColumnValue{lowerValue}, []storage.ColumnValue{upperValue}, 
+		return idx.GetRowIDsInRange([]storage.ColumnValue{lowerValue}, []storage.ColumnValue{upperValue},
 			betweenExpr.Inclusive, betweenExpr.Inclusive)
 	}
 

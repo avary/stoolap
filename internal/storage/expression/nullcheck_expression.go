@@ -7,7 +7,7 @@ import (
 // NullCheckExpression is a concrete implementation of IndexableExpression
 // that supports IS NULL and IS NOT NULL operators
 type NullCheckExpression struct {
-	columnName     string
+	Column         string
 	isNull         bool              // true for IS NULL, false for IS NOT NULL
 	aliases        map[string]string // Column aliases (alias -> original)
 	originalColumn string            // Original column name if Column is an alias
@@ -20,16 +20,16 @@ type NullCheckExpression struct {
 // NewIsNullExpression creates an expression for IS NULL
 func NewIsNullExpression(columnName string) storage.Expression {
 	return &NullCheckExpression{
-		columnName: columnName,
-		isNull:     true,
+		Column: columnName,
+		isNull: true,
 	}
 }
 
 // NewIsNotNullExpression creates an expression for IS NOT NULL
 func NewIsNotNullExpression(columnName string) storage.Expression {
 	return &NullCheckExpression{
-		columnName: columnName,
-		isNull:     false,
+		Column: columnName,
+		isNull: false,
 	}
 }
 
@@ -62,7 +62,7 @@ func (e *NullCheckExpression) SetIsNull(isNull bool) {
 
 // GetColumnName returns the column name this expression operates on
 func (e *NullCheckExpression) GetColumnName() string {
-	return e.columnName
+	return e.Column
 }
 
 // GetValue returns the value this expression compares against
@@ -88,15 +88,15 @@ func (e *NullCheckExpression) CanUseIndex() bool {
 func (e *NullCheckExpression) WithAliases(aliases map[string]string) storage.Expression {
 	// Create a copy of the expression with aliases
 	expr := &NullCheckExpression{
-		columnName: e.columnName,
-		isNull:     e.isNull,
-		aliases:    aliases,
+		Column:  e.Column,
+		isNull:  e.isNull,
+		aliases: aliases,
 	}
 
 	// If the column name is an alias, resolve it to the original column name
-	if originalCol, isAlias := aliases[e.columnName]; isAlias {
-		expr.originalColumn = e.columnName // Keep track of the original alias name
-		expr.columnName = originalCol      // Replace with the actual column name
+	if originalCol, isAlias := aliases[e.Column]; isAlias {
+		expr.originalColumn = e.Column // Keep track of the original alias name
+		expr.Column = originalCol      // Replace with the actual column name
 	}
 
 	return expr
@@ -110,14 +110,14 @@ func (e *NullCheckExpression) PrepareForSchema(schema storage.Schema) storage.Ex
 	}
 
 	// Find the column index for fast lookup
-	colName := e.columnName
+	colName := e.Column
 	if e.originalColumn != "" {
 		colName = e.originalColumn
 	}
 
 	// Try to find the column in the schema
 	for i, col := range schema.Columns {
-		if col.Name == colName || col.Name == e.columnName {
+		if col.Name == colName || col.Name == e.Column {
 			e.ColIndex = i
 			break
 		}

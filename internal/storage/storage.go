@@ -351,6 +351,8 @@ type Engine interface {
 	GetTableSchema(tableName string) (Schema, error)
 	// ListTableIndexes retrieves all indexes for a table
 	ListTableIndexes(tableName string) (map[string]string, error)
+	// GetAllIndexes retrieves all index objects for a table
+	GetAllIndexes(tableName string) ([]Index, error)
 	// GetConfig returns the current storage engine configuration
 	GetConfig() Config
 	// UpdateConfig updates the storage engine configuration

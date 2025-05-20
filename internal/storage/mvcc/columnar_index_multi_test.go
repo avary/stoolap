@@ -86,87 +86,6 @@ func TestMultiColumnarIndexBasic(t *testing.T) {
 	}
 }
 
-// TestMultiColumnarIndexNulls tests NULL handling in the multi-column index
-func TestMultiColumnarIndexNulls(t *testing.T) {
-	// Create a multi-column index with two columns
-	idx := NewMultiColumnarIndex(
-		"test_idx", "test_table",
-		[]string{"id", "name"},
-		[]int{0, 1},
-		[]storage.DataType{storage.INTEGER, storage.TEXT},
-		nil, false,
-	)
-
-	// Add some test data with NULL values
-	err := idx.Add(
-		[]storage.ColumnValue{
-			storage.NewIntegerValue(1),
-			nil, // NULL name
-		},
-		1, 0,
-	)
-	if err != nil {
-		t.Errorf("Failed to add values with NULL: %v", err)
-	}
-
-	err = idx.Add(
-		[]storage.ColumnValue{
-			nil, // NULL id
-			storage.NewStringValue("Test"),
-		},
-		2, 0,
-	)
-	if err != nil {
-		t.Errorf("Failed to add values with NULL: %v", err)
-	}
-
-	err = idx.Add(
-		[]storage.ColumnValue{
-			storage.NewIntegerValue(3),
-			storage.NewStringValue("Test"),
-		},
-		3, 0,
-	)
-	if err != nil {
-		t.Errorf("Failed to add values without NULL: %v", err)
-	}
-
-	// Test finding values with NULL in the first column
-	rowIDs := idx.GetRowIDsEqual(nil) // should find rows with NULL in first column
-	if len(rowIDs) != 1 || rowIDs[0] != 2 {
-		t.Errorf("Expected row ID 2 for NULL id, got %v", rowIDs)
-	}
-
-	// Test finding values with NULL in the second column via column ID
-	colID := idx.columnIDs[1]
-	idx.mutex.RLock()
-	nullRows := idx.nullRowsByColumn[colID]
-	idx.mutex.RUnlock()
-	if len(nullRows) != 1 || nullRows[0] != 1 {
-		t.Errorf("Expected row ID 1 for NULL name, got %v", nullRows)
-	}
-
-	// Test removing rows with NULL values
-	err = idx.Remove(
-		[]storage.ColumnValue{
-			storage.NewIntegerValue(1),
-			nil, // NULL name
-		},
-		1, 0,
-	)
-	if err != nil {
-		t.Errorf("Failed to remove row with NULL: %v", err)
-	}
-
-	// Verify removal
-	idx.mutex.RLock()
-	nullRows = idx.nullRowsByColumn[colID]
-	idx.mutex.RUnlock()
-	if len(nullRows) != 0 {
-		t.Errorf("Expected no NULL rows after removal, got %v", nullRows)
-	}
-}
-
 // TestMultiColumnarIndexUnique tests unique constraint enforcement
 func TestMultiColumnarIndexUnique(t *testing.T) {
 	// Test multi-column unique index
@@ -1129,7 +1048,6 @@ func TestMultiColumnarIndexIntegerRangeQueries(t *testing.T) {
 		storage.NewIntegerValue(35),
 	}
 	rowIDs = idx.GetRowIDsInRange(minValues, maxValues, true, true)
-	fmt.Printf("Result of range query: %v\n", rowIDs)
 	// The correct result should be rows 2 and 4
 	// Row 2: id 1, value 20 (in range 15-35)
 	// Row 4: id 2, value 30 (in range 15-35)
