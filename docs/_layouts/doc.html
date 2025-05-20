@@ -2,30 +2,47 @@
 layout: default
 ---
 
-<div class="doc-content">
-  <h1>{{ page.title }}</h1>
+<article class="doc-article">
+  <header class="doc-header">
+    <h1>{{ page.title }}</h1>
+    {% if page.description %}
+    <p class="doc-description">{{ page.description }}</p>
+    {% endif %}
+  </header>
   
-  {{ content }}
+  <div class="doc-content">
+    {{ content }}
+  </div>
   
-  <div class="doc-footer">
-    <div class="edit-page">
-      <a href="{{ site.github.repository_url }}/edit/main/docs/{{ page.path }}" target="_blank" rel="noopener">
-        Edit this page on GitHub
+  <footer class="doc-footer">
+    <div class="doc-actions">
+      <a href="{{ site.github.repository_url }}/edit/main/docs/{{ page.path }}" class="edit-link" target="_blank" rel="noopener">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M21.0355 2.96454C19.8758 1.80486 17.9658 1.80486 16.8061 2.96454L15.8061 3.96454L20.0355 8.19396L21.0355 7.19396C22.1952 6.03428 22.1952 4.12422 21.0355 2.96454Z"></path>
+          <path d="M14.3955 5.37518L3.90518 15.8655C3.61092 16.1598 3.41174 16.5381 3.33047 16.9501L2.50635 20.8771C2.43302 21.2513 2.53541 21.6393 2.77822 21.9316C3.02103 22.2239 3.3792 22.3885 3.75342 22.3529L7.86209 21.8765C8.30104 21.827 8.71163 21.6504 9.03555 21.3765L19.5259 10.8862L14.3955 5.37518Z"></path>
+        </svg>
+        Edit this page
       </a>
     </div>
     
-    <div class="page-navigation">
+    <nav class="doc-navigation" aria-label="Page navigation">
       {% if page.previous %}
-        <a href="{{ page.previous.url | relative_url }}" class="prev">
-          &laquo; {{ page.previous.title }}
+        <a href="{{ page.previous.url | relative_url }}" class="prev-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M15.7071 4.29289C16.0976 4.68342 16.0976 5.31658 15.7071 5.70711L9.41421 12L15.7071 18.2929C16.0976 18.6834 16.0976 19.3166 15.7071 19.7071C15.3166 20.0976 14.6834 20.0976 14.2929 19.7071L7.29289 12.7071C6.90237 12.3166 6.90237 11.6834 7.29289 11.2929L14.2929 4.29289C14.6834 3.90237 15.3166 3.90237 15.7071 4.29289Z"></path>
+          </svg>
+          {{ page.previous.title }}
         </a>
       {% endif %}
       
       {% if page.next %}
-        <a href="{{ page.next.url | relative_url }}" class="next">
-          {{ page.next.title }} &raquo;
+        <a href="{{ page.next.url | relative_url }}" class="next-link">
+          {{ page.next.title }}
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M8.29289 4.29289C7.90237 4.68342 7.90237 5.31658 8.29289 5.70711L14.5858 12L8.29289 18.2929C7.90237 18.6834 7.90237 19.3166 8.29289 19.7071C8.68342 20.0976 9.31658 20.0976 9.70711 19.7071L16.7071 12.7071C17.0976 12.3166 17.0976 11.6834 16.7071 11.2929L9.70711 4.29289C9.31658 3.90237 8.68342 3.90237 8.29289 4.29289Z"></path>
+          </svg>
         </a>
       {% endif %}
-    </div>
-  </div>
-</div>
+    </nav>
+  </footer>
+</article>

@@ -3,237 +3,420 @@ layout: default
 title: Stoolap - High-performance columnar SQL database in Go
 ---
 
-<div class="hero-section">
-  <div class="hero-content">
-    <div class="hero-text">
-      <h1 class="hero-title">Stoolap</h1>
-      <p class="hero-subtitle">High-performance columnar SQL database with zero dependencies</p>
-      <p class="hero-description">A modern database engine written in pure Go that combines transactional and analytical capabilities in a single system.</p>
-      <div class="hero-cta">
-        <a href="{{ '/docs/installation/' | relative_url }}" class="btn btn-primary">Get Started</a>
-        <a href="{{ site.github.repository_url }}" class="btn btn-secondary">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path></svg>
-          GitHub
-        </a>
+<section class="hero-section">
+  <div class="container">
+    <div class="hero-content">
+      <div class="hero-text">
+        <h1 class="hero-title">Stoolap</h1>
+        <p class="hero-subtitle">High-performance columnar SQL database with zero dependencies</p>
+        <p class="hero-description">A modern database engine written in pure Go that combines transactional and analytical capabilities in a single system.</p>
+        <div class="hero-cta">
+          <a href="{{ '/docs/getting-started/installation/' | relative_url }}" class="btn btn-primary">Get Started</a>
+          <a href="{{ site.github.repository_url }}" class="btn btn-secondary" target="_blank" rel="noopener">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+            GitHub
+          </a>
+        </div>
       </div>
-    </div>
-    <div class="hero-image">
-      <div class="db-illustration">
-        <div class="db-top"></div>
-        <div class="db-body">
-          <div class="db-column"></div>
-          <div class="db-column"></div>
-          <div class="db-column"></div>
+      <div class="hero-image">
+        <div class="db-illustration">
+          <div class="db-top"></div>
+          <div class="db-body">
+            <div class="db-column"></div>
+            <div class="db-column"></div>
+            <div class="db-column"></div>
+          </div>
         </div>
       </div>
     </div>
   </div>
-  <div class="hero-wave">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 320">
-      <path fill="var(--wave-color)" fill-opacity="1" d="M0,160L48,144C96,128,192,96,288,90.7C384,85,480,107,576,128C672,149,768,171,864,186.7C960,203,1056,213,1152,197.3C1248,181,1344,139,1392,117.3L1440,96L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z"></path>
-    </svg>
-  </div>
-</div>
+  <svg class="hero-wave" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 120" aria-hidden="true">
+    <path fill="var(--color-bg)" fill-opacity="1" d="M0,64L48,80C96,96,192,128,288,128C384,128,480,96,576,85.3C672,75,768,85,864,90.7C960,96,1056,96,1152,96C1248,96,1344,96,1392,96L1440,96L1440,120L1392,120C1344,120,1248,120,1152,120C1056,120,960,120,864,120C768,120,672,120,576,120C480,120,384,120,288,120C192,120,96,120,48,120L0,120Z"></path>
+  </svg>
+</section>
 
-<div class="key-features">
-  <div class="section-title">
-    <h2>Why Stoolap?</h2>
-    <p>Modern database design for today's application demands</p>
+<section class="features-section">
+  <div class="container">
+    <div class="section-title">
+      <h2>Why Stoolap?</h2>
+      <p>Modern database design for today's application demands</p>
+    </div>
+    
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 14 10 14 10 20"></polyline>
+            <polyline points="20 10 14 10 14 4"></polyline>
+            <line x1="14" y1="10" x2="21" y2="3"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>
+        </div>
+        <h3>High Performance</h3>
+        <p>Columnar storage and vectorized execution deliver analytics at incredible speed, with optimized data structures that minimize memory usage.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+            <rect x="9" y="9" width="6" height="6"></rect>
+            <line x1="9" y1="1" x2="9" y2="4"></line>
+            <line x1="15" y1="1" x2="15" y2="4"></line>
+            <line x1="9" y1="20" x2="9" y2="23"></line>
+            <line x1="15" y1="20" x2="15" y2="23"></line>
+            <line x1="20" y1="9" x2="23" y2="9"></line>
+            <line x1="20" y1="14" x2="23" y2="14"></line>
+            <line x1="1" y1="9" x2="4" y2="9"></line>
+            <line x1="1" y1="14" x2="4" y2="14"></line>
+          </svg>
+        </div>
+        <h3>Memory-First</h3>
+        <p>Designed with in-memory operation in mind while providing optional persistence for durability. Ideal for both high-throughput and real-time applications.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 3h18v18H3zM21 9H3M21 15H3M12 3v18"/>
+          </svg>
+        </div>
+        <h3>Columnar Storage</h3>
+        <p>Data organized by column for efficient compression and analytical queries. Specialized encoding techniques maximize performance for each data type.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="1" y="5" width="22" height="14" rx="7"></rect>
+            <circle cx="8" cy="12" r="3"></circle>
+            <circle cx="16" cy="12" r="3"></circle>
+          </svg>
+        </div>
+        <h3>Zero Dependencies</h3>
+        <p>Built entirely in Go with no external dependencies, enabling simple deployment and minimal Docker images without bloat or security issues.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>
+            <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path>
+          </svg>
+        </div>
+        <h3>MVCC Transactions</h3>
+        <p>Multi-Version Concurrency Control provides high isolation with minimal locking. Optimistic concurrency enables high throughput for mixed workloads.</p>
+      </div>
+      
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
+          </svg>
+        </div>
+        <h3>SQL Standard</h3>
+        <p>Supports modern SQL including JOINs, window functions, and advanced query features. Built for compatibility with existing SQL knowledge and tools.</p>
+      </div>
+    </div>
   </div>
-  
-  <div class="features-grid">
-    <div class="feature-card">
-      <div class="feature-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
-      </div>
-      <h3>High Performance</h3>
-      <p>Columnar storage and vectorized execution deliver analytics at incredible speed.</p>
-    </div>
-    
-    <div class="feature-card">
-      <div class="feature-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
-      </div>
-      <h3>Memory-First</h3>
-      <p>Optimized for in-memory operation with optional persistence for durability.</p>
-    </div>
-    
-    <div class="feature-card">
-      <div class="feature-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v18H3zM21 9H3M21 15H3M12 3v18"/></svg>
-      </div>
-      <h3>Columnar Storage</h3>
-      <p>Data organized by column for efficient compression and blazing-fast analytics.</p>
-    </div>
-    
-    <div class="feature-card">
-      <div class="feature-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="5" width="22" height="14" rx="7" ry="7"></rect><circle cx="8" cy="12" r="3"></circle><circle cx="16" cy="12" r="3"></circle></svg>
-      </div>
-      <h3>Zero Dependencies</h3>
-      <p>Built entirely in Go with no external dependencies for simple deployment.</p>
-    </div>
-    
-    <div class="feature-card">
-      <div class="feature-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
-      </div>
-      <h3>MVCC Transactions</h3>
-      <p>Multi-Version Concurrency Control for high isolation with minimal locking.</p>
-    </div>
-    
-    <div class="feature-card">
-      <div class="feature-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
-      </div>
-      <h3>SQL Standard</h3>
-      <p>Supports modern SQL including JOINs, window functions, and JSON operations.</p>
-    </div>
-  </div>
-</div>
+</section>
 
-<div class="code-demo">
-  <div class="section-title">
-    <h2>Get Started in Minutes</h2>
-    <p>Simple to install, easy to use</p>
-  </div>
-  
-  <div class="terminal">
-    <div class="terminal-header">
-      <div class="terminal-button"></div>
-      <div class="terminal-button"></div>
-      <div class="terminal-button"></div>
-      <div class="terminal-title">terminal</div>
-    </div>
-    <div class="terminal-body">
-      <div class="command"><span class="prompt">$</span> go get github.com/stoolap/stoolap</div>
-      <div class="command"><span class="prompt">$</span> stoolap</div>
-      <div class="output">Stoolap Database Server v1.0.0</div>
-      <div class="output">Connected to memory database</div>
-      <div class="command"><span class="prompt">stoolap></span> CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255));</div>
-      <div class="output">Table created successfully.</div>
-      <div class="command"><span class="prompt">stoolap></span> INSERT INTO users VALUES (1, 'John Doe');</div>
-      <div class="output">1 row affected.</div>
-      <div class="command"><span class="prompt">stoolap></span> SELECT * FROM users;</div>
-      <div class="output">+----+----------+</div>
-      <div class="output">| id | name     |</div>
-      <div class="output">+----+----------+</div>
-      <div class="output">| 1  | John Doe |</div>
-      <div class="output">+----+----------+</div>
-      <div class="output">1 row in set.</div>
-    </div>
-  </div>
-  
-  <div class="code-info">
-    <div class="info-block">
-      <h3>Easy to Install</h3>
-      <p>Just one command to install, no dependencies or complex setup required.</p>
-      <a href="{{ '/docs/installation/' | relative_url }}" class="link-arrow">Installation Guide</a>
+<section class="code-demo-section">
+  <div class="container">
+    <div class="section-title">
+      <h2>Get Started in Minutes</h2>
+      <p>Simple to install, easy to use</p>
     </div>
     
-    <div class="info-block">
-      <h3>Standard SQL</h3>
-      <p>Use familiar SQL syntax with powerful extensions for modern applications.</p>
-      <a href="{{ '/docs/sql-commands/' | relative_url }}" class="link-arrow">SQL Reference</a>
+    <div class="code-preview">
+      <div class="code-header">
+        <div class="code-dots">
+          <div class="code-dot"></div>
+          <div class="code-dot"></div>
+          <div class="code-dot"></div>
+        </div>
+        <div class="code-title">terminal</div>
+      </div>
+      <div class="code-body">
+        <div class="code-line">
+          <span class="code-prompt">$</span>
+          <span>go get github.com/stoolap/stoolap</span>
+        </div>
+        <div class="code-line">
+          <span class="code-prompt">$</span>
+          <span>stoolap</span>
+        </div>
+        <div class="code-output">Stoolap Database Server v1.0.0</div>
+        <div class="code-output">Connected to memory database</div>
+        <div class="code-line">
+          <span class="code-prompt">stoolap></span>
+          <span>CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255));</span>
+        </div>
+        <div class="code-output">Table created successfully.</div>
+        <div class="code-line">
+          <span class="code-prompt">stoolap></span>
+          <span>INSERT INTO users VALUES (1, 'John Doe');</span>
+        </div>
+        <div class="code-output">1 row affected.</div>
+        <div class="code-line">
+          <span class="code-prompt">stoolap></span>
+          <span>SELECT * FROM users;</span>
+        </div>
+        <div class="code-output">+----+----------+
+| id | name     |
++----+----------+
+| 1  | John Doe |
++----+----------+
+1 row in set.</div>
+      </div>
     </div>
     
-    <div class="info-block">
-      <h3>Go Integration</h3>
-      <p>First-class support for Go applications with native driver.</p>
-      <a href="{{ '/docs/quickstart/' | relative_url }}" class="link-arrow">Quick Start Tutorial</a>
+    <div class="features-grid">
+      <div class="feature-card">
+        <h3>Easy to Install</h3>
+        <p>Just one command to install, no dependencies or complex setup required.</p>
+        <a href="{{ '/docs/getting-started/installation/' | relative_url }}" class="link-arrow">Installation Guide</a>
+      </div>
+      
+      <div class="feature-card">
+        <h3>Standard SQL</h3>
+        <p>Use familiar SQL syntax with powerful extensions for modern applications.</p>
+        <a href="{{ '/docs/sql-reference/sql-commands/' | relative_url }}" class="link-arrow">SQL Reference</a>
+      </div>
+      
+      <div class="feature-card">
+        <h3>Go Integration</h3>
+        <p>First-class support for Go applications with native driver.</p>
+        <a href="{{ '/docs/getting-started/quickstart/' | relative_url }}" class="link-arrow">Quick Start Tutorial</a>
+      </div>
     </div>
   </div>
-</div>
+</section>
 
-<div class="architecture-overview">
-  <div class="section-title">
-    <h2>Modern Architecture</h2>
-    <p>Designed for performance, scalability, and ease of use</p>
-  </div>
-  
-  <div class="architecture-diagram">
-    <div class="arch-layer client-layer">
-      <div class="arch-title">Client Interface</div>
-      <div class="arch-components">
-        <div class="arch-component">SQL Driver</div>
-        <div class="arch-component">CLI</div>
-        <div class="arch-component">API</div>
+<section class="architecture-section">
+  <div class="container">
+    <div class="section-title">
+      <h2>Modern Architecture</h2>
+      <p>Designed for performance, scalability, and ease of use</p>
+    </div>
+    
+    <div class="architecture-diagram">
+      <div class="arch-layer client-layer">
+        <h3>Client Interface</h3>
+        <div class="arch-components">
+          <div class="arch-component">SQL Driver</div>
+          <div class="arch-component">CLI</div>
+          <div class="arch-component">API</div>
+        </div>
+      </div>
+      
+      <div class="arch-layer query-layer">
+        <h3>Query Processing</h3>
+        <div class="arch-components">
+          <div class="arch-component">Parser</div>
+          <div class="arch-component">Optimizer</div>
+          <div class="arch-component">Executor</div>
+        </div>
+      </div>
+      
+      <div class="arch-layer storage-layer">
+        <h3>Storage Engine</h3>
+        <div class="arch-components">
+          <div class="arch-component">MVCC</div>
+          <div class="arch-component">Columnar Storage</div>
+          <div class="arch-component">Indexing</div>
+        </div>
       </div>
     </div>
     
-    <div class="arch-layer query-layer">
-      <div class="arch-title">Query Processing</div>
-      <div class="arch-components">
-        <div class="arch-component">Parser</div>
-        <div class="arch-component">Optimizer</div>
-        <div class="arch-component">Executor</div>
-      </div>
-    </div>
-    
-    <div class="arch-layer storage-layer">
-      <div class="arch-title">Storage Engine</div>
-      <div class="arch-components">
-        <div class="arch-component">MVCC</div>
-        <div class="arch-component">Columnar Storage</div>
-        <div class="arch-component">Indexing</div>
-      </div>
+    <div class="cta-wrapper">
+      <a href="{{ '/docs/architecture/architecture/' | relative_url }}" class="btn btn-primary">Explore Architecture</a>
     </div>
   </div>
-  
-  <div class="architecture-info">
-    <p>Stoolap features a modern, modular architecture designed for high performance. Learn more about its components and how they work together.</p>
-    <a href="{{ '/docs/architecture/' | relative_url }}" class="btn btn-outline">Explore Architecture</a>
-  </div>
-</div>
+</section>
 
-<div class="use-cases">
-  <div class="section-title">
-    <h2>Use Cases</h2>
-    <p>Versatile for various application scenarios</p>
-  </div>
-  
-  <div class="use-cases-grid">
-    <div class="use-case-card">
-      <div class="use-case-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+<section class="cta-section">
+  <div class="container">
+    <div class="cta-content">
+      <h2>Ready to Get Started?</h2>
+      <p>Explore Stoolap and transform your database experience.</p>
+      <div class="cta-buttons">
+        <a href="{{ '/docs/getting-started/installation/' | relative_url }}" class="btn btn-primary">Installation Guide</a>
+        <a href="{{ '/docs/getting-started/quickstart/' | relative_url }}" class="btn btn-secondary">Quick Start Tutorial</a>
       </div>
-      <h3>Real-time Analytics</h3>
-      <p>Process and analyze large datasets with millisecond-level query performance.</p>
-    </div>
-    
-    <div class="use-case-card">
-      <div class="use-case-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-      </div>
-      <h3>Time-Series Data</h3>
-      <p>Efficiently store and query time-stamped data with specialized optimizations.</p>
-    </div>
-    
-    <div class="use-case-card">
-      <div class="use-case-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-      </div>
-      <h3>Embedded Applications</h3>
-      <p>Integrate directly into your Go applications with zero dependencies.</p>
-    </div>
-    
-    <div class="use-case-card">
-      <div class="use-case-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
-      </div>
-      <h3>Data Warehousing</h3>
-      <p>Store and analyze large volumes of data with efficient columnar compression.</p>
     </div>
   </div>
-</div>
+</section>
 
-<div class="cta-section">
-  <div class="cta-content">
-    <h2>Ready to Get Started?</h2>
-    <p>Explore Stoolap and transform your database experience.</p>
-    <div class="cta-buttons">
-      <a href="{{ '/docs/installation/' | relative_url }}" class="btn btn-primary">Installation Guide</a>
-      <a href="{{ '/docs/quickstart/' | relative_url }}" class="btn btn-secondary">Quick Start Tutorial</a>
-    </div>
-  </div>
-</div>
+<style>
+/* Custom styles for the home page */
+.hero-wave {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 60px;
+}
+
+.db-illustration {
+  width: 300px;
+  height: 300px;
+  position: relative;
+}
+
+.db-top {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 40px;
+  background-color: var(--color-accent);
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.db-body {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 180px;
+  height: 220px;
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 0 0 8px 8px;
+  display: flex;
+  justify-content: space-around;
+  padding: 10px;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(5px);
+}
+
+.db-column {
+  width: 40px;
+  height: 100%;
+  background: linear-gradient(to bottom, var(--color-accent) 0%, var(--color-primary) 100%);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+}
+
+.db-column::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.3) 0%,
+    rgba(255, 255, 255, 0.1) 20%,
+    rgba(255, 255, 255, 0.1) 80%,
+    rgba(255, 255, 255, 0.3) 100%
+  );
+  z-index: 1;
+}
+
+.link-arrow {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 500;
+}
+
+.link-arrow::after {
+  content: '→';
+  margin-left: 6px;
+  transition: transform 0.2s;
+}
+
+.link-arrow:hover::after {
+  transform: translateX(4px);
+}
+
+.architecture-section {
+  padding: var(--space-8) 0;
+  background-color: var(--color-bg-alt);
+  margin: var(--space-10) 0;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.architecture-diagram {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+}
+
+.arch-layer {
+  background-color: var(--color-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border);
+}
+
+.client-layer {
+  border-top: 4px solid #4CAF50;
+}
+
+.query-layer {
+  border-top: 4px solid #2196F3;
+}
+
+.storage-layer {
+  border-top: 4px solid #9C27B0;
+}
+
+.arch-layer h3 {
+  margin-top: 0;
+  margin-bottom: var(--space-3);
+  font-size: 1.2rem;
+}
+
+.arch-components {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.arch-component {
+  background-color: var(--color-bg-alt);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.cta-wrapper {
+  text-align: center;
+  margin-top: var(--space-6);
+}
+
+.code-demo-section {
+  margin: var(--space-10) 0;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .hero-image {
+    display: none;
+  }
+  
+  .architecture-diagram {
+    gap: var(--space-4);
+  }
+  
+  .arch-components {
+    gap: var(--space-2);
+  }
+  
+  .arch-component {
+    font-size: 0.8rem;
+    padding: var(--space-2) var(--space-3);
+  }
+}
+</style>

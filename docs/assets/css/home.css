@@ -1,4 +1,30 @@
-/* Variables will be inherited from main CSS */
+/* Variables - defining them here in case the import fails */
+:root {
+  --primary-color: #0b4328; 
+  --secondary-color: #207e53; 
+  --accent-color: #95b746; 
+  --text-color: #000000; 
+  --background-color: #ffffff; 
+  --code-background: #f5f7f9; 
+  --border-color: #e1e4e8; 
+  --hover-color: #f1f2f3; 
+  --header-color: #f7f7f7;
+}
+
+/* Dark mode colors */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --primary-color: #207e53; 
+    --secondary-color: #95b746; 
+    --accent-color: #406021; 
+    --text-color: #ffffff; 
+    --background-color: #121212; 
+    --code-background: #1e1e1e; 
+    --border-color: #303030; 
+    --hover-color: #242424; 
+    --header-color: #1c1c1c; 
+  }
+}
 
 /* Hero Section */
 .hero-section {
