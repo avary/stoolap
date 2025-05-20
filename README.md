@@ -1,6 +1,13 @@
 <div align="center">
-  <img src="logo.svg" alt="Stoolap Logo" width="400">
+  <img src="logo.svg" alt="Stoolap Logo" width="360">
 </div>
+
+<p align="center">
+  <a href="https://goreportcard.com/report/github.com/stoolap/stoolap"><img src="https://goreportcard.com/badge/github.com/stoolap/stoolap?style=flat-square" alt="Go Report Card"></a>
+  <a href="https://pkg.go.dev/github.com/stoolap/stoolap"><img src="https://img.shields.io/badge/go.dev-reference-007d9c?style=flat-square" alt="go.dev reference"></a>
+  <a href="https://github.com/stoolap/stoolap/releases"><img src="https://img.shields.io/github/v/release/stoolap/stoolap?style=flat-square" alt="GitHub release"></a>
+  <a href="https://github.com/stoolap/stoolap/blob/main/LICENSE"><img src="https://img.shields.io/github/license/stoolap/stoolap?style=flat-square" alt="License"></a>
+</p>
 
 # Stoolap
 
