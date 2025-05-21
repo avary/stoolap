@@ -16,6 +16,7 @@ package mvcc
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -288,13 +289,31 @@ func (e *MVCCEngine) cleanupResources() {
 
 // BeginTransaction starts a new transaction
 func (e *MVCCEngine) BeginTransaction() (storage.Transaction, error) {
-	return e.BeginTx(context.Background())
+	sqlLevel := sql.LevelReadCommitted
+	if e.registry != nil && e.GetIsolationLevel() != storage.ReadCommitted {
+		sqlLevel = sql.LevelSnapshot
+	}
+
+	return e.BeginTx(context.Background(), sqlLevel)
 }
 
 // BeginTx starts a new transaction with the provided context
-func (e *MVCCEngine) BeginTx(ctx context.Context) (storage.Transaction, error) {
+func (e *MVCCEngine) BeginTx(ctx context.Context, level sql.IsolationLevel) (storage.Transaction, error) {
 	if !e.open.Load() {
 		return nil, errors.New("engine is not open")
+	}
+
+	originalIsolationLevel := e.GetIsolationLevel()
+	specificIsolationLevel := storage.ReadCommitted
+
+	switch level {
+	case sql.LevelReadCommitted:
+		e.SetIsolationLevel(storage.ReadCommitted)
+	case sql.LevelSnapshot, sql.LevelRepeatableRead:
+		e.SetIsolationLevel(storage.SnapshotIsolation)
+		specificIsolationLevel = storage.SnapshotIsolation
+	default:
+		return nil, fmt.Errorf("unsupported isolation level: %v", level)
 	}
 
 	e.mu.RLock()
@@ -314,6 +333,9 @@ func (e *MVCCEngine) BeginTx(ctx context.Context) (storage.Transaction, error) {
 		tables:    tablesMap,
 		active:    true,
 		ctx:       ctx,
+
+		originalIsolationLevel: originalIsolationLevel,
+		specificIsolationLevel: specificIsolationLevel,
 	}
 
 	return txn, nil
@@ -547,9 +569,34 @@ func (e *MVCCEngine) GetRegistry() *TransactionRegistry {
 	return e.registry
 }
 
+// GetIsolationLevel returns the current isolation level for this engine
+func (e *MVCCEngine) GetIsolationLevel() storage.IsolationLevel {
+	if !e.open.Load() {
+		return -999 // Engine not open
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.registry.GetIsolationLevel()
+}
+
 // SetIsolationLevel sets the isolation level for all transactions in this engine
-func (e *MVCCEngine) SetIsolationLevel(level IsolationLevel) {
+func (e *MVCCEngine) SetIsolationLevel(level storage.IsolationLevel) error {
+	if !e.open.Load() {
+		return errors.New("engine is not open")
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if level != storage.ReadCommitted && level != storage.SnapshotIsolation {
+		return errors.New("invalid isolation level")
+	}
+
 	e.registry.SetIsolationLevel(level)
+
+	return nil
 }
 
 // CleanupOldTransactions removes transactions older than the specified duration
@@ -628,12 +675,12 @@ func (e *MVCCEngine) StartPeriodicCleanup(interval, maxAge time.Duration) func()
 				// Limit to 1000 rows per table to avoid excessive disk I/O
 				// evictedCount := e.EvictColdData(2*maxAge, 1000)
 
-				// TODO: Check cold data eviction logic
+				// FIXME: Check cold data eviction logic
 				evictedCount := 0
 
 				if rowCount > 0 || txnCount > 0 || evictedCount > 0 {
-					fmt.Printf("Cleanup: removed %d transactions, %d deleted rows older than %s, evicted %d cold rows\n",
-						txnCount, rowCount, maxAge, evictedCount)
+					/* fmt.Printf("Cleanup: removed %d transactions, %d deleted rows older than %s, evicted %d cold rows\n",
+					txnCount, rowCount, maxAge, evictedCount) */
 				}
 			case <-ctx.Done():
 				return

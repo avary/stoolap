@@ -16,6 +16,7 @@ package sql
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/stoolap/stoolap/internal/storage"
@@ -54,7 +55,7 @@ func (m *mockEngine) Close() error {
 	return nil
 }
 
-func (m *mockEngine) BeginTx(ctx context.Context) (storage.Transaction, error) {
+func (m *mockEngine) BeginTx(ctx context.Context, level sql.IsolationLevel) (storage.Transaction, error) {
 	return &mockTransaction{}, nil
 }
 
@@ -98,8 +99,20 @@ func (m *mockEngine) GetAllIndexes(tableName string) ([]storage.Index, error) {
 	return nil, nil
 }
 
+func (m *mockEngine) GetIsolationLevel() storage.IsolationLevel {
+	return storage.ReadCommitted
+}
+
+func (m *mockEngine) SetIsolationLevel(level storage.IsolationLevel) error {
+	return nil
+}
+
 // mockTransaction is a simple mock implementation of storage.Transaction
 type mockTransaction struct{}
+
+func (m *mockTransaction) SetIsolationLevel(level storage.IsolationLevel) error {
+	return nil
+}
 
 func (m *mockTransaction) Begin() error {
 	return nil

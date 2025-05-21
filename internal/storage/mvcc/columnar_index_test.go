@@ -16,6 +16,7 @@ package mvcc
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestColumnarIndex_Drop(t *testing.T) {
 	}
 
 	// Begin transaction and create table
-	txnInterface, err := engine.BeginTx(context.Background())
+	txnInterface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestColumnarIndex_Drop(t *testing.T) {
 	}
 
 	// Create index in second transaction
-	txn2Interface, err := engine.BeginTx(context.Background())
+	txn2Interface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin second transaction: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestColumnarIndex_Drop(t *testing.T) {
 	}
 
 	// Test dropping the index
-	txn3Interface, err := engine.BeginTx(context.Background())
+	txn3Interface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin third transaction: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestColumnarIndex_Drop(t *testing.T) {
 	}
 
 	// Verify the index is gone
-	txn4Interface, err := engine.BeginTx(context.Background())
+	txn4Interface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin fourth transaction: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestColumnarIndex_UniqueConstraint(t *testing.T) {
 	}
 
 	// Begin transaction and create table
-	txnInterface, err := engine.BeginTx(context.Background())
+	txnInterface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -406,7 +407,7 @@ func TestColumnarIndex_Integration(t *testing.T) {
 	}
 	defer engine.Close()
 
-	txnInterface, err := engine.BeginTx(context.Background())
+	txnInterface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -443,7 +444,7 @@ func TestColumnarIndex_Integration(t *testing.T) {
 	}
 
 	// Start a new transaction for creating the index
-	txn2Interface, err := engine.BeginTx(context.Background())
+	txn2Interface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin second transaction: %v", err)
 	}
@@ -468,7 +469,7 @@ func TestColumnarIndex_Integration(t *testing.T) {
 	}
 
 	// Create a new transaction to access the table with index
-	txn3Interface, err := engine.BeginTx(context.Background())
+	txn3Interface, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin third transaction: %v", err)
 	}

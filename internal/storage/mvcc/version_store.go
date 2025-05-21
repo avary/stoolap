@@ -511,7 +511,7 @@ func (vs *VersionStore) GetAllVisibleVersions(txnID int64) *fastmap.Int64Map[*Ro
 	result := GetVisibleVersionMap()
 
 	// For bulk operations in READ COMMITTED, optimize the common case
-	if vs.engine.registry.GetIsolationLevel() == ReadCommitted {
+	if vs.engine.registry.GetIsolationLevel() == storage.ReadCommitted {
 		vs.versions.ForEach(func(rowID int64, versionPtr *RowVersion) bool {
 			// Check if closed during iteration
 			if vs.closed.Load() {

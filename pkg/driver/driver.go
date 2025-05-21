@@ -374,30 +374,14 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 
 	// Add isolation level to context if specified
 	txCtx := ctx
-	if opts.Isolation != driver.IsolationLevel(0) {
-		// Map database/sql isolation levels to our internal isolation levels
-		var isolationLevel string
-		switch opts.Isolation {
-		case driver.IsolationLevel(sql.LevelReadUncommitted):
-			isolationLevel = "READ UNCOMMITTED"
-		case driver.IsolationLevel(sql.LevelReadCommitted):
-			isolationLevel = "READ COMMITTED"
-		case driver.IsolationLevel(sql.LevelRepeatableRead):
-			isolationLevel = "REPEATABLE READ"
-		case driver.IsolationLevel(sql.LevelSerializable):
-			isolationLevel = "SERIALIZABLE"
-		default:
-			// Use default isolation level
-		}
+	isolationLevel := sql.LevelReadCommitted
 
-		type isolationLevelKey string
-		if isolationLevel != "" {
-			txCtx = context.WithValue(ctx, isolationLevelKey("isolation_level"), isolationLevel)
-		}
+	if opts.Isolation != driver.IsolationLevel(0) {
+		isolationLevel = sql.IsolationLevel(opts.Isolation)
 	}
 
 	// Begin a transaction in the underlying engine with isolation level in context
-	engineTx, err := c.db.Engine().BeginTx(txCtx)
+	engineTx, err := c.db.Engine().BeginTx(txCtx, isolationLevel)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}

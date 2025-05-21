@@ -16,6 +16,7 @@ package sql
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -87,6 +88,33 @@ func (e *Executor) executeSet(stmt *parser.SetStatement) error {
 	varName := strings.ToUpper(stmt.Name.Value)
 
 	switch varName {
+	case "ISOLATIONLEVEL":
+		// Handle isolation level setting
+		// Get the value as string
+		value, ok := stmt.Value.(*parser.StringLiteral)
+		if !ok {
+			return fmt.Errorf("isolation level must be a string value")
+		}
+
+		level := strings.ToUpper(value.Value)
+
+		// Map to the appropriate isolation level
+		var isolationLevel storage.IsolationLevel
+		switch level {
+		case "READ COMMITTED":
+			isolationLevel = storage.ReadCommitted
+		case "SNAPSHOT", "REPEATABLE READ":
+			isolationLevel = storage.SnapshotIsolation
+		default:
+			return fmt.Errorf("unsupported isolation level: %s", level)
+		}
+
+		// Set the isolation level at the engine level
+		if err := e.engine.SetIsolationLevel(isolationLevel); err != nil {
+			return fmt.Errorf("failed to set isolation level: %v", err)
+		}
+
+		return nil
 	case "VECTORIZED":
 		// Extract the value
 		var boolValue bool
@@ -732,9 +760,16 @@ func (e *Executor) ExecuteWithParams(ctx context.Context, tx storage.Transaction
 	var shouldAutoCommit bool
 	var err error
 
+	currentIsolationLevel := e.engine.GetIsolationLevel()
+
 	if tx == nil {
 		// Begin a transaction
-		tx, err = e.engine.BeginTx(ctx)
+		sqlLevel := sql.LevelReadCommitted
+		if currentIsolationLevel == storage.SnapshotIsolation {
+			sqlLevel = sql.LevelSnapshot
+		}
+
+		tx, err = e.engine.BeginTx(ctx, sqlLevel)
 		if err != nil {
 			return nil, err
 		}
@@ -873,6 +908,26 @@ func (e *Executor) ExecuteWithParams(ctx context.Context, tx storage.Transaction
 		result, err = e.executeSelectWithContext(ctx, tx, s)
 	case *parser.BeginStatement:
 		// Begin is a no-op because we already started a transaction
+		// However, if an isolation level was specified, we should set it
+		var isolationLevel storage.IsolationLevel
+		if s.IsolationLevel != "" {
+			// Map the SQL isolation level string to our storage.IsolationLevel
+			switch strings.ToUpper(s.IsolationLevel) {
+			case "READ COMMITTED":
+				isolationLevel = storage.ReadCommitted
+			case "REPEATABLE READ", "SNAPSHOT":
+				isolationLevel = storage.SnapshotIsolation
+			default:
+				err = fmt.Errorf("unsupported isolation level: %s", s.IsolationLevel)
+				return nil, err
+			}
+
+			// Set the isolation level at the engine level
+			if err = tx.SetIsolationLevel(isolationLevel); err != nil {
+				return nil, fmt.Errorf("failed to set isolation level: %v", err)
+			}
+		}
+
 		result = &ExecResult{
 			rowsAffected: 0,
 			lastInsertID: 0,

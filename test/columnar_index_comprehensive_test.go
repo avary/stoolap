@@ -16,6 +16,7 @@ package test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -661,7 +662,7 @@ func TestColumnarIndexComprehensive(t *testing.T) {
 		}
 
 		// Start a transaction to insert data
-		tx, err := newEngine.BeginTx(context.TODO())
+		tx, err := newEngine.BeginTx(context.TODO(), sql.LevelReadCommitted)
 		if err != nil {
 			t.Fatalf("Failed to begin transaction: %v", err)
 		}

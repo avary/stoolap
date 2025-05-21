@@ -16,6 +16,7 @@ package test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	internalsql "github.com/stoolap/stoolap/internal/sql"
@@ -39,7 +40,7 @@ func TestScanWithWhereClause(t *testing.T) {
 
 	// Create a transaction
 	ctx := context.Background()
-	tx, err := engine.BeginTx(ctx)
+	tx, err := engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestExtraColumnsInWhere(t *testing.T) {
 
 	// Create a transaction
 	ctx := context.Background()
-	tx, err := engine.BeginTx(ctx)
+	tx, err := engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}

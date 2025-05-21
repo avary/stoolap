@@ -244,6 +244,12 @@ var Keywords = map[string]bool{
 	"RENAME":      true,
 	"TO":          true,
 	"VARCHAR":     true,
+	"BIGINT":      true,
+	"ISOLATION":   true,
+	"LEVEL":       true,
+	"READ":        true,
+	"COMMITTED":   true,
+	"UNCOMMITTED": true,
 }
 
 // Operators is a map of SQL operators

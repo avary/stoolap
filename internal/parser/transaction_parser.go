@@ -50,12 +50,7 @@ func (p *Parser) parseBeginStatement() *BeginStatement {
 			return nil
 		}
 
-		// Check for isolation level value
-		if !p.expectPeek(TokenKeyword) {
-			p.addError(fmt.Sprintf("expected isolation level, got %s at %s",
-				p.peekToken.Literal, p.peekToken.Position))
-			return nil
-		}
+		p.nextToken() // Consume LEVEL
 
 		// Parse the isolation level
 		isolationLevel := p.curToken.Literal
@@ -63,8 +58,8 @@ func (p *Parser) parseBeginStatement() *BeginStatement {
 		// Validate the isolation level
 		isValid := false
 
-		// Check for single-word levels: SERIALIZABLE
-		if isolationLevel == "SERIALIZABLE" {
+		// Check for single-word levels: SNAPSHOT
+		if isolationLevel == "SNAPSHOT" {
 			stmt.IsolationLevel = isolationLevel
 			isValid = true
 		} else if isolationLevel == "REPEATABLE" {
@@ -85,6 +80,9 @@ func (p *Parser) parseBeginStatement() *BeginStatement {
 				stmt.IsolationLevel = "READ COMMITTED"
 				isValid = true
 			}
+		} else if isolationLevel == "SERIALIZABLE" {
+			stmt.IsolationLevel = isolationLevel
+			isValid = true
 		}
 
 		if !isValid {

@@ -163,7 +163,7 @@ func (db *DB) Executor() Executor {
 // Exec executes a query without returning any rows
 func (db *DB) Exec(ctx context.Context, query string) (sql.Result, error) {
 	// Execute the query with the provided context
-	tx, err := db.engine.BeginTx(ctx)
+	tx, err := db.engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		return nil, err
 	}

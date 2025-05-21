@@ -48,11 +48,28 @@ type MVCCTransaction struct {
 	// Fast path for single table operations
 	lastTableName string
 	lastTable     storage.Table
+
+	specificIsolationLevel storage.IsolationLevel
+	originalIsolationLevel storage.IsolationLevel
 }
 
 // ID returns the transaction ID
 func (t *MVCCTransaction) ID() int64 {
 	return t.id
+}
+
+func (t *MVCCTransaction) SetIsolationLevel(level storage.IsolationLevel) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !t.active {
+		return ErrTransactionClosed
+	}
+
+	t.originalIsolationLevel = t.engine.GetIsolationLevel()
+	t.specificIsolationLevel = level
+
+	return t.engine.SetIsolationLevel(level)
 }
 
 // SetContext sets the context for the transaction
@@ -217,6 +234,11 @@ func (t *MVCCTransaction) cleanUp() error {
 	t.tables = nil
 	clear(tablesMap)
 	tablesMapPool.Put(tablesMap)
+
+	if t.specificIsolationLevel != t.originalIsolationLevel {
+		// Reset the isolation level to the original one
+		t.engine.SetIsolationLevel(t.originalIsolationLevel)
+	}
 
 	return nil
 }

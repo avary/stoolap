@@ -16,6 +16,7 @@ package test
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"testing"
 	"time"
@@ -144,7 +145,7 @@ func TestSimpleParameter(t *testing.T) {
 
 	// Try directly with the engine
 	t.Log("Trying direct transaction with the engine")
-	tx, err := engine.BeginTx(context.Background())
+	tx, err := engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestSimpleParameter(t *testing.T) {
 	}
 
 	// Begin another transaction using the engine
-	tx, err = engine.BeginTx(context.Background())
+	tx, err = engine.BeginTx(context.Background(), sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin second transaction: %v", err)
 	}

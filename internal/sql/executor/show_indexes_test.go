@@ -16,6 +16,7 @@ package sql
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestShowIndexesMultiColumn(t *testing.T) {
 	executor := NewExecutor(engine)
 
 	ctx := context.Background()
-	tx, err := engine.BeginTx(ctx)
+	tx, err := engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestShowIndexesMultiColumn(t *testing.T) {
 	}
 
 	// Start a new transaction for querying
-	tx, err = engine.BeginTx(ctx)
+	tx, err = engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestDropIndexMultiColumn(t *testing.T) {
 	executor := NewExecutor(engine)
 
 	ctx := context.Background()
-	tx, err := engine.BeginTx(ctx)
+	tx, err := engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestDropIndexMultiColumn(t *testing.T) {
 	}
 
 	// Start a new transaction for verification
-	tx, err = engine.BeginTx(ctx)
+	tx, err = engine.BeginTx(ctx, sql.LevelReadCommitted)
 	if err != nil {
 		t.Fatalf("Failed to begin transaction: %v", err)
 	}

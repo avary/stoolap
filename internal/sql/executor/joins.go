@@ -16,6 +16,7 @@ package sql
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -103,7 +104,7 @@ func executeTableSource(ctx context.Context, tableSource parser.TableSource,
 		tableName := source.Name.Value
 
 		// Start a transaction to get the table
-		tx, err := engine.BeginTx(ctx)
+		tx, err := engine.BeginTx(ctx, sql.LevelReadCommitted)
 		if err != nil {
 			return nil, "", fmt.Errorf("error beginning transaction: %w", err)
 		}

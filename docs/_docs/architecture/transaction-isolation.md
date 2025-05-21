@@ -12,9 +12,39 @@ Stoolap implements Multi-Version Concurrency Control (MVCC) to provide transacti
 
 Stoolap currently supports two isolation levels:
 
-1. **ReadCommitted** - The default isolation level where a transaction only sees data that has been committed by other transactions. Each query within the transaction may see different versions of data as other transactions commit.
+1. **READ COMMITTED** - The default isolation level where a transaction only sees data that has been committed by other transactions. Each query within the transaction may see different versions of data as other transactions commit.
 
-2. **SnapshotIsolation** - Provides a consistent view of the database as it was when the transaction started. All queries within the transaction see the same snapshot of data, regardless of concurrent commits by other transactions.
+2. **SNAPSHOT** (also known as REPEATABLE READ) - Provides a consistent view of the database as it was when the transaction started. All queries within the transaction see the same snapshot of data, regardless of concurrent commits by other transactions.
+
+## Setting Isolation Levels
+
+Stoolap supports setting isolation levels both at the session level and per-transaction:
+
+### Session-wide Isolation Level
+
+Set the default isolation level for all transactions in the current session:
+
+```sql
+-- Set session isolation level to READ COMMITTED (default)
+SET ISOLATIONLEVEL = 'READ COMMITTED';
+
+-- Set session isolation level to SNAPSHOT
+SET ISOLATIONLEVEL = 'SNAPSHOT';
+```
+
+### Transaction-specific Isolation Level
+
+Override the session isolation level for a specific transaction:
+
+```sql
+-- Start a transaction with READ COMMITTED isolation level
+BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
+
+-- Start a transaction with SNAPSHOT isolation level  
+BEGIN TRANSACTION ISOLATION LEVEL SNAPSHOT;
+```
+
+**Important**: When a transaction with a specific isolation level completes (via COMMIT or ROLLBACK), the isolation level automatically reverts to the original session-wide setting.
 
 ## MVCC Implementation
 
@@ -40,16 +70,16 @@ Stoolap's MVCC implementation uses a combination of techniques to provide effici
 
 The core visibility rules in Stoolap determine which row versions are visible to a transaction:
 
-#### ReadCommitted Mode
+#### READ COMMITTED Mode
 
-In ReadCommitted mode (the default):
+In READ COMMITTED mode (the default):
 - A transaction sees its own uncommitted changes
 - A transaction sees all changes committed by other transactions at the time of each query
 - A transaction never sees uncommitted changes from other transactions
 
-#### SnapshotIsolation Mode
+#### SNAPSHOT Mode
 
-In SnapshotIsolation mode:
+In SNAPSHOT mode:
 - A transaction sees its own uncommitted changes
 - A transaction sees only changes that were committed before the transaction started
 - Changes committed by other transactions after this transaction started are not visible
@@ -58,14 +88,21 @@ In SnapshotIsolation mode:
 
 ### Beginning a Transaction
 
-A transaction is started with the `BEGIN` SQL statement or implicitly by the first statement execution:
+A transaction can be started with various forms of the `BEGIN` statement:
 
 ```sql
--- Start a transaction with default isolation level (ReadCommitted)
+-- Start a transaction with default isolation level (READ COMMITTED)
 BEGIN;
+
+-- Alternative syntax
+BEGIN TRANSACTION;
+
+-- Start with specific isolation level
+BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
+BEGIN TRANSACTION ISOLATION LEVEL SNAPSHOT;
 ```
 
-Currently, specifying isolation levels directly in SQL statements (e.g., `BEGIN ISOLATION LEVEL SNAPSHOT`) is not supported. The isolation level is set at the engine level and applies to all transactions.
+Transactions can also start implicitly with the first statement execution if no explicit transaction is active.
 
 ### Performing Operations
 
@@ -88,6 +125,7 @@ During commit:
 1. A commit timestamp is assigned to the transaction
 2. All changes become visible to other transactions (based on their isolation level)
 3. The transaction is removed from the active transactions list
+4. If a transaction-specific isolation level was set, it reverts to the session default
 
 ### Rolling Back a Transaction
 
@@ -100,6 +138,7 @@ ROLLBACK;
 During rollback:
 1. All changes made by the transaction are discarded
 2. The transaction is removed from the active transactions list
+3. If a transaction-specific isolation level was set, it reverts to the session default
 
 ## Concurrency Control
 
@@ -121,27 +160,56 @@ Conflicts are detected when two transactions attempt to modify the same row:
 The transaction isolation in Stoolap is implemented in the following key components:
 
 - `engine.go` - Contains the transaction creation and management logic
-- `registry.go` - Manages transaction metadata and visibility rules
-- `transaction.go` - Implements the transaction interface
+- `registry.go` - Manages transaction metadata and visibility rules  
+- `transaction.go` - Implements the transaction interface with isolation level management
 - `version_store.go` - Manages versioned data
+- `executor.go` - Handles SQL statement execution and isolation level parsing
 
 ## Best Practices
 
 - Transactions should be kept short to minimize conflicts
 - Use explicit transactions for operations that need to be atomic
-- Consider your specific application's needs when deciding between ReadCommitted and SnapshotIsolation:
-  - **ReadCommitted** is good for most OLTP workloads, offering better concurrency
-  - **SnapshotIsolation** is useful for analytical queries that need a consistent point-in-time view
+- Consider your specific application's needs when deciding between READ COMMITTED and SNAPSHOT:
+  - **READ COMMITTED** is good for most OLTP workloads, offering better concurrency
+  - **SNAPSHOT** is useful for analytical queries that need a consistent point-in-time view
+- Use session-wide isolation levels for applications with consistent isolation requirements
+- Use transaction-specific isolation levels when you need different isolation guarantees for specific operations
 
 ## Examples
 
-### Basic Transaction
+### Basic Transaction with Default Isolation
 
 ```sql
 BEGIN;
 UPDATE accounts SET balance = balance - 100 WHERE id = 1;
 UPDATE accounts SET balance = balance + 100 WHERE id = 2;
 COMMIT;
+```
+
+### Transaction with Specific Isolation Level
+
+```sql
+-- Use SNAPSHOT isolation for a consistent analytical query
+BEGIN TRANSACTION ISOLATION LEVEL SNAPSHOT;
+SELECT category, SUM(amount) FROM sales GROUP BY category;
+SELECT COUNT(*) FROM products WHERE active = true;
+COMMIT;
+```
+
+### Session-wide Isolation Level Setting
+
+```sql
+-- Set session to use SNAPSHOT isolation by default
+SET ISOLATIONLEVEL = 'SNAPSHOT';
+
+-- All subsequent transactions will use SNAPSHOT isolation
+BEGIN;
+SELECT * FROM inventory WHERE quantity > 0;
+UPDATE inventory SET quantity = quantity - 1 WHERE product_id = 123;
+COMMIT;
+
+-- Reset to default
+SET ISOLATIONLEVEL = 'READ COMMITTED';
 ```
 
 ### Transaction with Rollback
@@ -156,6 +224,6 @@ ROLLBACK;
 ## Limitations
 
 - Long-running transactions can cause version storage to grow, impacting performance
-- The current implementation doesn't support explicitly setting isolation levels via SQL
 - Extremely high concurrency on the same rows may lead to frequent conflicts
 - Savepoints are not currently supported
+- The isolation level automatic restoration only works for properly completed transactions (COMMIT/ROLLBACK)

@@ -19,17 +19,7 @@ import (
 	"time"
 
 	"github.com/stoolap/stoolap/internal/fastmap"
-)
-
-// IsolationLevel represents the transaction isolation level
-type IsolationLevel int
-
-const (
-	// ReadCommitted is the isolation level where transactions see only committed data
-	ReadCommitted IsolationLevel = iota
-	// SnapshotIsolation (equivalent to Repeatable Read) ensures transactions see a consistent
-	// snapshot of the database as it existed at the start of the transaction
-	SnapshotIsolation
+	"github.com/stoolap/stoolap/internal/storage"
 )
 
 // TransactionRegistry manages transaction states and visibility rules
@@ -38,7 +28,7 @@ type TransactionRegistry struct {
 	nextTxnID             atomic.Int64
 	activeTransactions    *fastmap.SegmentInt64Map[int64] // txnID -> begin timestamp
 	committedTransactions *fastmap.SegmentInt64Map[int64] // txnID -> commit timestamp
-	isolationLevel        IsolationLevel
+	isolationLevel        storage.IsolationLevel
 	accepting             atomic.Bool // Flag to control if new transactions are accepted
 }
 
@@ -47,19 +37,19 @@ func NewTransactionRegistry() *TransactionRegistry {
 	reg := &TransactionRegistry{
 		activeTransactions:    fastmap.NewSegmentInt64Map[int64](8, 1000),
 		committedTransactions: fastmap.NewSegmentInt64Map[int64](8, 1000),
-		isolationLevel:        ReadCommitted, // Default isolation level
+		isolationLevel:        storage.ReadCommitted, // Default isolation level
 	}
 	reg.accepting.Store(true) // Start accepting transactions by default
 	return reg
 }
 
 // SetIsolationLevel sets the isolation level for this registry
-func (r *TransactionRegistry) SetIsolationLevel(level IsolationLevel) {
+func (r *TransactionRegistry) SetIsolationLevel(level storage.IsolationLevel) {
 	r.isolationLevel = level
 }
 
 // GetIsolationLevel returns the current isolation level
-func (r *TransactionRegistry) GetIsolationLevel() IsolationLevel {
+func (r *TransactionRegistry) GetIsolationLevel() storage.IsolationLevel {
 	return r.isolationLevel
 }
 
@@ -159,7 +149,7 @@ func (r *TransactionRegistry) IsDirectlyVisible(versionTxnID int64) bool {
 
 	// Fast path for ReadCommitted isolation level (the default)
 	// where any committed transaction is visible to all other transactions
-	if r.isolationLevel == ReadCommitted {
+	if r.isolationLevel == storage.ReadCommitted {
 		// Thread-safe check with SegmentInt64Map
 		// This is a hot path that benefits from being as fast as possible
 		return r.committedTransactions.Has(versionTxnID)
@@ -185,7 +175,7 @@ func (r *TransactionRegistry) IsVisible(versionTxnID int64, viewerTxnID int64) b
 	}
 
 	// Fast path for common READ COMMITTED level (most databases default to this)
-	if r.isolationLevel == ReadCommitted {
+	if r.isolationLevel == storage.ReadCommitted {
 		// In READ COMMITTED, only committed transactions are visible
 		// This delegation is inlinable and very efficient
 		return r.IsDirectlyVisible(versionTxnID)
@@ -232,7 +222,7 @@ func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
 
 	// If we're in snapshot isolation mode, we need to preserve transactions
 	// that might still be visible to active transactions
-	if r.isolationLevel == SnapshotIsolation {
+	if r.isolationLevel == storage.SnapshotIsolation {
 		activeSet = make(map[int64]struct{})
 
 		// Collect all active transaction IDs into our map
@@ -258,7 +248,7 @@ func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
 	// Find transactions to remove
 	r.committedTransactions.ForEach(func(txnID, commitTS int64) bool {
 		// Skip transactions that are still active
-		if r.isolationLevel == SnapshotIsolation {
+		if r.isolationLevel == storage.SnapshotIsolation {
 			if _, isActive := activeSet[txnID]; isActive {
 				return true
 			}

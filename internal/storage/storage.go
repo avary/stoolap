@@ -16,6 +16,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -328,6 +329,7 @@ type Transaction interface {
 	Commit() error
 	Rollback() error
 	ID() int64
+	SetIsolationLevel(level IsolationLevel) error
 	CreateTable(name string, schema Schema) (Table, error)
 	DropTable(name string) error
 	GetTable(name string) (Table, error)
@@ -356,7 +358,7 @@ type Engine interface {
 	Open() error
 	Close() error
 	BeginTransaction() (Transaction, error)
-	BeginTx(ctx context.Context) (Transaction, error)
+	BeginTx(ctx context.Context, level sql.IsolationLevel) (Transaction, error)
 	Path() string
 	TableExists(tableName string) (bool, error)
 	IndexExists(indexName string, tableName string) (bool, error)
@@ -367,11 +369,26 @@ type Engine interface {
 	ListTableIndexes(tableName string) (map[string]string, error)
 	// GetAllIndexes retrieves all index objects for a table
 	GetAllIndexes(tableName string) ([]Index, error)
+	// GetIsolationLevel retrieves the current transaction isolation level
+	GetIsolationLevel() IsolationLevel
+	// SetIsolationLevel sets the transaction isolation level
+	SetIsolationLevel(level IsolationLevel) error
 	// GetConfig returns the current storage engine configuration
 	GetConfig() Config
 	// UpdateConfig updates the storage engine configuration
 	UpdateConfig(config Config) error
 }
+
+// IsolationLevel represents the transaction isolation level
+type IsolationLevel int
+
+const (
+	// ReadCommitted is the isolation level where transactions see only committed data
+	ReadCommitted IsolationLevel = iota
+	// SnapshotIsolation (equivalent to Repeatable Read) ensures transactions see a consistent
+	// snapshot of the database as it existed at the start of the transaction
+	SnapshotIsolation
+)
 
 // PersistenceConfig represents configuration options for the persistence layer
 type PersistenceConfig struct {
