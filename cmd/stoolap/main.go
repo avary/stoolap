@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stoolap/stoolap/internal/common"
 	// Import driver
 	_ "github.com/stoolap/stoolap/pkg/driver"
 )
@@ -34,7 +35,15 @@ func main() {
 	// Parse command line flags
 	dbPath := flag.String("db", "memory://", "Database path (file://<path> or memory://)")
 	jsonOutput := flag.Bool("json", false, "Output results in JSON format")
+	version := flag.Bool("version", false, "Show version information")
+	versionShort := flag.Bool("v", false, "Show version information (short)")
 	flag.Parse()
+
+	// Handle version flags
+	if *version || *versionShort {
+		fmt.Println(common.VersionString)
+		return
+	}
 
 	// Open the database
 	db, err := sql.Open("stoolap", *dbPath)
