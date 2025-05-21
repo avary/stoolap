@@ -1,8 +1,7 @@
 ---
-layout: doc
-title: Architecture Overview
-description: High-level overview of Stoolap's architecture and components
-permalink: /docs/architecture/
+title: Stoolap Architecture
+category: Architecture
+order: 1
 ---
 
 # Stoolap Architecture
@@ -11,10 +10,11 @@ This document provides a high-level overview of Stoolap's architecture, includin
 
 ## System Overview
 
-Stoolap is a high-performance, column-oriented database engine designed for analytical workloads while also supporting transactional operations. Its architecture prioritizes:
+Stoolap is a high-performance Hybrid Transactional/Analytical Processing (HTAP) database engine that combines transactional capabilities with analytical processing. Its architecture prioritizes:
 
 - Memory-first design with optional disk persistence
-- Columnar storage for efficient analytical queries
+- Row-based version store for efficient OLTP operations
+- Columnar indexing for optimized analytical queries
 - Multi-version concurrency control (MVCC) for transaction isolation
 - Vectorized execution for performance
 - Zero external dependencies
@@ -59,12 +59,12 @@ Stoolap's architecture consists of the following major components:
   - Table metadata management
   - Column type management
 
-- **Columnar Storage** - Column-oriented data organization
-  - Column compression (compression/)
-  - Type-specific storage optimizations
-  - Segment-based organization
+- **Row-Based Storage** - Row-oriented data organization for transactional workloads
+  - In-memory row storage
+  - Disk-based persistence
+  - Type-specific optimizations
 
-- **Indexing System** - Multiple index types for different access patterns
+- **Columnar Indexing** - Column-oriented indexing for analytical queries
   - B-tree indexes (btree/)
   - Bitmap indexes (bitmap/)
   - Columnar indexes (mvcc/columnar_index.go)
@@ -125,6 +125,28 @@ When a query is executed, it flows through the system as follows:
    - Memory is released
    - Transaction state is updated
 
+## HTAP Architecture
+
+Stoolap combines OLTP and OLAP capabilities in a single system through its HTAP architecture:
+
+### OLTP (Transactional) Features
+- Row-based version store optimized for point lookups and updates
+- MVCC for isolation and concurrency
+- Efficient transaction processing with optimistic concurrency control
+- Low-latency write operations
+
+### OLAP (Analytical) Features
+- Columnar indexing for efficient analytical queries
+- Vectorized execution engine for faster analytical processing
+- Expression pushdown to optimize filtering operations
+- SIMD acceleration for batch operations
+
+### Hybrid Benefits
+- Unified data store for both transactional and analytical workloads
+- No ETL needed between transactional and analytical systems
+- Real-time analytics on live transactional data
+- Consistent view across all query types
+
 ## Physical Architecture
 
 ### In-Memory Mode
@@ -158,7 +180,7 @@ Stoolap uses a combination of concurrency techniques:
 
 Several techniques are used to minimize memory usage:
 
-- **Columnar Compression** - Type-specific compression algorithms
+- **Type-Specific Compression** - For various data types
 - **Memory Pooling** - Reuse of memory allocations
 - **Reference Counting** - Efficient resource management
 - **SIMD Operations** - Processing multiple values with single instructions

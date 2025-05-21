@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: Storage Engine
-description: How data is stored and retrieved in Stoolap
-permalink: /docs/storage-engine/
+category: Architecture
+order: 1
 ---
 
 # Storage Engine
@@ -13,10 +12,10 @@ This document provides a detailed overview of Stoolap's storage engine, includin
 
 Stoolap's storage engine is designed with the following principles:
 
-- **Column-oriented** - Data is organized by column rather than by row
+- **HTAP Architecture** - Combines row-based storage with columnar indexing for hybrid workloads
 - **Memory-optimized** - Prioritizes in-memory performance with optional persistence
 - **MVCC-based** - Uses multi-version concurrency control for transaction isolation
-- **Segment-organized** - Data is divided into segments for efficient management
+- **Version-organized** - Tracks different versions of rows for transaction isolation
 - **Type-specialized** - Uses different strategies for different data types
 - **Index-accelerated** - Multiple index types to optimize different query patterns
 
@@ -27,49 +26,51 @@ Stoolap's storage engine is designed with the following principles:
 Tables in Stoolap are composed of:
 
 - **Metadata** - Schema information, column definitions, and indexes
-- **Columns** - The actual data storage, organized by column
-- **Segments** - Data is divided into segments for better management
-- **Indexes** - Optional structures for accelerating queries
+- **Row Data** - The primary data storage, organized by row
 - **Version Store** - Tracks row versions for MVCC
+- **Columnar Indexes** - Optional column-oriented indexes for analytical queries
+- **Transaction Manager** - Manages transaction state and visibility
 
-### Column Types
+### Data Types
 
-Each column type has a specialized implementation:
+Stoolap supports a variety of data types, each with optimized storage:
 
-- **Int64Column** - Optimized for 64-bit integers
-- **Float64Column** - Optimized for 64-bit floating-point numbers
-- **StringColumn** - Optimized for variable-length string data
-- **BoolColumn** - Optimized for boolean values
-- **TimestampColumn** - Optimized for datetime values
-- **JSONColumn** - Optimized for JSON documents
-- **NullableColumn** - Wrapper that adds NULL support to any column type
+- **Int64** - Optimized for 64-bit integers
+- **Float64** - Optimized for 64-bit floating-point numbers
+- **String** - Optimized for variable-length string data
+- **Bool** - Optimized for boolean values
+- **Timestamp** - Optimized for datetime values
+- **JSON** - Optimized for JSON documents
+- **NULL values** - Efficiently tracked for any data type
 
-### Segment Management
+### Version Management
 
-Data in each table is divided into segments:
+Stoolap tracks different versions of data for transaction isolation:
 
-- New data is added to the active segment
-- When a segment reaches a certain size, a new active segment is created
-- Each segment is managed independently
-- This approach improves concurrency and memory management
+- Each change creates a new version rather than overwriting
+- Versions are associated with transaction IDs
+- Visibility rules determine which versions each transaction can see
+- Old versions are garbage collected when no longer needed
 
 ## Data Storage Format
 
 ### In-Memory Format
 
-In memory, data is stored in specialized column structures:
+In memory, data is stored with these characteristics:
 
-- **Fixed-width types** (INT, FLOAT, BOOL) - Stored in arrays or slices
-- **Variable-width types** (STRING, JSON) - Stored with dictionaries or offset arrays
-- **Nullable types** - Paired with bitmap for NULL indicators
-- **Versions** - Associated with transaction IDs for MVCC
+- **Row-based primary storage** - Records are stored as coherent rows
+- **Version chains** - Linked versions for MVCC
+- **Columnar indexes** - Column-oriented organization for analytical access
+- **Type-specific structures** - Optimized for different data types
+- **Bitmap filters** - Fast filtering for lookups
 
 ### On-Disk Format
 
 When persistence is enabled, data is stored on disk with:
 
 - **Binary serialization** - Compact binary format for storage
-- **Column files** - Separate files for each column
+- **Row files** - Primary data in row format
+- **Index files** - Columnar index data
 - **Metadata files** - Schema and index information
 - **WAL files** - Write-ahead log for durability
 - **Snapshot files** - Point-in-time table snapshots
@@ -83,29 +84,27 @@ The storage engine uses MVCC to provide transaction isolation:
 - **Visibility Rules** - Determine which versions are visible to each transaction
 - **Garbage Collection** - Old versions are cleaned up when no longer needed
 
-For more details, see the [MVCC Implementation](/docs/mvcc-implementation/) and [Transaction Isolation](/docs/transaction-isolation/) documentation.
+For more details, see the [MVCC Implementation](mvcc-implementation.md) and [Transaction Isolation](transaction-isolation.md) documentation.
 
 ## Data Access Paths
 
-### Table Scan
+### OLTP Access Path
 
-For full table scans:
+For transactional operations:
 
-1. The storage engine identifies visible segments
-2. Each segment is scanned in sequence or parallel
-3. Visibility rules are applied to filter versions
-4. Columns are accessed directly for projection
-5. Batch processing is used for vectorized execution
+1. The storage engine uses row-based access for efficiency
+2. Indexes help locate specific rows quickly
+3. Visibility rules are applied to ensure transaction isolation
+4. Point operations are optimized for low latency
 
-### Index Access
+### OLAP Access Path
 
-For index-based access:
+For analytical operations:
 
-1. The appropriate index is selected
-2. The index is used to identify candidate rows
-3. Visibility rules are applied to filter versions
-4. Remaining predicates are evaluated if needed
-5. Columns are accessed for projection
+1. Columnar indexes are used to minimize data access
+2. Batch processing is used for vectorized execution
+3. Filter pushdown optimizes query execution
+4. Parallel scanning improves throughput
 
 ## Data Modification
 
@@ -114,9 +113,9 @@ For index-based access:
 When data is inserted:
 
 1. Values are validated against column types
-2. A new row version is created in the active segment
-3. The row is marked with the current transaction ID
-4. Indexes are updated to include the new row
+2. A new row version is created with the current transaction ID
+3. The row is added to the primary row storage
+4. Columnar indexes are updated
 5. The operation is recorded in the WAL (if enabled)
 
 ### Update Operations
@@ -197,20 +196,35 @@ Core storage engine components:
 - **column.go** - Column type implementations
 - **mvcc/** - MVCC implementation components
   - **engine.go** - MVCC storage engine
-  - **table.go** - Table implementation
+  - **table.go** - Table implementation with row-based storage
   - **transaction.go** - Transaction management
-  - **version_store.go** - Version tracking
-  - **columnar_index.go** - Columnar indexing
+  - **version_store.go** - Version tracking for rows
+  - **columnar_index.go** - Columnar indexing for analytics
   - **scanner.go** - Data scanning
   - **disk_version_store.go** - Persistence implementation
   - **wal_manager.go** - Write-ahead logging
-- **compression/** - Column compression implementations
+- **compression/** - Data compression implementations
 - **expression/** - Storage-level expression evaluation
 
-## Performance Characteristics
+## HTAP Performance Characteristics
 
-- **Read Performance** - Columnar organization optimizes analytical queries
-- **Write Performance** - Segment-based design with append-only writes
-- **Concurrency** - MVCC enables high concurrent access
-- **Memory Efficiency** - Type-specific optimizations reduce memory footprint
-- **I/O Efficiency** - Batched and targeted I/O with compression
+### OLTP Performance
+
+- **Fast Point Operations** - Row-based storage optimizes transaction processing
+- **Low Latency** - Designed for quick response time
+- **High Concurrency** - MVCC enables simultaneous access
+- **Efficient Writes** - Optimized for insert and update operations
+
+### OLAP Performance
+
+- **Columnar Scanning** - Columnar indexes optimize analytical queries
+- **Predicate Pushdown** - Filtering at the lowest level
+- **Vectorized Processing** - Batch operations for high throughput
+- **Parallel Execution** - Multiple cores utilized efficiently
+
+### Hybrid Benefits
+
+- **No ETL** - Data immediately available for both workloads
+- **Real-time Analytics** - Query live transactional data
+- **Consistent View** - Transaction isolation across all operations
+- **Unified Management** - Single system for all database operations

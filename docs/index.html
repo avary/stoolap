@@ -1,15 +1,23 @@
 ---
 layout: default
-title: Stoolap - High-performance columnar SQL database in Go
+title: Stoolap - High-performance HTAP SQL database in Go
 ---
 
 <section class="hero-section">
+  <!-- HTAP database SVG background with animated elements (simplified version without labels) -->
+  <div class="hero-background">
+    <object type="image/svg+xml" data="{{ '/assets/img/htap-simple-background.svg' | relative_url }}" class="hero-svg-bg" id="htap-background-svg"></object>
+  </div>
+  
+  
   <div class="container">
     <div class="hero-content">
       <div class="hero-text">
-        <img src="{{ '/assets/img/logo-horizontal.svg' | relative_url }}" alt="Stoolap" class="hero-logo" width="300" height="90">
-        <p class="hero-subtitle">High-performance columnar SQL database with zero dependencies</p>
-        <p class="hero-description">A modern database engine written in pure Go that combines transactional and analytical capabilities in a single system.</p>
+        <div class="hero-logo-container">
+           <img src="{{ '/assets/img/logo-horizontal.svg' | relative_url }}" alt="Stoolap" class="hero-logo" width="390" height="130">
+        </div>
+        <p class="hero-subtitle">High-performance HTAP SQL database</p>
+        <p class="hero-description">A modern Hybrid Transactional/Analytical Processing engine written in pure Go, combining row-based storage with columnar indexing and zero dependencies.</p>
         <div class="hero-cta">
           <a href="{{ '/docs/getting-started/installation/' | relative_url }}" class="btn btn-primary">Get Started</a>
           <a href="{{ site.github.repository_url }}" class="btn btn-secondary" target="_blank" rel="noopener">
@@ -20,21 +28,8 @@ title: Stoolap - High-performance columnar SQL database in Go
           </a>
         </div>
       </div>
-      <div class="hero-image">
-        <div class="db-illustration">
-          <div class="db-top"></div>
-          <div class="db-body">
-            <div class="db-column"></div>
-            <div class="db-column"></div>
-            <div class="db-column"></div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
-  <svg class="hero-wave" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 120" aria-hidden="true">
-    <path fill="var(--color-bg)" fill-opacity="1" d="M0,64L48,80C96,96,192,128,288,128C384,128,480,96,576,85.3C672,75,768,85,864,90.7C960,96,1056,96,1152,96C1248,96,1344,96,1392,96L1440,96L1440,120L1392,120C1344,120,1248,120,1152,120C1056,120,960,120,864,120C768,120,672,120,576,120C480,120,384,120,288,120C192,120,96,120,48,120L0,120Z"></path>
-  </svg>
 </section>
 
 <section class="features-section">
@@ -55,7 +50,7 @@ title: Stoolap - High-performance columnar SQL database in Go
           </svg>
         </div>
         <h3>High Performance</h3>
-        <p>Columnar storage and vectorized execution deliver analytics at incredible speed, with optimized data structures that minimize memory usage.</p>
+        <p>Row-based storage for transactional workloads and columnar indexing for analytics deliver exceptional speed for both OLTP and OLAP operations.</p>
       </div>
       
       <div class="feature-card">
@@ -83,8 +78,8 @@ title: Stoolap - High-performance columnar SQL database in Go
             <path d="M3 3h18v18H3zM21 9H3M21 15H3M12 3v18"/>
           </svg>
         </div>
-        <h3>Columnar Storage</h3>
-        <p>Data organized by column for efficient compression and analytical queries. Specialized encoding techniques maximize performance for each data type.</p>
+        <h3>HTAP Architecture</h3>
+        <p>Hybrid Transactional/Analytical Processing unifies OLTP and OLAP workloads in a single system, eliminating the need for separate database engines.</p>
       </div>
       
       <div class="feature-card">
@@ -152,7 +147,7 @@ title: Stoolap - High-performance columnar SQL database in Go
         <div class="code-output">Connected to memory database</div>
         <div class="code-line">
           <span class="code-prompt">stoolap></span>
-          <span>CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(255));</span>
+          <span>CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);</span>
         </div>
         <div class="code-output">Table created successfully.</div>
         <div class="code-line">
@@ -183,7 +178,7 @@ title: Stoolap - High-performance columnar SQL database in Go
       <div class="feature-card">
         <h3>Standard SQL</h3>
         <p>Use familiar SQL syntax with powerful extensions for modern applications.</p>
-        <a href="{{ '/docs/' | relative_url }}" class="link-arrow">Documentation</a>
+        <a href="{{ '/docs/sql-commands/sql-commands/' | relative_url }}" class="link-arrow">SQL Commands</a>
       </div>
       
       <div class="feature-card">
@@ -203,39 +198,198 @@ title: Stoolap - High-performance columnar SQL database in Go
     </div>
     
     <div class="architecture-diagram">
-      <div class="arch-layer client-layer">
-        <h3>Client Interface</h3>
-        <div class="arch-components">
-          <div class="arch-component">SQL Driver</div>
-          <div class="arch-component">CLI</div>
-          <div class="arch-component">API</div>
+      <div class="arch-diagram-container">
+        <object type="image/svg+xml" data="{{ '/assets/img/architecture-diagram.svg' | relative_url }}" class="arch-svg" id="architecture-svg"></object>
+      </div>
+      
+    </div>
+    
+    <div class="arch-details">
+      <div class="arch-detail-item">
+        <div class="arch-detail-icon client-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 14h6v6h-6z"></path>
+            <path d="M14 4h6v6h-6z"></path>
+            <path d="M14 17a3 3 0 0 0 0-6H7"></path>
+          </svg>
+        </div>
+        <div class="arch-detail-content">
+          <h4>Flexible Client Interface</h4>
+          <p>Built-in database/sql driver, command-line interface, and API access - all using the same high-performance core.</p>
         </div>
       </div>
       
-      <div class="arch-layer query-layer">
-        <h3>Query Processing</h3>
-        <div class="arch-components">
-          <div class="arch-component">Parser</div>
-          <div class="arch-component">Optimizer</div>
-          <div class="arch-component">Executor</div>
+      <div class="arch-detail-item">
+        <div class="arch-detail-icon query-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+          </svg>
+        </div>
+        <div class="arch-detail-content">
+          <h4>Optimized Query Processing</h4>
+          <p>SQL parsing, intelligent query optimization, and vectorized execution deliver exceptional performance for both OLTP and OLAP workloads.</p>
         </div>
       </div>
       
-      <div class="arch-layer storage-layer">
-        <h3>Storage Engine</h3>
-        <div class="arch-components">
-          <div class="arch-component">MVCC</div>
-          <div class="arch-component">Columnar Storage</div>
-          <div class="arch-component">Indexing</div>
+      <div class="arch-detail-item">
+        <div class="arch-detail-icon storage-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 20h20"></path>
+            <path d="M5 20V8.2c0-3.4 2.8-6.2 6.2-6.2H13"></path>
+            <path d="M16 12V4"></path>
+            <path d="M16 4l4 4"></path>
+            <path d="M16 4l-4 4"></path>
+            <rect x="4" y="12" width="6" height="8"></rect>
+            <rect x="14" y="12" width="6" height="8"></rect>
+          </svg>
+        </div>
+        <div class="arch-detail-content">
+          <h4>HTAP Storage Engine</h4>
+          <p>Row-based version store with columnar indexing provides both transactional and analytical capabilities within a unified engine for the best of both worlds.</p>
         </div>
       </div>
     </div>
     
     <div class="cta-wrapper">
-      <a href="{{ '/docs/architecture/' | relative_url }}" class="btn btn-primary">Explore Architecture</a>
+      <a href="{{ '/docs/architecture/architecture/' | relative_url }}" class="btn btn-primary">Explore Architecture</a>
     </div>
   </div>
 </section>
+
+<style>
+/* Architecture diagram styling */
+.arch-diagram-container {
+  width: 100%;
+  margin: 0 auto;
+  background-color: #f9fafb;
+  border-radius: 8px;
+  padding: 16px 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  border: 1px solid var(--color-border);
+  overflow-x: auto; /* Allow horizontal scrolling for mobile */
+  position: relative;
+}
+
+@media (max-width: 768px) {
+  .arch-diagram-container {
+    padding: 8px 6px;
+    margin: 0 -10px; /* Extend slightly beyond container for more width */
+    width: calc(100% + 20px);
+    border-radius: 6px;
+  }
+  
+  .arch-diagram-container::after {
+    opacity: 1;
+    animation: fadeInOut 3s ease 1s forwards;
+  }
+  
+  @keyframes fadeInOut {
+    0%, 80% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+}
+
+[data-theme="dark"] .arch-diagram-container {
+  background-color: #1a1a1a;
+  border-color: #383838;
+}
+
+[data-theme="dark"] .arch-diagram-container::after {
+  background-color: rgba(255, 255, 255, 0.15);
+  color: white;
+}
+
+.arch-svg {
+  width: 100%;
+  height: auto;
+  margin: 0 auto;
+  display: block;
+  max-width: 900px;
+}
+
+@media (max-width: 768px) {
+  .arch-diagram-container {
+    padding: 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+.arch-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 2rem;
+  margin-top: 3rem;
+}
+
+.arch-detail-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.arch-detail-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.client-icon {
+  background-color: rgba(76, 175, 80, 0.15);
+  color: #4CAF50;
+}
+
+.query-icon {
+  background-color: rgba(33, 150, 243, 0.15);
+  color: #2196F3;
+}
+
+.storage-icon {
+  background-color: rgba(156, 39, 176, 0.15);
+  color: #9C27B0;
+}
+
+.arch-detail-content h4 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1.1rem;
+}
+
+.arch-detail-content p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+}
+
+/* Dark mode support */
+[data-theme="dark"] .client-icon {
+  background-color: rgba(76, 175, 80, 0.2);
+}
+
+[data-theme="dark"] .query-icon {
+  background-color: rgba(33, 150, 243, 0.2);
+}
+
+[data-theme="dark"] .storage-icon {
+  background-color: rgba(156, 39, 176, 0.2);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .arch-details {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  
+  .arch-svg {
+    height: 500px;
+  }
+}
+</style>
 
 <section class="cta-section">
   <div class="container">
@@ -249,6 +403,274 @@ title: Stoolap - High-performance columnar SQL database in Go
     </div>
   </div>
 </section>
+
+<section class="license-section">
+  <div class="container">
+    <div class="license-content">
+      <h2>Open Source License</h2>
+      <p>Stoolap is proudly open source, released under the Apache License 2.0.</p>
+      <div class="license-details">
+        <div class="license-feature">
+          <div class="license-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+          </div>
+          <div class="license-feature-content">
+            <h4>Patent Protection</h4>
+            <p>Includes explicit patent grant to protect users and contributors</p>
+          </div>
+        </div>
+        <div class="license-feature">
+          <div class="license-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+          </div>
+          <div class="license-feature-content">
+            <h4>Community-Friendly</h4>
+            <p>Promotes collaboration while protecting contributions</p>
+          </div>
+        </div>
+        <div class="license-feature">
+          <div class="license-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+            </svg>
+          </div>
+          <div class="license-feature-content">
+            <h4>Enterprise-Ready</h4>
+            <p>Widely accepted in enterprise environments</p>
+          </div>
+        </div>
+      </div>
+      <div class="license-cta">
+        <a href="{{ site.github.repository_url }}/blob/main/LICENSE" class="btn license-btn-primary" target="_blank" rel="noopener">View License</a>
+        <a href="{{ site.github.repository_url }}/blob/main/CONTRIBUTING.md" class="btn btn-outline" target="_blank" rel="noopener">Contribution Guidelines</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+.license-section {
+  padding: var(--space-8) 0;
+  background-color: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+}
+
+.license-content {
+  text-align: center;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.license-content h2 {
+  margin-bottom: var(--space-2);
+}
+
+.license-content > p {
+  margin-bottom: var(--space-6);
+  font-size: 1.1rem;
+}
+
+.license-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+  text-align: left;
+}
+
+.license-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.license-icon {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  background-color: rgba(var(--color-primary-rgb), 0.15);
+  color: var(--color-primary);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.license-feature-content h4 {
+  margin: 0 0 var(--space-2);
+  font-size: 1rem;
+}
+
+.license-feature-content p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+}
+
+.license-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: center;
+}
+
+.license-btn-primary {
+  background-color: var(--color-primary);
+  color: white !important;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  font-size: 0.95rem;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.license-btn-primary:hover {
+  background-color: var(--color-primary-dark);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  text-decoration: none;
+}
+
+.btn-outline {
+  background-color: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  font-size: 0.95rem;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.btn-outline:hover {
+  background-color: var(--color-bg-alt);
+  border-color: var(--color-text-muted);
+}
+
+@media (max-width: 768px) {
+  .license-details {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+  
+  .license-cta {
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .license-cta .btn {
+    width: 100%;
+  }
+}
+</style>
+
+<script>
+/* Simple SVG theme sync script */
+document.addEventListener('DOMContentLoaded', function() {
+  // Function to sync theme with SVGs
+  function syncThemeWithSvgs() {
+    try {
+      // Get current theme
+      var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      
+      // Architecture diagram
+      var archSvg = document.getElementById('architecture-svg');
+      if (archSvg && archSvg.contentDocument) {
+        var svgDoc = archSvg.contentDocument;
+        var svg = svgDoc.querySelector('svg');
+        if (svg) {
+          if (isDark) {
+            svg.setAttribute('data-theme', 'dark');
+          } else {
+            svg.removeAttribute('data-theme');
+          }
+        }
+      }
+      
+      // HTAP background
+      var bgSvg = document.getElementById('htap-background-svg');
+      if (bgSvg && bgSvg.contentDocument) {
+        var bgSvgDoc = bgSvg.contentDocument;
+        var bgSvgEl = bgSvgDoc.querySelector('svg');
+        if (bgSvgEl) {
+          if (isDark) {
+            bgSvgEl.classList.add('dark-theme');
+          } else {
+            bgSvgEl.classList.remove('dark-theme');
+          }
+        }
+      }
+    } catch(e) {
+      // Ignore errors - don't crash the page
+    }
+  }
+  
+  // Apply on SVG load
+  var archSvg = document.getElementById('architecture-svg');
+  if (archSvg) {
+    archSvg.addEventListener('load', syncThemeWithSvgs);
+  }
+  
+  var bgSvg = document.getElementById('htap-background-svg');
+  if (bgSvg) {
+    bgSvg.addEventListener('load', function() {
+      syncThemeWithSvgs();
+      
+      // Add specific customization for the simplified HTAP background
+      try {
+        var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        var bgSvgDoc = bgSvg.contentDocument;
+        var bgSvgEl = bgSvgDoc.querySelector('svg');
+        
+        if (bgSvgEl) {
+          // Set theme class right away
+          if (isDark) {
+            bgSvgEl.classList.add('dark-theme');
+          } else {
+            bgSvgEl.classList.remove('dark-theme');
+          }
+          
+          // Improve visibility of certain elements in dark mode
+          if (isDark) {
+            var rows = bgSvgDoc.querySelectorAll('.row-element');
+            rows.forEach(function(row) {
+              row.setAttribute('opacity', '0.8');
+            });
+            
+            var cols = bgSvgDoc.querySelectorAll('.column-element');
+            cols.forEach(function(col) {
+              col.setAttribute('opacity', '0.8');
+            });
+          }
+        }
+      } catch(e) {
+        // Silent fail - don't crash the page
+      }
+    });
+  }
+  
+  // Apply on theme changes
+  var observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(mutation) {
+      if (mutation.attributeName === 'data-theme') {
+        syncThemeWithSvgs();
+      }
+    });
+  });
+  
+  observer.observe(document.documentElement, { attributes: true });
+  
+  // Initial application after a delay
+  setTimeout(syncThemeWithSvgs, 500);
+});
+</script>
 
 <style>
 /* Custom styles for the home page */
@@ -265,6 +687,25 @@ title: Stoolap - High-performance columnar SQL database in Go
   height: auto;
   margin: 0 0 var(--space-4);
   display: block;
+}
+
+/* Dark mode support for the hero SVG logo */
+[data-theme="dark"] .logo-icon rect[stroke="black"] {
+  stroke: #555;
+}
+
+/* Center and properly size the hero logo */
+.hero-logo-container {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: var(--space-4);
+}
+
+/* Make the hero section more impactful */
+.hero-section {
+  position: relative;
+  overflow: hidden;
+  padding: var(--space-10) 0;
 }
 
 .db-illustration {

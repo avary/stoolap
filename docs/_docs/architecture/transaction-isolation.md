@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: Transaction Isolation
-description: Understanding transaction isolation levels in Stoolap
-permalink: /docs/transaction-isolation/
+category: Architecture
+order: 1
 ---
 
 # Transaction Isolation in Stoolap

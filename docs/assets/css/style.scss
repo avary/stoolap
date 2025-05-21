@@ -22,15 +22,15 @@
 /* Dark mode colors */
 @media (prefers-color-scheme: dark) {
   :root {
-    --primary-color: #207e53; /* Medium green */
-    --secondary-color: #95b746; /* Light green */
-    --accent-color: #406021; /* Dark accent */
+    --primary-color: #2a9e69; /* Brighter medium green */
+    --secondary-color: #b0d45b; /* Brighter light green */
+    --accent-color: #5c8a30; /* Brighter accent */
     --text-color: #ffffff; /* White text */
-    --background-color: #121212; /* Dark background */
-    --code-background: #1e1e1e; /* Darker gray for code background */
-    --border-color: #303030; /* Dark gray for borders */
+    --background-color: #0c0c0c; /* Darker background */
+    --code-background: #1a1a1a; /* Darker gray for code background */
+    --border-color: #333333; /* Dark gray for borders */
     --hover-color: #242424; /* Dark gray for hover states */
-    --header-color: #1c1c1c; /* Dark gray for headers */
+    --header-color: #151515; /* Dark gray for headers */
   }
 }
 
@@ -48,15 +48,15 @@ body.light-mode {
 }
 
 body.dark-mode {
-  --primary-color: #207e53;
-  --secondary-color: #95b746;
-  --accent-color: #406021;
-  --text-color: #ffffff;
-  --background-color: #121212;
-  --code-background: #1e1e1e;
-  --border-color: #303030;
-  --hover-color: #242424;
-  --header-color: #1c1c1c;
+  --primary-color: #2a9e69; /* Brighter medium green */
+  --secondary-color: #b0d45b; /* Brighter light green */
+  --accent-color: #5c8a30; /* Brighter accent */
+  --text-color: #ffffff; /* White text */
+  --background-color: #0c0c0c; /* Darker background */
+  --code-background: #1a1a1a; /* Darker gray for code background */
+  --border-color: #333333; /* Dark gray for borders */
+  --hover-color: #242424; /* Dark gray for hover states */
+  --header-color: #151515; /* Dark gray for headers */
 }
 
 /* Base styles */

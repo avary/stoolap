@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: MVCC Implementation
-description: Details of Stoolap's Multi-Version Concurrency Control implementation
-permalink: /docs/mvcc-implementation/
+category: Architecture
+order: 1
 ---
 
 # MVCC Implementation

@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: Expression Pushdown
-description: How Stoolap optimizes query performance by pushing filtering operations closer to the data
-permalink: /docs/expression-pushdown/
+category: Architecture
+order: 1
 ---
 
 # Expression Pushdown

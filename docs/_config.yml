@@ -39,3 +39,11 @@ defaults:
 plugins:
   - jekyll-sitemap
   - jekyll-seo-tag
+
+# Syntax highlighting with Rouge
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  
+highlighter: rouge

@@ -3,10 +3,8 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Remove preload class to allow transitions
-  setTimeout(() => {
-    document.body.classList.remove('preload');
-  }, 300);
+  // Remove preload class immediately
+  document.body.classList.remove('preload');
 
   // Initialize theme toggle
   initThemeToggle();
@@ -19,6 +17,9 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Add copy buttons to code blocks
   addCodeCopyButtons();
+  
+  // Initialize SVG theme sync
+  initSvgThemeSync();
 });
 
 /**
@@ -28,29 +29,19 @@ function initThemeToggle() {
   const themeToggle = document.getElementById('theme-toggle');
   if (!themeToggle) return;
   
-  // Check user preference
-  const storedTheme = localStorage.getItem('theme');
-  if (storedTheme) {
-    document.body.classList.add(storedTheme + '-theme');
-  }
+  // Get current theme from data-theme attribute
+  const getCurrentTheme = () => document.documentElement.getAttribute('data-theme') || 'light';
   
+  // Toggle between light and dark themes
   themeToggle.addEventListener('click', () => {
-    if (document.body.classList.contains('light-theme')) {
-      document.body.classList.replace('light-theme', 'dark-theme');
-      localStorage.setItem('theme', 'dark');
-    } else if (document.body.classList.contains('dark-theme')) {
-      document.body.classList.replace('dark-theme', 'light-theme');
-      localStorage.setItem('theme', 'light');
-    } else {
-      // No theme class set yet - check system preference
-      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        document.body.classList.add('light-theme');
-        localStorage.setItem('theme', 'light');
-      } else {
-        document.body.classList.add('dark-theme');
-        localStorage.setItem('theme', 'dark');
-      }
-    }
+    const currentTheme = getCurrentTheme();
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    
+    // Update HTML attribute
+    document.documentElement.setAttribute('data-theme', newTheme);
+    
+    // Save preference to localStorage
+    localStorage.setItem('theme', newTheme);
   });
 }
 
@@ -320,4 +311,56 @@ function setupTableOfContents() {
 // Initialize table of contents for doc pages
 if (document.querySelector('.doc-article')) {
   setupTableOfContents();
+}
+
+/**
+ * Sync SVGs with the current theme
+ */
+function initSvgThemeSync() {
+  // Initial sync on load
+  syncSvgThemes();
+  
+  // Watch for theme changes
+  const observer = new MutationObserver(mutations => {
+    mutations.forEach(mutation => {
+      if (mutation.attributeName === 'data-theme') {
+        syncSvgThemes();
+      }
+    });
+  });
+  
+  // Start observing theme changes on the HTML element
+  observer.observe(document.documentElement, { attributes: true });
+}
+
+/**
+ * Update all SVG objects to match the current theme
+ */
+function syncSvgThemes() {
+  const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+  
+  // Find all SVG objects
+  const svgObjects = document.querySelectorAll('object[type="image/svg+xml"]');
+  
+  svgObjects.forEach(obj => {
+    obj.addEventListener('load', function() {
+      try {
+        // Access the SVG document inside the object
+        const svgDoc = obj.contentDocument;
+        if (svgDoc && svgDoc.documentElement) {
+          // Set data-theme attribute on the SVG root element
+          svgDoc.documentElement.setAttribute('data-theme', currentTheme);
+        }
+      } catch (e) {
+        console.error('Error updating SVG theme:', e);
+      }
+    });
+    
+    // Reload already loaded SVGs to trigger the load event
+    if (obj.contentDocument && obj.contentDocument.readyState === 'complete') {
+      const currentSrc = obj.getAttribute('data');
+      obj.setAttribute('data', '');
+      obj.setAttribute('data', currentSrc);
+    }
+  });
 }

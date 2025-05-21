@@ -11,14 +11,14 @@ This document explains Stoolap's indexing system, including the types of indexes
 
 ## Index Types
 
-Stoolap supports several types of indexes, each optimized for different query patterns:
+Stoolap supports several types of indexes, each optimized for different query patterns in its HTAP architecture:
 
 ### 1. Columnar Indexes
 
-Columnar indexes are Stoolap's primary index type, optimized for column-oriented storage:
+Columnar indexes are a specialized index type in Stoolap's HTAP architecture, providing analytical capabilities on top of row-based storage:
 
-- **Design**: Maps column values to row positions
-- **Strengths**: Fast range scans and equality lookups
+- **Design**: Maps column values to row positions for efficient analytical queries
+- **Strengths**: Fast range scans and equality lookups for analytical workloads
 - **Use Cases**: WHERE clause filtering, range queries, sort operations
 - **Implementation**: Implemented in `columnar_index.go`
 
@@ -114,13 +114,13 @@ The optimizer considers several factors when choosing indexes:
 
 ### Columnar Index
 
-The columnar index is specialized for Stoolap's columnar storage:
+The columnar index is specialized for Stoolap's HTAP architecture, providing analytical capabilities on top of the row-based storage:
 
-- Maps column values to positions efficiently
-- Organizes values for fast range and equality searches
+- Maps column values to row positions efficiently for analytical access patterns
+- Organizes values for fast range and equality searches on column values
 - Maintains version information for MVCC
 - Implements specific optimizations for different data types
-- Provides fast access paths for common query patterns
+- Provides fast access paths for analytical query patterns
 
 For complex filtering, Stoolap's columnar index uses:
 - Sorted value lists for efficient binary search

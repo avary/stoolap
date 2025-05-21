@@ -11,13 +11,29 @@ This document provides a high-level overview of Stoolap's architecture, includin
 
 ## System Overview
 
-Stoolap is a high-performance, column-oriented database engine designed for analytical workloads while also supporting transactional operations. Its architecture prioritizes:
+Stoolap is a high-performance Hybrid Transactional/Analytical Processing (HTAP) database engine that combines efficient transactional operations with powerful analytical capabilities. Its architecture prioritizes:
 
 - Memory-first design with optional disk persistence
-- Columnar storage for efficient analytical queries
+- Row-based storage with columnar indexing for hybrid workloads
 - Multi-version concurrency control (MVCC) for transaction isolation
-- Vectorized execution for performance
+- Vectorized execution for analytical performance
 - Zero external dependencies
+
+## HTAP Architecture
+
+Stoolap combines OLTP and OLAP capabilities in a single system through its HTAP architecture:
+
+### OLTP (Transactional) Features
+- Row-based version store optimized for point lookups and updates
+- MVCC for isolation and concurrency
+- Efficient transaction processing with optimistic concurrency control
+- Low-latency write operations
+
+### OLAP (Analytical) Features
+- Columnar indexing for efficient analytical queries
+- Vectorized execution engine for batch processing
+- Expression pushdown for optimized filtering
+- Specialized indexing strategies for different query patterns
 
 ## Core Components
 
@@ -59,15 +75,15 @@ Stoolap's architecture consists of the following major components:
   - Table metadata management
   - Column type management
 
-- **Columnar Storage** - Column-oriented data organization
-  - Column compression (compression/)
+- **Row-Based Storage** - Row-oriented data organization for transactional operations
+  - Row-based version store
   - Type-specific storage optimizations
   - Segment-based organization
 
 - **Indexing System** - Multiple index types for different access patterns
   - B-tree indexes (btree/)
   - Bitmap indexes (bitmap/)
-  - Columnar indexes (mvcc/columnar_index.go)
+  - Columnar indexes (mvcc/columnar_index.go) - For analytical acceleration
   - Multi-column indexes (mvcc/columnar_index_multi.go)
 
 - **Persistence Layer** - Optional disk storage
@@ -158,7 +174,7 @@ Stoolap uses a combination of concurrency techniques:
 
 Several techniques are used to minimize memory usage:
 
-- **Columnar Compression** - Type-specific compression algorithms
+- **Targeted Compression** - Type-specific compression algorithms
 - **Memory Pooling** - Reuse of memory allocations
 - **Reference Counting** - Efficient resource management
 - **SIMD Operations** - Processing multiple values with single instructions

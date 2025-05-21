@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: Installation Guide
-description: How to install Stoolap on different platforms and environments
-permalink: /docs/installation/
+category: Getting Started
+order: 1
 ---
 
 # Installation Guide
@@ -93,9 +92,9 @@ This should display the version number of your Stoolap installation.
 
 After installing Stoolap, you can:
 
-- Follow the [Quick Start Tutorial](/docs/quickstart/) to create your first database
-- Learn about [Connection Strings](/docs/connection-strings/) to configure your database
-- Check the [SQL Commands](/docs/sql-commands/) reference for working with data
+- Follow the [Quick Start Tutorial](quickstart) to create your first database
+- Learn about [Connection Strings](connection-strings) to configure your database
+- Check the [SQL Commands](sql-commands) reference for working with data
 
 ## Troubleshooting
 

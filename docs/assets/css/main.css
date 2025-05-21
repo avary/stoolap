@@ -33,8 +33,8 @@
   --content-max-width: 800px;
   
   /* Typography */
-  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-sans: 'Rubik', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   
   /* Spacing */
   --space-1: 0.25rem;  /* 4px */
@@ -164,8 +164,12 @@ body {
   transition: background-color var(--transition-normal), color var(--transition-normal);
 }
 
-/* Prevent transition flash */
+/* Prevent transition flash during page load */
 body.preload * {
+  -webkit-transition: none !important;
+  -moz-transition: none !important;
+  -ms-transition: none !important;
+  -o-transition: none !important;
   transition: none !important;
 }
 
@@ -460,19 +464,19 @@ img {
 }
 
 /* Only show the relevant icon based on theme */
-.dark-theme .theme-toggle-icon.light,
-.light-theme .theme-toggle-icon.dark,
-body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
+[data-theme="dark"] .theme-toggle-icon.light,
+[data-theme="light"] .theme-toggle-icon.dark,
+:root:not([data-theme]) .theme-toggle-icon.dark {
   display: none;
 }
 
-/* For when no theme classes are applied, use prefers-color-scheme */
+/* For when no theme data attribute is applied, use prefers-color-scheme */
 @media (prefers-color-scheme: dark) {
-  body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.light {
+  :root:not([data-theme]) .theme-toggle-icon.light {
     display: none;
   }
   
-  body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
+  :root:not([data-theme]) .theme-toggle-icon.dark {
     display: flex;
   }
 }
@@ -492,7 +496,7 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
 .mobile-menu-toggle span {
   display: block;
   height: 2px;
-  width: 24px;
+  width: 30px;
   background-color: var(--color-text);
   margin: 5px 0;
   transition: all var(--transition-fast);
@@ -618,6 +622,27 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
 .doc-article {
   max-width: var(--content-max-width);
   margin: 0 auto;
+}
+
+/* Wiki notice styling */
+.doc-content h2:first-of-type + p + p {
+  background-color: var(--color-primary);
+  color: white;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  text-align: center;
+  margin: var(--space-4) 0;
+  box-shadow: var(--shadow-md);
+}
+
+.doc-content h2:first-of-type + p + p a {
+  color: white;
+  text-decoration: underline;
+}
+
+.doc-content h2:first-of-type + p + p a:hover {
+  color: var(--color-accent);
 }
 
 .doc-header {
@@ -807,7 +832,7 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
 
 .btn-primary {
   background-color: var(--color-accent);
-  color: white;
+  color: white !important; /* Ensure text color doesn't change in dark mode */
   border: none;
 }
 
@@ -816,12 +841,12 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
   transform: translateY(-2px);
   box-shadow: var(--shadow-md);
   text-decoration: none;
-  color: white;
+  color: white !important; /* Ensure text color doesn't change in dark mode */
 }
 
 .btn-secondary {
   background-color: rgba(255, 255, 255, 0.1);
-  color: white;
+  color: white !important; /* Ensure text color doesn't change in dark mode */
   border: 1px solid rgba(255, 255, 255, 0.3);
   backdrop-filter: blur(8px);
 }
@@ -831,7 +856,7 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
   transform: translateY(-2px);
   box-shadow: var(--shadow-md);
   text-decoration: none;
-  color: white;
+  color: white !important; /* Ensure text color doesn't change in dark mode */
 }
 
 .btn svg {
@@ -1045,7 +1070,7 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
   }
   
   .mobile-menu-toggle.active span:first-child {
-    transform: translateY(7px) rotate(45deg);
+    transform: translateY(9pt) rotate(45deg);
   }
   
   .mobile-menu-toggle.active span:nth-child(2) {
@@ -1053,7 +1078,7 @@ body:not(.light-theme):not(.dark-theme) .theme-toggle-icon.dark {
   }
   
   .mobile-menu-toggle.active span:last-child {
-    transform: translateY(-7px) rotate(-45deg);
+    transform: translateY(-9pt) rotate(-45deg);
   }
   
   .docs-container {

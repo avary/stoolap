@@ -1,8 +1,7 @@
 ---
-layout: doc
-title: Unique Indexes
-description: How unique indexes enforce data uniqueness in Stoolap
-permalink: /docs/unique-indexes/
+title: Unique Indexes in Stoolap
+category: Architecture
+order: 1
 ---
 
 # Unique Indexes in Stoolap
@@ -81,6 +80,10 @@ WHERE status = 'active';
 ```
 
 ## How Unique Indexes Work in Stoolap
+
+Stoolap's unique indexes are implemented using specialized versions of the standard indexing mechanisms:
+
+### Implementation Details
 
 Unique indexes in Stoolap use a combination of:
 

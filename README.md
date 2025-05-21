@@ -6,7 +6,7 @@
   <a href="https://goreportcard.com/report/github.com/stoolap/stoolap"><img src="https://goreportcard.com/badge/github.com/stoolap/stoolap?style=flat-square" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/stoolap/stoolap"><img src="https://img.shields.io/badge/go.dev-reference-007d9c?style=flat-square" alt="go.dev reference"></a>
   <a href="https://github.com/stoolap/stoolap/releases"><img src="https://img.shields.io/github/v/release/stoolap/stoolap?style=flat-square" alt="GitHub release"></a>
-  <a href="https://github.com/stoolap/stoolap/blob/main/LICENSE"><img src="https://img.shields.io/github/license/stoolap/stoolap?style=flat-square" alt="License"></a>
+  <a href="https://github.com/stoolap/stoolap/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="Apache License 2.0"></a>
 </p>
 
 # Stoolap
@@ -162,9 +162,10 @@ Stoolap is under active development. While it provides ACID compliance and a ric
 
 ## Documentation
 
-Additional documentation:
+Comprehensive documentation is available at:
 
-- [Wiki Pages](https://github.com/stoolap/stoolap/wiki): Detailed documentation on architecture, design decisions, and usage examples
+- [Official Documentation](https://stoolap.io): Complete documentation with architecture, features, and usage examples
+- [GitHub Wiki](https://github.com/stoolap/stoolap/wiki): Legacy documentation (being migrated to the main site)
 
 ## Contributing
 
@@ -172,4 +173,20 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
+
+```
+Copyright 2025 Stoolap Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

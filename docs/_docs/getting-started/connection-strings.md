@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: Connection String Reference
-description: Guide to Stoolap connection string formats and their usage
-permalink: /docs/connection-strings/
+category: Getting Started
+order: 1
 ---
 
 # Connection String Reference
@@ -191,4 +190,4 @@ if err != nil {
 }
 ```
 
-See the [PRAGMA Commands](/docs/pragma-commands/) documentation for more details on available configuration options.
+See the [PRAGMA Commands](pragma-commands) documentation for more details on available configuration options.

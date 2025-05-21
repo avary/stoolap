@@ -1,8 +1,7 @@
 ---
-layout: doc
 title: Quick Start Tutorial
-description: Create your first database with Stoolap and learn basic operations
-permalink: /docs/quickstart/
+category: Getting Started
+order: 1
 ---
 
 # Quick Start Tutorial
@@ -11,7 +10,7 @@ This tutorial will guide you through creating your first database with Stoolap a
 
 ## Installation
 
-Before starting, ensure you have Stoolap installed. If not, follow the [Installation Guide](/docs/installation/).
+Before starting, ensure you have Stoolap installed. If not, follow the [Installation Guide](installation).
 
 ```bash
 # Install with Go
@@ -217,8 +216,10 @@ GROUP BY category;
 
 Now that you've learned the basics, you might want to explore:
 
-- [Connection Strings](/docs/connection-strings/) - More connection options
-- [SQL Commands](/docs/sql-commands/) - Comprehensive SQL reference
-- [Data Types](/docs/data-types/) - Detailed information on data types
-- [Indexing](/docs/indexing/) - How to optimize queries with indexes
-- [Transaction Isolation](/docs/transaction-isolation/) - How transactions work
+- [Connection Strings](connection-strings) - More connection options
+- [SQL Commands](sql-commands) - Comprehensive SQL reference
+- [Data Types](data-types) - Detailed information on data types
+- [Indexing](indexing) - How to optimize queries with indexes
+- [Transaction Isolation](transaction-isolation) - How transactions work
+
+For a more comprehensive reference, browse the rest of the [Stoolap Wiki](Home).
