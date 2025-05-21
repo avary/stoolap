@@ -6,11 +6,11 @@ order: 1
 
 # PRAGMA Commands
 
-This document describes the PRAGMA commands available in Stoolap based on test files and implementation details.
+This document describes the PRAGMA commands available in Stoolap based on implementations and test cases.
 
 ## Overview
 
-Based on test files (`/test/pragma_test.go`), Stoolap provides PRAGMA commands for configuring and inspecting the database engine. These commands allow you to adjust various settings that affect performance, durability, and behavior of the database.
+Stoolap provides PRAGMA commands for configuring and inspecting the database engine. These commands primarily focus on persistence settings and storage behavior.
 
 ## Syntax
 
@@ -28,7 +28,7 @@ PRAGMA [pragma_name];
 
 ## Available PRAGMA Commands
 
-Based on the test files and implementation, Stoolap supports the following PRAGMA commands:
+Stoolap currently supports the following PRAGMA commands:
 
 ### Snapshot and WAL Configuration
 
@@ -43,8 +43,6 @@ PRAGMA snapshot_interval = 60;
 -- Get current snapshot interval
 PRAGMA snapshot_interval;
 ```
-
-Default value: 300 (5 minutes)
 
 #### sync_mode
 
@@ -63,8 +61,6 @@ Supported values:
 - 1: Normal sync (balances performance and durability)
 - 2: Full sync (maximum durability, slowest performance)
 
-Default value: 1 (normal)
-
 #### keep_snapshots
 
 Controls how many snapshots to retain for each table:
@@ -77,131 +73,41 @@ PRAGMA keep_snapshots = 5;
 PRAGMA keep_snapshots;
 ```
 
-Default value: 3
+#### wal_flush_trigger
 
-### Memory Management
-
-#### max_memory
-
-Controls the maximum memory usage (in MiB) for the database engine:
+Controls the number of operations before the WAL is flushed to disk:
 
 ```sql
--- Set maximum memory to 1024 MiB (1 GiB)
-PRAGMA max_memory = 1024;
+-- Set WAL flush trigger to 1000 operations
+PRAGMA wal_flush_trigger = 1000;
 
--- Get current maximum memory setting
-PRAGMA max_memory;
+-- Get current WAL flush trigger
+PRAGMA wal_flush_trigger;
 ```
 
-Default value: System dependent (typically a percentage of total RAM)
-
-### Cache Configuration
-
-#### query_cache_enabled
-
-Enables or disables the query result cache:
-
-```sql
--- Enable query cache
-PRAGMA query_cache_enabled = 1;
-
--- Disable query cache
-PRAGMA query_cache_enabled = 0;
-
--- Get current query cache status
-PRAGMA query_cache_enabled;
-```
-
-Default value: 1 (enabled)
-
-#### query_cache_size
-
-Controls the maximum number of cached query results:
-
-```sql
--- Set query cache size to 100 results
-PRAGMA query_cache_size = 100;
-
--- Get current query cache size
-PRAGMA query_cache_size;
-```
-
-Default value: 50
-
-### Table and Index Options
-
-#### auto_vacuum
-
-Controls the automatic vacuuming of the database to reclaim space:
-
-```sql
--- Enable automatic vacuuming
-PRAGMA auto_vacuum = 1;
-
--- Disable automatic vacuuming
-PRAGMA auto_vacuum = 0;
-
--- Get current auto_vacuum setting
-PRAGMA auto_vacuum;
-```
-
-Default value: 1 (enabled)
-
-## Examples from Test Files
-
-These examples are taken from `/test/pragma_test.go`:
+## Examples
 
 ### Basic PRAGMA Usage
 
-```go
-// Set and retrieve snapshot interval
-_, err = db.Exec("PRAGMA snapshot_interval = 60")
-if err != nil {
-    t.Fatalf("Failed to set snapshot_interval: %v", err)
-}
+```sql
+-- Set snapshot interval to 60 seconds
+PRAGMA snapshot_interval = 60;
 
-var interval int
-err = db.QueryRow("PRAGMA snapshot_interval").Scan(&interval)
-if err != nil {
-    t.Fatalf("Failed to get snapshot_interval: %v", err)
-}
-if interval != 60 {
-    t.Errorf("Expected snapshot_interval = 60, got %d", interval)
-}
+-- Verify the setting
+PRAGMA snapshot_interval;
 ```
 
 ### Multiple PRAGMA Commands
 
-```go
-// Set multiple PRAGMA values
-_, err = db.Exec("PRAGMA sync_mode = 2")
-if err != nil {
-    t.Fatalf("Failed to set sync_mode: %v", err)
-}
+```sql
+-- Set sync mode to full
+PRAGMA sync_mode = 2;
 
-_, err = db.Exec("PRAGMA keep_snapshots = 5")
-if err != nil {
-    t.Fatalf("Failed to set keep_snapshots: %v", err)
-}
+-- Keep 10 snapshots per table
+PRAGMA keep_snapshots = 10;
 
-// Verify values
-var syncMode int
-err = db.QueryRow("PRAGMA sync_mode").Scan(&syncMode)
-if err != nil {
-    t.Fatalf("Failed to get sync_mode: %v", err)
-}
-if syncMode != 2 {
-    t.Errorf("Expected sync_mode = 2, got %d", syncMode)
-}
-
-var keepSnapshots int
-err = db.QueryRow("PRAGMA keep_snapshots").Scan(&keepSnapshots)
-if err != nil {
-    t.Fatalf("Failed to get keep_snapshots: %v", err)
-}
-if keepSnapshots != 5 {
-    t.Errorf("Expected keep_snapshots = 5, got %d", keepSnapshots)
-}
+-- Set WAL flush trigger to 1000 operations
+PRAGMA wal_flush_trigger = 1000;
 ```
 
 ## PRAGMA Persistence
@@ -210,8 +116,6 @@ PRAGMA settings are persisted for file-based and db:// connections, but reset fo
 
 ## Best Practices
 
-Based on the implemented tests and behaviors:
-
 1. **Tune Snapshot Interval**: Adjust `snapshot_interval` based on your workload. Lower values provide better durability but more I/O overhead.
 
 2. **Choose Appropriate Sync Mode**: 
@@ -219,17 +123,10 @@ Based on the implemented tests and behaviors:
    - Use `sync_mode = 1` for most applications (good balance)
    - Use `sync_mode = 0` only for non-critical data or testing
 
-3. **Memory Management**: Set `max_memory` based on your system resources and workload requirements
+3. **Manage Snapshots**: Set `keep_snapshots` based on your backup needs and disk space constraints.
 
-4. **Query Cache**: Enable query cache for read-heavy workloads with repetitive queries
-
-5. **Apply PRAGMA at Startup**: Run important PRAGMA commands right after opening the database connection
+4. **Apply PRAGMA at Startup**: Run important PRAGMA commands right after opening the database connection.
 
 ## Implementation Details
 
-From the test files and code inspection:
-
-- PRAGMA commands are parsed in the SQL parser
-- Implementation is in the engine and executor components
-- Settings affect various subsystems (MVCC, query engine, etc.)
-- Some PRAGMA commands take effect immediately, others on next operation
+PRAGMA commands are handled directly by the storage engine and affect the persistence behavior of the database. They do not require transactions and take effect immediately after being set.
