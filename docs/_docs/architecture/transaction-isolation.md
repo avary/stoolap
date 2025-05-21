@@ -6,15 +6,15 @@ order: 1
 
 # Transaction Isolation in Stoolap
 
-Stoolap implements Multi-Version Concurrency Control (MVCC) to provide transaction isolation with minimal locking overhead. This document covers how transactions work in Stoolap, the available isolation levels, and best practices for transaction management.
+Stoolap implements Multi-Version Concurrency Control (MVCC) to provide transaction isolation with minimal locking overhead. This document explains how transactions work in Stoolap and the available isolation levels.
 
-## Isolation Levels
+## Implemented Isolation Levels
 
-Stoolap supports two isolation levels:
+Stoolap currently supports two isolation levels:
 
-1. **ReadCommitted** - Provides read committed isolation where transactions only see data that has been committed by other transactions at the time a statement begins execution.
+1. **ReadCommitted** - The default isolation level where a transaction only sees data that has been committed by other transactions. Each query within the transaction may see different versions of data as other transactions commit.
 
-2. **SnapshotIsolation** - Provides snapshot isolation where transactions see a consistent snapshot of the database as it existed at the start of the transaction.
+2. **SnapshotIsolation** - Provides a consistent view of the database as it was when the transaction started. All queries within the transaction see the same snapshot of data, regardless of concurrent commits by other transactions.
 
 ## MVCC Implementation
 
@@ -22,8 +22,8 @@ Stoolap's MVCC implementation uses a combination of techniques to provide effici
 
 ### Transaction IDs and Timestamps
 
-- Each transaction is assigned a unique transaction ID (`TxnID`)
-- Read timestamps are assigned when the transaction starts
+- Each transaction is assigned a unique transaction ID (`txnID`)
+- Begin timestamps are assigned when the transaction starts
 - Commit timestamps are assigned when the transaction commits
 - Timestamps are used to determine data visibility between transactions
 
@@ -31,40 +31,43 @@ Stoolap's MVCC implementation uses a combination of techniques to provide effici
 
 - Each row in a table can have multiple versions identified by transaction IDs
 - Each version includes:
-  - Creation transaction ID (`CreatedTxnID`)
-  - Deletion transaction ID (`DeletedTxnID`, if applicable)
+  - Creation transaction ID
+  - Deletion transaction ID (if applicable)
   - Column values at that version
 - This enables concurrent transactions to see different versions of the same row
 
 ### Visibility Rules
 
-Visibility rules determine which row versions are visible to a transaction. These rules are based on:
+The core visibility rules in Stoolap determine which row versions are visible to a transaction:
 
-- Transaction's isolation level (ReadCommitted or SnapshotIsolation)
-- Transaction's read timestamp
-- Transaction IDs of row versions (creation and deletion)
-- Commit state of other transactions
+#### ReadCommitted Mode
 
-Core visibility principles:
-1. A transaction sees its own changes
-2. A transaction sees committed changes from other transactions based on its isolation level
-3. A transaction never sees uncommitted changes from other transactions (no dirty reads)
+In ReadCommitted mode (the default):
+- A transaction sees its own uncommitted changes
+- A transaction sees all changes committed by other transactions at the time of each query
+- A transaction never sees uncommitted changes from other transactions
 
-## Transaction Lifecycle
+#### SnapshotIsolation Mode
 
-### Starting a Transaction
+In SnapshotIsolation mode:
+- A transaction sees its own uncommitted changes
+- A transaction sees only changes that were committed before the transaction started
+- Changes committed by other transactions after this transaction started are not visible
 
-A transaction is started with the `BEGIN` SQL statement or implicitly when the first statement is executed. You can specify the isolation level:
+## Transaction Operations
+
+### Beginning a Transaction
+
+A transaction is started with the `BEGIN` SQL statement or implicitly by the first statement execution:
 
 ```sql
--- Start a transaction with read committed isolation (default)
+-- Start a transaction with default isolation level (ReadCommitted)
 BEGIN;
-
--- Start a transaction with snapshot isolation
-BEGIN ISOLATION LEVEL SNAPSHOT;
 ```
 
-### Transaction Operations
+Currently, specifying isolation levels directly in SQL statements (e.g., `BEGIN ISOLATION LEVEL SNAPSHOT`) is not supported. The isolation level is set at the engine level and applies to all transactions.
+
+### Performing Operations
 
 Within a transaction, you can perform the following operations:
 
@@ -84,7 +87,7 @@ COMMIT;
 During commit:
 1. A commit timestamp is assigned to the transaction
 2. All changes become visible to other transactions (based on their isolation level)
-3. All locks held by the transaction are released
+3. The transaction is removed from the active transactions list
 
 ### Rolling Back a Transaction
 
@@ -96,7 +99,7 @@ ROLLBACK;
 
 During rollback:
 1. All changes made by the transaction are discarded
-2. All locks held by the transaction are released
+2. The transaction is removed from the active transactions list
 
 ## Concurrency Control
 
@@ -106,38 +109,33 @@ Stoolap uses optimistic concurrency control:
 2. At commit time, the system checks for conflicts
 3. If a conflict is detected, the transaction is aborted
 
-### Conflict Resolution
+### Conflict Detection
 
 Conflicts are detected when two transactions attempt to modify the same row:
 
-- **First-Committer-Wins** - If two transactions modify the same row, the first to commit succeeds, and the second receives an error
-- **Aborted Transactions** - If a conflict is detected, the transaction is automatically aborted and must be retried
+- **Primary Key Conflicts** - Occur when two transactions try to insert rows with the same primary key
+- **Unique Constraint Conflicts** - Occur when an insert or update violates a unique constraint
 
-## Performance Considerations
+## Implementation Details
 
-Stoolap's MVCC implementation includes several optimizations:
+The transaction isolation in Stoolap is implemented in the following key components:
 
-- **In-memory Version Storage** - Row versions are stored in memory for fast access
-- **Efficient Version Cleaning** - Old versions are cleaned up when no longer needed
-- **Column-based Storage** - Data is stored in columnar format for efficient version management
+- `engine.go` - Contains the transaction creation and management logic
+- `registry.go` - Manages transaction metadata and visibility rules
+- `transaction.go` - Implements the transaction interface
+- `version_store.go` - Manages versioned data
 
 ## Best Practices
 
-- Use the appropriate isolation level for your use case:
-  - **ReadCommitted** for higher concurrency with acceptable consistency
-  - **SnapshotIsolation** for stronger consistency with potentially lower concurrency
-- Keep transactions short to minimize conflicts
-- Handle transaction aborts with appropriate retry logic
-- Consider using explicit transactions for related operations that need to be atomic
+- Transactions should be kept short to minimize conflicts
+- Use explicit transactions for operations that need to be atomic
+- Consider your specific application's needs when deciding between ReadCommitted and SnapshotIsolation:
+  - **ReadCommitted** is good for most OLTP workloads, offering better concurrency
+  - **SnapshotIsolation** is useful for analytical queries that need a consistent point-in-time view
 
-## Limitations
+## Examples
 
-- Long-running transactions can cause version storage to grow, impacting performance
-- Extremely high concurrency on the same rows may lead to frequent conflicts, requiring retry logic
-
-## Practical Examples
-
-### Example 1: Basic Transaction with ReadCommitted
+### Basic Transaction
 
 ```sql
 BEGIN;
@@ -146,44 +144,18 @@ UPDATE accounts SET balance = balance + 100 WHERE id = 2;
 COMMIT;
 ```
 
-### Example 2: Snapshot Isolation for Consistent Reads
+### Transaction with Rollback
 
 ```sql
-BEGIN ISOLATION LEVEL SNAPSHOT;
--- All reads in this transaction will see a consistent snapshot
--- even if other transactions commit changes
-SELECT * FROM accounts WHERE balance > 1000;
--- ... other operations
-COMMIT;
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+-- Something went wrong
+ROLLBACK;
 ```
 
-### Example 3: Handling Conflicts
+## Limitations
 
-```sql
--- Application code with retry logic
-function transferMoney() {
-    let retries = 0;
-    while (retries < MAX_RETRIES) {
-        try {
-            execute("BEGIN");
-            execute("UPDATE accounts SET balance = balance - 100 WHERE id = 1");
-            execute("UPDATE accounts SET balance = balance + 100 WHERE id = 2");
-            execute("COMMIT");
-            return SUCCESS;
-        } catch (e) {
-            execute("ROLLBACK");
-            retries++;
-        }
-    }
-    return FAILURE;
-}
-```
-
-## Implementation Details
-
-Stoolap's transaction isolation is implemented in the following key components:
-
-- `transaction.go` - Core transaction implementation
-- `mvcc.go` - MVCC engine and timestamp generation
-- `version_store.go` - Version storage and management
-- `registry.go` - Transaction registry for tracking transaction states
+- Long-running transactions can cause version storage to grow, impacting performance
+- The current implementation doesn't support explicitly setting isolation levels via SQL
+- Extremely high concurrency on the same rows may lead to frequent conflicts
+- Savepoints are not currently supported
