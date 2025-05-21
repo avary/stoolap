@@ -165,7 +165,6 @@ Stoolap is under active development. While it provides ACID compliance and a ric
 Comprehensive documentation is available at:
 
 - [Official Documentation](https://stoolap.io): Complete documentation with architecture, features, and usage examples
-- [GitHub Wiki](https://github.com/stoolap/stoolap/wiki): Legacy documentation (being migrated to the main site)
 
 ## Contributing
 

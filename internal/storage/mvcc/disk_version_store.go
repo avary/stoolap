@@ -1,16 +1,16 @@
 /* Copyright 2025 Stoolap Contributors
 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-     http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License. */
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License. */
 
 // Package mvcc implements a storage engine for multi-versioned column-based tables.
 package mvcc
@@ -155,8 +155,6 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		if rowID != version.RowID {
 			fmt.Printf("WARNING: Version store RowID (%d) doesn't match RowVersion.RowID (%d)\n",
 				rowID, version.RowID)
-
-			fmt.Printf("DEBUG: Problematic RowVersion: %v\n", version)
 			return true // Continue processing
 		}
 
@@ -166,14 +164,6 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 		if version.IsDeleted {
 			// Skip deleted versions
 			return true
-		}
-
-		if dvs.tableName == "users" {
-			fmt.Printf("DEBUG: Found in memory store: Problematic users RowID=%d RowVersion=%v\n", rowID, version)
-		}
-
-		if dvs.tableName == "sessions" {
-			fmt.Printf("DEBUG: Found in memory store: Problematic sessions RowID=%d RowVersion=%v\n", rowID, version)
 		}
 
 		// Copy the version to avoid concurrent modification issues
@@ -255,14 +245,6 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 			if version.IsDeleted {
 				// Skip deleted versions
 				return true
-			}
-
-			if dvs.tableName == "users" {
-				fmt.Printf("DEBUG: Found in disk store: Problematic users RowID=%d RowVersion=%v\n", rowID, &version)
-			}
-
-			if dvs.tableName == "sessions" {
-				fmt.Printf("DEBUG: Found in disk store: Problematic sessions RowID=%d RowVersion=%v\n", rowID, &version)
 			}
 
 			// Copy the version with snapshot TxnID
