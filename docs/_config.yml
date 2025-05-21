@@ -1,8 +1,8 @@
 title: Stoolap
 description: High-performance columnar SQL database written in pure Go
 theme: jekyll-theme-minimal
-url: https://stoolap.github.io
-baseurl: "/stoolap"
+url: https://stoolap.io
+baseurl: "/"
 permalink: pretty
 logo: /assets/img/logo.svg
 github:
