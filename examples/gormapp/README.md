@@ -22,8 +22,8 @@ go run .
 ## Implementation Notes
 
 - This sample uses the MySQL dialect for GORM as a generic SQL dialect
-- It uses an in-memory Stoolap database (`memory://gorm_test`) for demonstration
-- For a persistent database, change the DSN to `db:///path/to/database`
+- It uses an in-memory Stoolap database (`memory://`) for demonstration
+- For a persistent database, change the DSN to `file:///path/to/database`
 
 ## Stoolap Compatibility Notes
 
