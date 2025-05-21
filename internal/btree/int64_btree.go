@@ -179,7 +179,11 @@ func (t *Int64BTree[V]) insertNonFull(node *bTreeNode[V], key int64, value V) bo
 		t.splitChild(node, childIndex)
 		// After the split, the middle key is at position i in the parent
 		// Decide which child to follow after the split
-		if key > node.keys[i] {
+		if key == node.keys[i] {
+			// Update the promoted key directly
+			node.values[i] = value
+			return false
+		} else if key > node.keys[i] {
 			childIndex++
 		}
 		childNode = node.children[childIndex]
