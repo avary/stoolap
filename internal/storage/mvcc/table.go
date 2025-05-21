@@ -153,8 +153,9 @@ func (mt *MVCCTable) Insert(row storage.Row) error {
 }
 
 // CheckUniqueConstraints checks if a row violates any unique columnar index constraints
+// If originalRow is provided, only checks columns that have changed from the original
 // It returns ErrUniqueConstraint if any constraints are violated
-func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
+func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row, originalRow ...storage.Row) error {
 	// Skip if version store is not available
 	if mt.versionStore == nil {
 		return fmt.Errorf("version store not available")
@@ -195,6 +196,9 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 		colPosMap[col.Name] = i
 	}
 
+	// Determine if we're updating (have an original row) or inserting
+	isUpdate := len(originalRow) > 0 && originalRow[0] != nil
+
 	// Check each unique index
 	for _, idx := range uniqueIndexes {
 		// Get column names and positions for this index
@@ -208,6 +212,9 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 		// Get the values for the indexed columns
 		values := make([]storage.ColumnValue, len(colNames))
 		allNull := true
+
+		// Track if any columns in this index have changed (for updates)
+		columnChanged := false
 
 		for i, colName := range colNames {
 			// Get position in the row
@@ -224,10 +231,28 @@ func (mt *MVCCTable) CheckUniqueConstraints(row storage.Row) error {
 			if values[i] != nil && !values[i].IsNull() {
 				allNull = false
 			}
+
+			// For updates, check if this column has changed
+			if isUpdate && pos < len(originalRow[0]) {
+				origValue := originalRow[0][pos]
+				currValue := row[pos]
+
+				// Check if the value has changed
+				if (origValue == nil && currValue != nil) ||
+					(origValue != nil && currValue == nil) ||
+					(origValue != nil && currValue != nil && !origValue.Equals(currValue)) {
+					columnChanged = true
+				}
+			}
 		}
 
 		// Skip if all values are NULL (uniqueness constraints don't apply to NULL values)
 		if allNull {
+			continue
+		}
+
+		// For updates, skip if none of the columns in this index have changed
+		if isUpdate && !columnChanged {
 			continue
 		}
 
@@ -586,7 +611,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 			// Check unique columnar index constraints
 			if uniqueCheck {
-				if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+				if err := mt.CheckUniqueConstraints(updatedRow, row); err != nil {
 					return 0, err
 				}
 			}
@@ -651,7 +676,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 					// Check unique columnar index constraints
 					if uniqueCheck {
-						if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+						if err := mt.CheckUniqueConstraints(updatedRow, row); err != nil {
 							return 0, err
 						}
 					}
@@ -670,7 +695,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 						// Check unique columnar index constraints
 						if uniqueCheck {
-							if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+							if err = mt.CheckUniqueConstraints(updatedRow, version.Data); err != nil {
 								return false
 							}
 						}
@@ -725,7 +750,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 						// Check unique columnar index constraints
 						if uniqueCheck {
-							if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+							if err = mt.CheckUniqueConstraints(updatedRow, version.Data); err != nil {
 								return false
 							}
 						}
@@ -764,7 +789,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 		// Check unique columnar index constraints
 		if uniqueCheck {
-			if err := mt.CheckUniqueConstraints(updatedRow); err != nil {
+			if err := mt.CheckUniqueConstraints(updatedRow, row); err != nil {
 				return err
 			}
 		}
@@ -857,7 +882,7 @@ func (mt *MVCCTable) Update(where storage.Expression, setter func(storage.Row) (
 
 					// Check unique columnar index constraints
 					if uniqueCheck {
-						if err = mt.CheckUniqueConstraints(updatedRow); err != nil {
+						if err = mt.CheckUniqueConstraints(updatedRow, row); err != nil {
 							break
 						}
 					}

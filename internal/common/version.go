@@ -22,7 +22,7 @@ const (
 	// VersionMinor is the minor version of the driver
 	VersionMinor = "0"
 	// VersionPatch is the patch version of the driver
-	VersionPatch = "2"
+	VersionPatch = "3"
 	// VersionSuffix is the suffix of the driver version
 	VersionSuffix = "beta" // or "beta", "rc", etc.
 
