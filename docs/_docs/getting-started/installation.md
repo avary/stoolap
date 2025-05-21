@@ -10,7 +10,7 @@ This guide walks you through the process of installing Stoolap on different plat
 
 ## Prerequisites
 
-- Go 1.18 or later
+- Go 1.23 or later
 - Git (for installation from source)
 - Basic familiarity with command line tools
 

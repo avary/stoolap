@@ -349,6 +349,36 @@ func (l *Lexer) NextToken() Token {
 		tok.Type = TokenString
 		tok.Literal = l.readStringLiteral()
 
+	case l.ch == '`':
+		// Backtick-quoted identifier (for GORM compatibility)
+		tok.Type = TokenIdentifier
+
+		// Save the start of the identifier
+		var result strings.Builder
+		result.WriteRune(l.ch) // Include the opening backtick
+
+		l.readChar() // consume opening backtick
+
+		// Read until closing backtick
+		for l.ch != '`' && l.ch != 0 {
+			result.WriteRune(l.ch)
+			l.readChar()
+		}
+
+		// Consume closing backtick if not EOF
+		if l.ch == '`' {
+			result.WriteRune(l.ch) // Include the closing backtick
+			l.readChar()
+		} else {
+			l.lastError = "unterminated backtick identifier"
+			// For unterminated backticks, add a closing backtick
+			result.WriteRune('`')
+		}
+
+		// Remove backticks to get the actual identifier
+		quoted := result.String()
+		tok.Literal = quoted[1 : len(quoted)-1]
+
 	case l.ch == '-' && unicode.IsDigit(l.peekChar()):
 		// Negative number
 		tok.Literal = l.readNumberWithSign()
