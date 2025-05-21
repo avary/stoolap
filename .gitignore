@@ -1,6 +1,7 @@
 test/var
 var
 works
+.claude/settings.local.json
 CLAUDE.md
 TODO.md
 cmd/stoolap/stoolap
