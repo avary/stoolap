@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -34,10 +35,18 @@ type CLI struct {
 	maxTableSize int    // Max allowed table width
 	timeFormat   string // Time format string for query timing
 	ctx          context.Context
+
+	// Transaction state
+	tx            *sql.Tx // Current transaction (nil if not in transaction)
+	inTransaction bool    // Whether we're currently in a transaction
+
+	// Output options
+	jsonOutput    bool // Whether to output results in JSON format
+	isInteractive bool // Whether running in interactive mode
 }
 
 // NewCLI creates a new CLI instance
-func NewCLI(db *sql.DB) (*CLI, error) {
+func NewCLI(db *sql.DB, jsonOutput bool) (*CLI, error) {
 	// Determine history file location (in user's home directory)
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -61,27 +70,60 @@ func NewCLI(db *sql.DB) (*CLI, error) {
 		return nil, fmt.Errorf("failed to initialize readline: %v", err)
 	}
 
+	// Check if we're running interactively (terminal attached)
+	isInteractive := true
+	if stat, err := os.Stdin.Stat(); err == nil {
+		isInteractive = (stat.Mode() & os.ModeCharDevice) != 0
+	}
+
 	return &CLI{
-		db:           db,
-		historyFile:  historyFile,
-		readline:     rl,
-		maxTableSize: 120,
-		timeFormat:   "15:04:05",
-		ctx:          context.Background(),
+		db:            db,
+		historyFile:   historyFile,
+		readline:      rl,
+		maxTableSize:  120,
+		timeFormat:    "15:04:05",
+		ctx:           context.Background(),
+		isInteractive: isInteractive,
+		jsonOutput:    jsonOutput,
 	}, nil
+}
+
+// updatePrompt updates the readline prompt based on current state
+func (c *CLI) updatePrompt() {
+	var prompt string
+	if c.inTransaction {
+		prompt = "\033[1;33m[TXN]>\033[0m "
+	} else {
+		prompt = "\033[1;36m>\033[0m "
+	}
+	c.readline.SetPrompt(prompt)
 }
 
 // Run starts the CLI
 func (c *CLI) Run() error {
-	fmt.Println("Stoolap SQL CLI")
-	fmt.Println("Enter SQL commands, 'help' for assistance, or 'exit' to quit.")
-	fmt.Println("Use Up/Down arrows for history, Ctrl+R to search history.")
+	if c.isInteractive {
+		fmt.Println("Stoolap SQL CLI")
+		fmt.Println("Enter SQL commands, 'help' for assistance, or 'exit' to quit.")
+		fmt.Println("Use Up/Down arrows for history, Ctrl+R to search history.")
+		if c.jsonOutput {
+			fmt.Println("JSON output mode enabled.")
+		}
+		fmt.Println()
+	}
+
+	// Set initial prompt
+	c.updatePrompt()
 
 	// Main loop
 	for {
 		line, err := c.readline.Readline()
 		if err != nil {
 			if err == io.EOF || err == readline.ErrInterrupt {
+				// If we're in a transaction, warn user
+				if c.inTransaction {
+					fmt.Fprintf(os.Stderr, "\nWarning: Exiting with active transaction. Rolling back...\n")
+					c.rollbackTransaction()
+				}
 				break
 			}
 			return err
@@ -118,9 +160,12 @@ func (c *CLI) Run() error {
 
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\033[1;31mError:\033[0m %v\n", err)
-			} else {
+			} else if c.isInteractive {
 				fmt.Printf("\033[1;32mQuery executed in %v\033[0m\n", elapsed)
 			}
+
+			// Update prompt in case transaction state changed
+			c.updatePrompt()
 		}
 	}
 
@@ -129,8 +174,27 @@ func (c *CLI) Run() error {
 
 // executeQuery executes a SQL query and displays the results
 func (c *CLI) executeQuery(query string) error {
-	// Check if it's a query that returns rows (SELECT, SHOW, etc.)
 	upperQuery := strings.ToUpper(strings.TrimSpace(query))
+
+	// Handle special commands
+	switch upperQuery {
+	case "HELP", "\\H", "\\?":
+		c.printHelp()
+		return nil
+	case "EXIT", "QUIT", "\\Q":
+		return fmt.Errorf("exit requested")
+	}
+
+	// Handle transaction commands
+	if strings.HasPrefix(upperQuery, "BEGIN") {
+		return c.beginTransaction()
+	} else if upperQuery == "COMMIT" {
+		return c.commitTransaction()
+	} else if upperQuery == "ROLLBACK" {
+		return c.rollbackTransaction()
+	}
+
+	// Check if it's a query that returns rows (SELECT, SHOW, etc.)
 	if strings.HasPrefix(upperQuery, "SELECT") ||
 		strings.HasPrefix(upperQuery, "SHOW") {
 		return c.executeReadQuery(query)
@@ -139,10 +203,77 @@ func (c *CLI) executeQuery(query string) error {
 	}
 }
 
+// beginTransaction starts a new transaction
+func (c *CLI) beginTransaction() error {
+	if c.inTransaction {
+		return fmt.Errorf("already in a transaction")
+	}
+
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+
+	c.tx = tx
+	c.inTransaction = true
+
+	if c.isInteractive {
+		fmt.Println("\033[1;32mTransaction started\033[0m")
+	}
+	return nil
+}
+
+// commitTransaction commits the current transaction
+func (c *CLI) commitTransaction() error {
+	if !c.inTransaction {
+		return fmt.Errorf("not in a transaction")
+	}
+
+	err := c.tx.Commit()
+	if err != nil {
+		return err
+	}
+
+	c.tx = nil
+	c.inTransaction = false
+
+	if c.isInteractive {
+		fmt.Println("\033[1;32mTransaction committed\033[0m")
+	}
+	return nil
+}
+
+// rollbackTransaction rolls back the current transaction
+func (c *CLI) rollbackTransaction() error {
+	if !c.inTransaction {
+		return fmt.Errorf("not in a transaction")
+	}
+
+	err := c.tx.Rollback()
+	if err != nil {
+		return err
+	}
+
+	c.tx = nil
+	c.inTransaction = false
+
+	if c.isInteractive {
+		fmt.Println("\033[1;33mTransaction rolled back\033[0m")
+	}
+	return nil
+}
+
 // executeReadQuery executes a query that returns rows (SELECT, SHOW, etc.)
 func (c *CLI) executeReadQuery(query string) error {
-	// Execute the query
-	rows, err := c.db.QueryContext(c.ctx, query)
+	var rows *sql.Rows
+	var err error
+
+	// Execute the query using transaction if active
+	if c.inTransaction {
+		rows, err = c.tx.QueryContext(c.ctx, query)
+	} else {
+		rows, err = c.db.QueryContext(c.ctx, query)
+	}
 	if err != nil {
 		return err
 	}
@@ -212,6 +343,11 @@ func (c *CLI) executeReadQuery(query string) error {
 
 	if err := rows.Err(); err != nil {
 		return err
+	}
+
+	// Handle JSON output format
+	if c.jsonOutput {
+		return c.outputJSON(columns, values, rowCount)
 	}
 
 	// Cap column widths to keep table from getting too wide
@@ -289,8 +425,15 @@ func (c *CLI) executeReadQuery(query string) error {
 
 // executeWriteQuery executes a query that doesn't return rows (INSERT, UPDATE, DELETE, etc.)
 func (c *CLI) executeWriteQuery(query string) error {
-	// Execute the query
-	result, err := c.db.ExecContext(c.ctx, query)
+	var result sql.Result
+	var err error
+
+	// Execute the query using transaction if active
+	if c.inTransaction {
+		result, err = c.tx.ExecContext(c.ctx, query)
+	} else {
+		result, err = c.db.ExecContext(c.ctx, query)
+	}
 	if err != nil {
 		return err
 	}
@@ -299,6 +442,11 @@ func (c *CLI) executeWriteQuery(query string) error {
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return err
+	}
+
+	// Handle JSON output format
+	if c.jsonOutput {
+		return c.outputWriteResultJSON(rowsAffected)
 	}
 
 	// Print result with better formatting
@@ -310,6 +458,38 @@ func (c *CLI) executeWriteQuery(query string) error {
 	}
 	fmt.Printf("\033[1;32m%d %s affected\033[0m\n", rowsAffected, rowText)
 
+	return nil
+}
+
+// outputJSON outputs query results in JSON format
+func (c *CLI) outputJSON(columns []string, values [][]interface{}, rowCount int) error {
+	result := map[string]interface{}{
+		"columns": columns,
+		"rows":    values,
+		"count":   rowCount,
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %v", err)
+	}
+
+	fmt.Println(string(jsonBytes))
+	return nil
+}
+
+// outputWriteResultJSON outputs write query results in JSON format
+func (c *CLI) outputWriteResultJSON(rowsAffected int64) error {
+	result := map[string]interface{}{
+		"rows_affected": rowsAffected,
+	}
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %v", err)
+	}
+
+	fmt.Println(string(jsonBytes))
 	return nil
 }
 
@@ -354,6 +534,11 @@ func (c *CLI) printHelp() {
 	fmt.Println("    SHOW TABLES            List all tables")
 	fmt.Println("    SHOW CREATE TABLE ...  Show CREATE TABLE statement for a table")
 	fmt.Println("    SHOW INDEXES FROM ...  Show indexes for a table")
+	fmt.Println("")
+	fmt.Println("  \033[1;33mTransaction Commands:\033[0m")
+	fmt.Println("    BEGIN                  Start a new transaction")
+	fmt.Println("    COMMIT                 Commit the current transaction")
+	fmt.Println("    ROLLBACK               Rollback the current transaction")
 	fmt.Println("")
 	fmt.Println("  \033[1;33mSpecial Commands:\033[0m")
 	fmt.Println("    exit, quit, \\q         Exit the CLI")

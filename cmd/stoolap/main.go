@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -31,7 +32,8 @@ import (
 
 func main() {
 	// Parse command line flags
-	dbPath := flag.String("db", "file://stoolap.db", "Database path (file://<path> or memory://)")
+	dbPath := flag.String("db", "memory://", "Database path (file://<path> or memory://)")
+	jsonOutput := flag.Bool("json", false, "Output results in JSON format")
 	flag.Parse()
 
 	// Open the database
@@ -89,12 +91,12 @@ func main() {
 						}
 
 						start := time.Now()
-						err := executeQuery(db, trimmedStmt)
+						err := executeQuery(db, trimmedStmt, *jsonOutput)
 						elapsed := time.Since(start)
 
 						if err != nil {
 							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						} else {
+						} else if !*jsonOutput {
 							fmt.Printf("Query executed in %v\n", elapsed)
 						}
 					}
@@ -124,13 +126,13 @@ func main() {
 					}
 
 					start := time.Now()
-					err := executeQuery(db, trimmedStmt)
+					err := executeQuery(db, trimmedStmt, *jsonOutput)
 					elapsed := time.Since(start)
 
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 						// Don't exit immediately, try to process other statements
-					} else {
+					} else if !*jsonOutput {
 						fmt.Printf("Query executed in %v\n", elapsed)
 					}
 				}
@@ -141,7 +143,7 @@ func main() {
 	}
 
 	// Interactive mode - use the improved CLI
-	cli, err := NewCLI(db)
+	cli, err := NewCLI(db, *jsonOutput)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing CLI: %v\n", err)
 		os.Exit(1)
@@ -154,8 +156,18 @@ func main() {
 	}
 }
 
-func executeQuery(db *sql.DB, query string) error {
+func executeQuery(db *sql.DB, query string, jsonOutput bool) error {
 	ctx := context.Background()
+
+	// Handle special commands
+	upperQuery := strings.ToUpper(strings.TrimSpace(query))
+	switch upperQuery {
+	case "HELP", "\\H", "\\?":
+		printHelpMain()
+		return nil
+	case "EXIT", "QUIT", "\\Q":
+		return fmt.Errorf("exit requested")
+	}
 
 	// Look for a special separator that indicates parameter values
 	parts := strings.Split(query, " -- PARAMS: ")
@@ -185,7 +197,6 @@ func executeQuery(db *sql.DB, query string) error {
 	}
 
 	// Check if it's a query that returns rows (SELECT, SHOW, etc.)
-	upperQuery := strings.ToUpper(strings.TrimSpace(query))
 	if strings.HasPrefix(upperQuery, "SELECT") ||
 		strings.HasPrefix(upperQuery, "SHOW") {
 		var rows *sql.Rows
@@ -210,55 +221,100 @@ func executeQuery(db *sql.DB, query string) error {
 			return err
 		}
 
-		// Print the column names
-		for i, column := range columns {
-			if i > 0 {
-				fmt.Print(" | ")
+		if jsonOutput {
+			// Collect all rows for JSON output
+			var allRows [][]interface{}
+
+			// Create a slice of interfaces for the row values
+			values := make([]interface{}, len(columns))
+			scanArgs := make([]interface{}, len(columns))
+			for i := range values {
+				scanArgs[i] = &values[i]
 			}
-			fmt.Print(column)
-		}
-		fmt.Println()
 
-		// Print a separator
-		for i := range columns {
-			if i > 0 {
-				fmt.Print("-+-")
+			// Iterate over the rows
+			for rows.Next() {
+				// Scan the row into the values slice
+				if err := rows.Scan(scanArgs...); err != nil {
+					return err
+				}
+
+				// Copy values to a new slice
+				row := make([]interface{}, len(columns))
+				for i, v := range values {
+					row[i] = v
+				}
+				allRows = append(allRows, row)
 			}
-			fmt.Print("----")
-		}
-		fmt.Println()
 
-		// Create a slice of interfaces for the row values
-		values := make([]interface{}, len(columns))
-		scanArgs := make([]interface{}, len(columns))
-		for i := range values {
-			scanArgs[i] = &values[i]
-		}
-
-		// Iterate over the rows
-		var count int
-		for rows.Next() {
-			// Scan the row into the values slice
-			if err := rows.Scan(scanArgs...); err != nil {
+			if err := rows.Err(); err != nil {
 				return err
 			}
 
-			// Print the values
-			for i, value := range values {
+			// Output JSON
+			result := map[string]interface{}{
+				"columns": columns,
+				"rows":    allRows,
+				"count":   len(allRows),
+			}
+
+			jsonBytes, err := json.Marshal(result)
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %v", err)
+			}
+
+			fmt.Println(string(jsonBytes))
+		} else {
+			// Print the column names
+			for i, column := range columns {
 				if i > 0 {
 					fmt.Print(" | ")
 				}
-				printValue(value)
+				fmt.Print(column)
 			}
 			fmt.Println()
-			count++
-		}
 
-		if err := rows.Err(); err != nil {
-			return err
-		}
+			// Print a separator
+			for i := range columns {
+				if i > 0 {
+					fmt.Print("-+-")
+				}
+				fmt.Print("----")
+			}
+			fmt.Println()
 
-		fmt.Printf("%d rows in set\n", count)
+			// Create a slice of interfaces for the row values
+			values := make([]interface{}, len(columns))
+			scanArgs := make([]interface{}, len(columns))
+			for i := range values {
+				scanArgs[i] = &values[i]
+			}
+
+			// Iterate over the rows
+			var count int
+			for rows.Next() {
+				// Scan the row into the values slice
+				if err := rows.Scan(scanArgs...); err != nil {
+					return err
+				}
+
+				// Print the values
+				for i, value := range values {
+					if i > 0 {
+						fmt.Print(" | ")
+					}
+					printValue(value)
+				}
+				fmt.Println()
+				count++
+			}
+
+			if err := rows.Err(); err != nil {
+				return err
+			}
+
+			fmt.Printf("%d rows in set\n", count)
+		}
 	} else {
 		// Execute a non-query statement
 		var result sql.Result
@@ -282,7 +338,20 @@ func executeQuery(db *sql.DB, query string) error {
 			return err
 		}
 
-		fmt.Printf("%d rows affected\n", rowsAffected)
+		if jsonOutput {
+			result := map[string]interface{}{
+				"rows_affected": rowsAffected,
+			}
+
+			jsonBytes, err := json.Marshal(result)
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %v", err)
+			}
+
+			fmt.Println(string(jsonBytes))
+		} else {
+			fmt.Printf("%d rows affected\n", rowsAffected)
+		}
 	}
 
 	return nil
@@ -418,4 +487,33 @@ func splitSQLStatements(input string) []string {
 	}
 
 	return statements
+}
+
+// printHelpMain displays help information for piped mode
+func printHelpMain() {
+	fmt.Println("Stoolap SQL CLI")
+	fmt.Println("")
+	fmt.Println("  SQL Commands:")
+	fmt.Println("    SELECT ...             Execute a SELECT query")
+	fmt.Println("    INSERT ...             Insert data into a table")
+	fmt.Println("    UPDATE ...             Update data in a table")
+	fmt.Println("    DELETE ...             Delete data from a table")
+	fmt.Println("    CREATE TABLE ...       Create a new table")
+	fmt.Println("    CREATE INDEX ...       Create an index on a column")
+	fmt.Println("    SHOW TABLES            List all tables")
+	fmt.Println("    SHOW CREATE TABLE ...  Show CREATE TABLE statement for a table")
+	fmt.Println("    SHOW INDEXES FROM ...  Show indexes for a table")
+	fmt.Println("")
+	fmt.Println("  Transaction Commands:")
+	fmt.Println("    BEGIN                  Start a new transaction")
+	fmt.Println("    COMMIT                 Commit the current transaction")
+	fmt.Println("    ROLLBACK               Rollback the current transaction")
+	fmt.Println("")
+	fmt.Println("  Special Commands:")
+	fmt.Println("    help, \\h, \\?          Show this help message")
+	fmt.Println("")
+	fmt.Println("  Command Line Options:")
+	fmt.Println("    -db <path>             Database path (file://<path> or memory://)")
+	fmt.Println("    -json                  Output results in JSON format")
+	fmt.Println("")
 }
