@@ -245,6 +245,7 @@ var Keywords = map[string]bool{
 	"TO":          true,
 	"VARCHAR":     true,
 	"BIGINT":      true,
+	"INT":         true,
 	"ISOLATION":   true,
 	"LEVEL":       true,
 	"READ":        true,

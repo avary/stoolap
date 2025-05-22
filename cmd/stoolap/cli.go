@@ -43,10 +43,15 @@ type CLI struct {
 	// Output options
 	jsonOutput    bool // Whether to output results in JSON format
 	isInteractive bool // Whether running in interactive mode
+	limit         int  // Maximum number of rows to display
+
+	// Multi-line query state
+	currentQuery strings.Builder // Accumulates multi-line query
+	inMultiLine  bool            // Whether we're in a multi-line query
 }
 
 // NewCLI creates a new CLI instance
-func NewCLI(db *sql.DB, jsonOutput bool) (*CLI, error) {
+func NewCLI(db *sql.DB, jsonOutput bool, limit int) (*CLI, error) {
 	// Determine history file location (in user's home directory)
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -85,16 +90,27 @@ func NewCLI(db *sql.DB, jsonOutput bool) (*CLI, error) {
 		ctx:           context.Background(),
 		isInteractive: isInteractive,
 		jsonOutput:    jsonOutput,
+		limit:         limit,
 	}, nil
 }
 
 // updatePrompt updates the readline prompt based on current state
 func (c *CLI) updatePrompt() {
 	var prompt string
-	if c.inTransaction {
-		prompt = "\033[1;33m[TXN]>\033[0m "
+	if c.inMultiLine {
+		// Multi-line continuation prompt
+		if c.inTransaction {
+			prompt = "\033[1;33m[TXN]->\033[0m "
+		} else {
+			prompt = "\033[1;36m->\033[0m "
+		}
 	} else {
-		prompt = "\033[1;36m>\033[0m "
+		// Normal prompt
+		if c.inTransaction {
+			prompt = "\033[1;33m[TXN]>\033[0m "
+		} else {
+			prompt = "\033[1;36m>\033[0m "
+		}
 	}
 	c.readline.SetPrompt(prompt)
 }
@@ -129,33 +145,83 @@ func (c *CLI) Run() error {
 			return err
 		}
 
-		// Trim whitespace
-		query := strings.TrimSpace(line)
+		// Handle multi-line history items (contains escaped newlines)
+		if strings.Contains(line, "\\n") {
+			// This is a multi-line query from history, convert back to actual newlines
+			actualQuery := strings.ReplaceAll(line, "\\n", "\n")
+			lines := strings.Split(actualQuery, "\n")
 
-		// Handle special commands
-		if query == "" {
-			continue
-		}
-
-		switch strings.ToLower(query) {
-		case "exit", "quit", "\\q":
-			return nil
-		case "help", "\\h", "\\?":
-			c.printHelp()
-			continue
-		}
-
-		// Split and execute multiple statements if needed (separated by semicolons)
-		statements := splitSQLStatements(query)
-		for _, stmt := range statements {
-			trimmedStmt := strings.TrimSpace(stmt)
-			if trimmedStmt == "" {
-				continue
+			// Display the query in multi-line format
+			fmt.Printf("%s\n", lines[0])
+			for i := 1; i < len(lines); i++ {
+				if strings.TrimSpace(lines[i]) != "" {
+					fmt.Printf("\033[1;36m->\033[0m %s\n", lines[i])
+				}
 			}
 
-			// Execute the query
+			// Execute the complete query
+			c.currentQuery.Reset()
+			c.currentQuery.WriteString(actualQuery)
+			c.inMultiLine = false
+
+			fullQuery := strings.TrimSpace(c.currentQuery.String())
+			// Don't add to history again, it's already there
+
+			statements := splitSQLStatements(fullQuery)
+			for _, stmt := range statements {
+				trimmedStmt := strings.TrimSpace(stmt)
+				if trimmedStmt == "" {
+					continue
+				}
+
+				// Execute the query
+				start := time.Now()
+				err := c.executeQuery(trimmedStmt)
+				elapsed := time.Since(start)
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "\033[1;31mError:\033[0m %v\n", err)
+				} else if c.isInteractive {
+					fmt.Printf("\033[1;32mQuery executed in %v\033[0m\n", elapsed)
+				}
+
+				// Update prompt in case transaction state changed
+				c.updatePrompt()
+			}
+
+			// Reset query buffer
+			c.currentQuery.Reset()
+			continue
+		}
+
+		// Trim whitespace
+		line = strings.TrimSpace(line)
+
+		// Handle special commands (only when not in multi-line mode)
+		if !c.inMultiLine && line == "" {
+			continue
+		}
+
+		if !c.inMultiLine {
+			switch strings.ToLower(line) {
+			case "exit", "quit", "\\q":
+				return nil
+			case "help", "\\h", "\\?":
+				c.printHelp()
+				continue
+			}
+		}
+
+		// Check for transaction control statements that should execute immediately
+		upperLine := strings.ToUpper(strings.TrimSpace(line))
+		if upperLine == "BEGIN" || upperLine == "COMMIT" || upperLine == "ROLLBACK" ||
+			strings.HasPrefix(upperLine, "BEGIN ") || strings.HasPrefix(upperLine, "COMMIT ") || strings.HasPrefix(upperLine, "ROLLBACK ") {
+
+			// Execute transaction control statement immediately
+			c.readline.SaveHistory(line)
+
 			start := time.Now()
-			err := c.executeQuery(trimmedStmt)
+			err := c.executeQuery(line)
 			elapsed := time.Since(start)
 
 			if err != nil {
@@ -165,6 +231,56 @@ func (c *CLI) Run() error {
 			}
 
 			// Update prompt in case transaction state changed
+			c.updatePrompt()
+			continue
+		}
+
+		// Add line to current query (preserve line breaks for history)
+		if c.currentQuery.Len() > 0 {
+			c.currentQuery.WriteString("\n")
+		}
+		c.currentQuery.WriteString(line)
+
+		// Check if the query ends with semicolon
+		fullQuery := strings.TrimSpace(c.currentQuery.String())
+		if strings.HasSuffix(fullQuery, ";") {
+			// Add the complete multi-line query to history
+			// Replace actual newlines with escaped newlines to keep as single history entry
+			historyEntry := strings.ReplaceAll(fullQuery, "\n", "\\n")
+			c.readline.SaveHistory(historyEntry)
+
+			// Execute the complete query
+			c.inMultiLine = false
+			c.updatePrompt()
+
+			// Split and execute multiple statements if needed
+			statements := splitSQLStatements(fullQuery)
+			for _, stmt := range statements {
+				trimmedStmt := strings.TrimSpace(stmt)
+				if trimmedStmt == "" {
+					continue
+				}
+
+				// Execute the query
+				start := time.Now()
+				err := c.executeQuery(trimmedStmt)
+				elapsed := time.Since(start)
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "\033[1;31mError:\033[0m %v\n", err)
+				} else if c.isInteractive {
+					fmt.Printf("\033[1;32mQuery executed in %v\033[0m\n", elapsed)
+				}
+
+				// Update prompt in case transaction state changed
+				c.updatePrompt()
+			}
+
+			// Reset query buffer
+			c.currentQuery.Reset()
+		} else {
+			// Continue multi-line input
+			c.inMultiLine = true
 			c.updatePrompt()
 		}
 	}
@@ -394,19 +510,8 @@ func (c *CLI) executeReadQuery(query string) error {
 	// Header/data separator with double line
 	c.printTableBorder(colWidths, "mid")
 
-	// Print the data rows
-	for _, row := range strValues {
-		fmt.Print("│ ")
-		for i, val := range row {
-			fmt.Printf("%-*s ", colWidths[i], truncateString(val, colWidths[i]))
-			if i < len(row)-1 {
-				fmt.Print("│ ")
-			} else {
-				fmt.Print("│")
-			}
-		}
-		fmt.Println()
-	}
+	// Print the data rows with smart truncation
+	c.printRowsWithTruncation(strValues, colWidths, rowCount)
 
 	// Bottom border
 	c.printTableBorder(colWidths, "bottom")
@@ -418,7 +523,12 @@ func (c *CLI) executeReadQuery(query string) error {
 	} else {
 		rowText = "rows"
 	}
-	fmt.Printf("\033[1;32m%d %s in set\033[0m\n", rowCount, rowText)
+
+	if c.limit > 0 && rowCount > c.limit {
+		fmt.Printf("\033[1;32m%d %s in set (showing %d)\033[0m\n", rowCount, rowText, c.limit)
+	} else {
+		fmt.Printf("\033[1;32m%d %s in set\033[0m\n", rowCount, rowText)
+	}
 
 	return nil
 }
@@ -565,6 +675,95 @@ func truncateString(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// printRowsWithTruncation prints rows with smart truncation for large result sets
+func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, totalRows int) {
+	// If no limit or total rows within limit, show all
+	if c.limit <= 0 || totalRows <= c.limit {
+		for _, row := range strValues {
+			fmt.Print("│ ")
+			for i, val := range row {
+				fmt.Printf("%-*s ", colWidths[i], truncateString(val, colWidths[i]))
+				if i < len(row)-1 {
+					fmt.Print("│ ")
+				} else {
+					fmt.Print("│")
+				}
+			}
+			fmt.Println()
+		}
+		return
+	}
+
+	// Smart truncation: show top half and bottom half
+	topRows := c.limit / 2
+	bottomRows := c.limit - topRows
+
+	// Show top rows
+	for i := 0; i < topRows && i < totalRows; i++ {
+		row := strValues[i]
+		fmt.Print("│ ")
+		for j, val := range row {
+			fmt.Printf("%-*s ", colWidths[j], truncateString(val, colWidths[j]))
+			if j < len(row)-1 {
+				fmt.Print("│ ")
+			} else {
+				fmt.Print("│")
+			}
+		}
+		fmt.Println()
+	}
+
+	// Show truncation indicator with proper table formatting (like HTML colspan)
+	if totalRows > c.limit {
+		hiddenRows := totalRows - c.limit
+		message := fmt.Sprintf("... (%d more rows) ...", hiddenRows)
+
+		// Calculate exact table content width (excluding borders)
+		contentWidth := 0
+		for i, width := range colWidths {
+			contentWidth += width + 1 // Add 1 for space after each column
+			if i < len(colWidths)-1 {
+				contentWidth += 2 // Add 2 for "│ " separator
+			}
+		}
+
+		// Add blank row before truncation message (exactly like data rows)
+		fmt.Printf("│ %*s│\n", contentWidth, "")
+
+		// Calculate padding to center the message exactly
+		messageLen := len(message)
+		leftPad := (contentWidth - messageLen) / 2
+		rightPad := contentWidth - messageLen - leftPad
+
+		// Centered message with better visibility (exactly like data rows)
+		fmt.Printf("│ %*s\033[1;37m%s\033[0m%*s│\n",
+			leftPad, "", message, rightPad, "")
+
+		// Add blank row after truncation message (exactly like data rows)
+		fmt.Printf("│ %*s│\n", contentWidth, "")
+	}
+
+	// Show bottom rows
+	startIdx := totalRows - bottomRows
+	if startIdx < topRows {
+		startIdx = topRows // Avoid overlap
+	}
+
+	for i := startIdx; i < totalRows; i++ {
+		row := strValues[i]
+		fmt.Print("│ ")
+		for j, val := range row {
+			fmt.Printf("%-*s ", colWidths[j], truncateString(val, colWidths[j]))
+			if j < len(row)-1 {
+				fmt.Print("│ ")
+			} else {
+				fmt.Print("│")
+			}
+		}
+		fmt.Println()
+	}
 }
 
 // formatValue formats a value for display, based on its type

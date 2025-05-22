@@ -19,112 +19,197 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stoolap/stoolap/internal/common"
 	// Import driver
 	_ "github.com/stoolap/stoolap/pkg/driver"
 )
 
+var (
+	dbPath     string
+	jsonOutput bool
+	quiet      bool
+	execute    string
+	file       string
+	limit      int
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "stoolap",
+	Short: "Stoolap SQL Database CLI",
+	Long: `Stoolap is a high-performance SQL database with MVCC and columnar storage.
+This CLI provides an interactive interface to execute SQL queries and manage your database.`,
+	Version: common.VersionMajor + "." + common.VersionMinor + "." + common.VersionPatch + "-" + common.VersionSuffix,
+	RunE:    runRootCommand,
+}
+
+func init() {
+	rootCmd.PersistentFlags().StringVarP(&dbPath, "db", "d", "memory://", "Database path (file://<path> or memory://)")
+	rootCmd.PersistentFlags().BoolVarP(&jsonOutput, "json", "j", false, "Output results in JSON format")
+	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "Suppress connection messages")
+	rootCmd.PersistentFlags().IntVarP(&limit, "limit", "l", 40, "Maximum number of rows to display (0 for unlimited)")
+	rootCmd.Flags().StringVarP(&execute, "execute", "e", "", "Execute a single SQL statement and exit")
+	rootCmd.Flags().StringVarP(&file, "file", "f", "", "Execute SQL statements from a file")
+}
+
 func main() {
-	// Parse command line flags
-	dbPath := flag.String("db", "memory://", "Database path (file://<path> or memory://)")
-	jsonOutput := flag.Bool("json", false, "Output results in JSON format")
-	version := flag.Bool("version", false, "Show version information")
-	versionShort := flag.Bool("v", false, "Show version information (short)")
-	flag.Parse()
-
-	// Handle version flags
-	if *version || *versionShort {
-		fmt.Println(common.VersionString)
-		return
-	}
-
-	// Open the database
-	db, err := sql.Open("stoolap", *dbPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func runRootCommand(cmd *cobra.Command, args []string) error {
+	// Open the database
+	db, err := sql.Open("stoolap", dbPath)
+	if err != nil {
+		return fmt.Errorf("error opening database: %v", err)
 	}
 	defer db.Close()
 
 	// Ping the database to make sure it's working
 	if err := db.Ping(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to database: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error connecting to database: %v", err)
 	}
 
-	fmt.Printf("Connected to database: %s\n", *dbPath)
+	if !quiet {
+		fmt.Printf("Connected to database: %s\n", dbPath)
+	}
+
+	// Handle execute flag - run single query and exit
+	if execute != "" {
+		return executeQueryWithOptions(db, execute, jsonOutput, false, limit)
+	}
+
+	// Handle file flag - execute SQL from file
+	if file != "" {
+		return executeFromFile(db, file, jsonOutput, quiet, limit)
+	}
 
 	// Check if we're getting input from a pipe
 	stat, _ := os.Stdin.Stat()
 	isPipe := (stat.Mode() & os.ModeCharDevice) == 0
 
 	if isPipe {
-		// Read input line by line and execute when we see a blank line
-		scanner := bufio.NewScanner(os.Stdin)
-		var currentStatement strings.Builder
+		return executePipedInput(db, jsonOutput)
+	}
 
-		for scanner.Scan() {
-			line := scanner.Text()
+	// Interactive mode - use the improved CLI
+	cli, err := NewCLI(db, jsonOutput, limit)
+	if err != nil {
+		return fmt.Errorf("error initializing CLI: %v", err)
+	}
+	defer cli.Close()
 
-			// Skip shell-style comment lines (for backward compatibility)
-			if strings.HasPrefix(strings.TrimSpace(line), "#") {
-				continue
-			}
+	return cli.Run()
+}
 
-			// Skip SQL-style comment lines
-			trimmedLine := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmedLine, "--") ||
-				(strings.HasPrefix(trimmedLine, "/*") && strings.HasSuffix(trimmedLine, "*/")) {
-				continue
-			}
+func executeFromFile(db *sql.DB, filename string, jsonOutput, quiet bool, rowLimit int) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("error opening file %s: %v", filename, err)
+	}
+	defer file.Close()
 
-			// If blank line and we have a statement, execute it
-			if strings.TrimSpace(line) == "" && currentStatement.Len() > 0 {
-				q := strings.TrimSpace(currentStatement.String())
-				currentStatement.Reset()
+	scanner := bufio.NewScanner(file)
+	var currentStatement strings.Builder
 
-				if q != "" {
-					// Split the input by semicolons to handle multiple statements
-					statements := splitSQLStatements(q)
-					for _, stmt := range statements {
-						trimmedStmt := strings.TrimSpace(stmt)
-						if trimmedStmt == "" {
-							continue
-						}
+	for scanner.Scan() {
+		line := scanner.Text()
 
-						start := time.Now()
-						err := executeQuery(db, trimmedStmt, *jsonOutput)
-						elapsed := time.Since(start)
+		// Skip shell-style comment lines
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
 
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						} else if !*jsonOutput {
-							fmt.Printf("Query executed in %v\n", elapsed)
-						}
+		// Skip SQL-style comment lines
+		trimmedLine := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmedLine, "--") ||
+			(strings.HasPrefix(trimmedLine, "/*") && strings.HasSuffix(trimmedLine, "*/")) {
+			continue
+		}
+
+		// If blank line and we have a statement, execute it
+		if strings.TrimSpace(line) == "" && currentStatement.Len() > 0 {
+			q := strings.TrimSpace(currentStatement.String())
+			currentStatement.Reset()
+
+			if q != "" {
+				statements := splitSQLStatements(q)
+				for _, stmt := range statements {
+					trimmedStmt := strings.TrimSpace(stmt)
+					if trimmedStmt == "" {
+						continue
+					}
+
+					err := executeQueryWithOptions(db, trimmedStmt, jsonOutput, quiet, rowLimit)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					}
 				}
-			} else {
-				// Add the line to the current statement
-				currentStatement.WriteString(line)
-				currentStatement.WriteString(" ")
+			}
+		} else {
+			currentStatement.WriteString(line)
+			currentStatement.WriteString(" ")
+		}
+	}
+
+	if scanner.Err() != nil {
+		return fmt.Errorf("error reading file: %v", scanner.Err())
+	}
+
+	// Execute any remaining statement
+	if currentStatement.Len() > 0 {
+		q := strings.TrimSpace(currentStatement.String())
+		if q != "" {
+			statements := splitSQLStatements(q)
+			for _, stmt := range statements {
+				trimmedStmt := strings.TrimSpace(stmt)
+				if trimmedStmt == "" {
+					continue
+				}
+
+				err := executeQueryWithOptions(db, trimmedStmt, jsonOutput, quiet, rowLimit)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				}
 			}
 		}
+	}
 
-		if scanner.Err() != nil {
-			fmt.Fprintf(os.Stderr, "Error reading input: %v\n", scanner.Err())
-			os.Exit(1)
+	return nil
+}
+
+func executePipedInput(db *sql.DB, jsonOutput bool) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	var currentStatement strings.Builder
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Skip shell-style comment lines (for backward compatibility)
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
 		}
 
-		// Execute any remaining statement
-		if currentStatement.Len() > 0 {
+		// Skip SQL-style comment lines
+		trimmedLine := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmedLine, "--") ||
+			(strings.HasPrefix(trimmedLine, "/*") && strings.HasSuffix(trimmedLine, "*/")) {
+			continue
+		}
+
+		// If blank line and we have a statement, execute it
+		if strings.TrimSpace(line) == "" && currentStatement.Len() > 0 {
 			q := strings.TrimSpace(currentStatement.String())
+			currentStatement.Reset()
+
 			if q != "" {
 				// Split the input by semicolons to handle multiple statements
 				statements := splitSQLStatements(q)
@@ -135,37 +220,65 @@ func main() {
 					}
 
 					start := time.Now()
-					err := executeQuery(db, trimmedStmt, *jsonOutput)
+					err := executeQuery(db, trimmedStmt, jsonOutput)
 					elapsed := time.Since(start)
 
 					if err != nil {
 						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						// Don't exit immediately, try to process other statements
-					} else if !*jsonOutput {
+					} else if !jsonOutput {
 						fmt.Printf("Query executed in %v\n", elapsed)
 					}
 				}
 			}
+		} else {
+			// Add the line to the current statement
+			currentStatement.WriteString(line)
+			currentStatement.WriteString(" ")
 		}
-
-		return
 	}
 
-	// Interactive mode - use the improved CLI
-	cli, err := NewCLI(db, *jsonOutput)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing CLI: %v\n", err)
-		os.Exit(1)
+	if scanner.Err() != nil {
+		return fmt.Errorf("error reading input: %v", scanner.Err())
 	}
-	defer cli.Close()
 
-	if err := cli.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "CLI error: %v\n", err)
-		os.Exit(1)
+	// Execute any remaining statement
+	if currentStatement.Len() > 0 {
+		q := strings.TrimSpace(currentStatement.String())
+		if q != "" {
+			// Split the input by semicolons to handle multiple statements
+			statements := splitSQLStatements(q)
+			for _, stmt := range statements {
+				trimmedStmt := strings.TrimSpace(stmt)
+				if trimmedStmt == "" {
+					continue
+				}
+
+				start := time.Now()
+				err := executeQuery(db, trimmedStmt, jsonOutput)
+				elapsed := time.Since(start)
+
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					// Don't exit immediately, try to process other statements
+				} else if !jsonOutput {
+					fmt.Printf("Query executed in %v\n", elapsed)
+				}
+			}
+		}
 	}
+
+	return nil
 }
 
 func executeQuery(db *sql.DB, query string, jsonOutput bool) error {
+	return executeQueryWithOptions(db, query, jsonOutput, false, 40)
+}
+
+func executeQueryWithQuiet(db *sql.DB, query string, jsonOutput, quiet bool) error {
+	return executeQueryWithOptions(db, query, jsonOutput, quiet, 40)
+}
+
+func executeQueryWithOptions(db *sql.DB, query string, jsonOutput, quiet bool, rowLimit int) error {
 	ctx := context.Background()
 
 	// Handle special commands
@@ -292,37 +405,33 @@ func executeQuery(db *sql.DB, query string, jsonOutput bool) error {
 			}
 			fmt.Println()
 
-			// Create a slice of interfaces for the row values
+			// Collect all rows first for smart truncation
+			var allRows [][]string
 			values := make([]interface{}, len(columns))
 			scanArgs := make([]interface{}, len(columns))
 			for i := range values {
 				scanArgs[i] = &values[i]
 			}
 
-			// Iterate over the rows
-			var count int
 			for rows.Next() {
-				// Scan the row into the values slice
 				if err := rows.Scan(scanArgs...); err != nil {
 					return err
 				}
 
-				// Print the values
+				// Convert row to strings
+				row := make([]string, len(columns))
 				for i, value := range values {
-					if i > 0 {
-						fmt.Print(" | ")
-					}
-					printValue(value)
+					row[i] = formatValueToString(value)
 				}
-				fmt.Println()
-				count++
+				allRows = append(allRows, row)
 			}
 
 			if err := rows.Err(); err != nil {
 				return err
 			}
 
-			fmt.Printf("%d rows in set\n", count)
+			// Display rows with smart truncation
+			displayRowsWithTruncation(allRows, rowLimit, quiet)
 		}
 	} else {
 		// Execute a non-query statement
@@ -359,7 +468,9 @@ func executeQuery(db *sql.DB, query string, jsonOutput bool) error {
 
 			fmt.Println(string(jsonBytes))
 		} else {
-			fmt.Printf("%d rows affected\n", rowsAffected)
+			if !quiet {
+				fmt.Printf("%d rows affected\n", rowsAffected)
+			}
 		}
 	}
 
@@ -418,6 +529,102 @@ func printValue(value interface{}) {
 		fmt.Print(v)
 	default:
 		fmt.Print(v)
+	}
+}
+
+func formatValueToString(value interface{}) string {
+	if value == nil {
+		return "NULL"
+	}
+
+	switch v := value.(type) {
+	case []byte:
+		return string(v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%.1f", v)
+		}
+		return fmt.Sprintf("%.4g", v)
+	case string:
+		return v
+	case time.Time:
+		return v.Format(time.RFC3339)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func displayRowsWithTruncation(allRows [][]string, rowLimit int, quiet bool) {
+	totalRows := len(allRows)
+
+	// If no limit or total rows within limit, show all
+	if rowLimit <= 0 || totalRows <= rowLimit {
+		for _, row := range allRows {
+			for i, value := range row {
+				if i > 0 {
+					fmt.Print(" | ")
+				}
+				fmt.Print(value)
+			}
+			fmt.Println()
+		}
+
+		if !quiet {
+			fmt.Printf("%d rows in set\n", totalRows)
+		}
+		return
+	}
+
+	// Smart truncation: show top half and bottom half
+	topRows := rowLimit / 2
+	bottomRows := rowLimit - topRows
+
+	// Show top rows
+	for i := 0; i < topRows && i < totalRows; i++ {
+		row := allRows[i]
+		for j, value := range row {
+			if j > 0 {
+				fmt.Print(" | ")
+			}
+			fmt.Print(value)
+		}
+		fmt.Println()
+	}
+
+	// Show truncation indicator with clean formatting
+	if totalRows > rowLimit {
+		hiddenRows := totalRows - rowLimit
+		fmt.Println()
+		fmt.Printf("    \033[2m... (%d more rows) ...\033[0m\n", hiddenRows)
+		fmt.Println()
+	}
+
+	// Show bottom rows
+	startIdx := totalRows - bottomRows
+	if startIdx < topRows {
+		startIdx = topRows // Avoid overlap
+	}
+
+	for i := startIdx; i < totalRows; i++ {
+		row := allRows[i]
+		for j, value := range row {
+			if j > 0 {
+				fmt.Print(" | ")
+			}
+			fmt.Print(value)
+		}
+		fmt.Println()
+	}
+
+	if !quiet {
+		fmt.Printf("%d rows in set (showing %d)\n", totalRows, rowLimit)
 	}
 }
 
@@ -520,9 +727,5 @@ func printHelpMain() {
 	fmt.Println("")
 	fmt.Println("  Special Commands:")
 	fmt.Println("    help, \\h, \\?          Show this help message")
-	fmt.Println("")
-	fmt.Println("  Command Line Options:")
-	fmt.Println("    -db <path>             Database path (file://<path> or memory://)")
-	fmt.Println("    -json                  Output results in JSON format")
 	fmt.Println("")
 }
