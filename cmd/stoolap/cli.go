@@ -388,6 +388,7 @@ func (c *CLI) executeReadQuery(query string) error {
 	// Simple spinner for long-running queries (only show if >1 second)
 	var progressActive bool
 	var progressDone = make(chan bool, 1)
+	queryStartTime := time.Now() // Track query start time from the beginning
 
 	if c.isInteractive {
 		// Start spinner after 1 second delay
@@ -398,10 +399,9 @@ func (c *CLI) executeReadQuery(query string) error {
 				progressActive = true
 				spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 				i := 0
-				startTime := time.Now()
 
 				for progressActive {
-					elapsed := time.Since(startTime)
+					elapsed := time.Since(queryStartTime) // Use actual query start time
 					fmt.Printf("\rExecuting query... %s [%.1fs]", spinner[i%len(spinner)], elapsed.Seconds())
 					time.Sleep(100 * time.Millisecond)
 					i++
@@ -599,6 +599,7 @@ func (c *CLI) executeWriteQuery(query string) error {
 	// Simple spinner for long-running write queries (only show if >1 second)
 	var progressActive bool
 	var progressDone = make(chan bool, 1)
+	queryStartTime := time.Now() // Track query start time from the beginning
 
 	if c.isInteractive {
 		// Start spinner after 1 second delay
@@ -609,10 +610,9 @@ func (c *CLI) executeWriteQuery(query string) error {
 				progressActive = true
 				spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 				i := 0
-				startTime := time.Now()
 
 				for progressActive {
-					elapsed := time.Since(startTime)
+					elapsed := time.Since(queryStartTime) // Use actual query start time
 					fmt.Printf("\rExecuting query... %s [%.1fs]", spinner[i%len(spinner)], elapsed.Seconds())
 					time.Sleep(100 * time.Millisecond)
 					i++
