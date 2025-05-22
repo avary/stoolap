@@ -337,7 +337,7 @@ func BenchmarkMVCCPrimaryKeyUpdateBatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ReportMetric(float64(updateCount), "rows/op")
 
-	updateQuery := fmt.Sprintf("UPDATE %s SET value = value * 2, active = !active WHERE id > ? AND id <= ?", tableName)
+	updateQuery := fmt.Sprintf("UPDATE %s SET value = value * 2, active = CASE WHEN active THEN false ELSE true END WHERE id > ? AND id <= ?", tableName)
 
 	for i := 0; i < b.N; i++ {
 		id := i * updateCount
@@ -403,7 +403,7 @@ func BenchmarkMVCCColumnarIndexUpdateBatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ReportMetric(float64(updateCount), "rows/op")
 
-	updateQuery := fmt.Sprintf("UPDATE %s SET active = !active WHERE value > ? AND value <= ?", tableName)
+	updateQuery := fmt.Sprintf("UPDATE %s SET active = CASE WHEN active THEN false ELSE true END WHERE value > ? AND value <= ?", tableName)
 
 	for i := 0; i < b.N; i++ {
 		id := i * updateCount
@@ -463,7 +463,7 @@ func BenchmarkMVCCNoIndexUpdateBatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ReportMetric(float64(updateCount), "rows/op")
 
-	updateQuery := fmt.Sprintf("UPDATE %s SET active = !active WHERE value > ? AND value <= ?", tableName)
+	updateQuery := fmt.Sprintf("UPDATE %s SET active = CASE WHEN active THEN false ELSE true END WHERE value > ? AND value <= ?", tableName)
 
 	for i := 0; i < b.N; i++ {
 		id := i * updateCount
