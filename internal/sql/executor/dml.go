@@ -43,7 +43,317 @@ var (
 			return &p // Pre-allocate with reasonable capacity
 		},
 	}
+
+	// Pool for function argument slices to avoid allocations
+	argSlicePool = &sync.Pool{
+		New: func() interface{} {
+			p := make([]interface{}, 0, 8)
+			return &p // Pre-allocate with reasonable capacity for function args
+		},
+	}
 )
+
+// evaluateExpressionFast is a lightweight expression evaluator optimized for DML operations
+// It avoids the allocations of the full Evaluator but supports all expression types for DML
+func evaluateExpressionFast(ctx context.Context, expr parser.Expression, registry contract.FunctionRegistry, ps *parameter, row map[string]interface{}) (interface{}, error) {
+	switch e := expr.(type) {
+	case *parser.Parameter:
+		if ps != nil {
+			nm := ps.GetValue(e)
+			return nm.Value, nil
+		}
+		return nil, nil
+	case *parser.IntegerLiteral:
+		return e.Value, nil
+	case *parser.FloatLiteral:
+		return e.Value, nil
+	case *parser.StringLiteral:
+		return e.Value, nil
+	case *parser.BooleanLiteral:
+		return e.Value, nil
+	case *parser.NullLiteral:
+		return nil, nil
+	case *parser.FunctionCall:
+		// Handle function calls with minimal allocations
+		if registry == nil {
+			return nil, errors.New("function registry not available")
+		}
+
+		// Get function from registry
+		fn := registry.GetScalarFunction(e.Function)
+		if fn == nil {
+			return nil, fmt.Errorf("function not found: %s", e.Function)
+		}
+
+		// Handle zero-argument functions quickly
+		if len(e.Arguments) == 0 {
+			result, err := fn.Evaluate()
+			return result, err
+		}
+
+		// Use pooled slice for arguments to avoid allocation
+		cp := argSlicePool.Get().(*[]interface{})
+		args := *cp
+		if cap(args) < len(e.Arguments) {
+			args = make([]interface{}, len(e.Arguments))
+		} else {
+			args = args[:len(e.Arguments)]
+		}
+
+		defer func() {
+			*cp = args[:0]
+			argSlicePool.Put(cp)
+		}()
+
+		// Evaluate arguments recursively
+		for i, arg := range e.Arguments {
+			val, err := evaluateExpressionFast(ctx, arg, registry, ps, row)
+			if err != nil {
+				return nil, fmt.Errorf("error evaluating argument %d for function %s: %w", i+1, e.Function, err)
+			}
+			args[i] = val
+		}
+
+		// Call the function
+		result, err := fn.Evaluate(args...)
+		if err != nil {
+			return nil, fmt.Errorf("error calling function %s: %w", e.Function, err)
+		}
+
+		return result, nil
+	case *parser.Identifier:
+		// Handle column references for UPDATE SET col = other_col
+		if row != nil {
+			if val, exists := row[e.Value]; exists {
+				return val, nil
+			}
+		}
+		return nil, fmt.Errorf("column not found: %s", e.Value)
+	case *parser.InfixExpression:
+		// Handle arithmetic and comparison operations
+		left, err := evaluateExpressionFast(ctx, e.Left, registry, ps, row)
+		if err != nil {
+			return nil, err
+		}
+		right, err := evaluateExpressionFast(ctx, e.Right, registry, ps, row)
+		if err != nil {
+			return nil, err
+		}
+
+		switch e.Operator {
+		case "+":
+			return evaluateArithmetic(left, right, "+")
+		case "-":
+			return evaluateArithmetic(left, right, "-")
+		case "*":
+			return evaluateArithmetic(left, right, "*")
+		case "/":
+			return evaluateArithmetic(left, right, "/")
+		case "||":
+			// String concatenation
+			leftStr := fmt.Sprintf("%v", left)
+			rightStr := fmt.Sprintf("%v", right)
+			return leftStr + rightStr, nil
+		case "=":
+			return compareValues(left, right), nil
+		case "!=", "<>":
+			return !compareValues(left, right), nil
+		case ">":
+			return compareNumbers(left, right, ">")
+		case ">=":
+			return compareNumbers(left, right, ">=")
+		case "<":
+			return compareNumbers(left, right, "<")
+		case "<=":
+			return compareNumbers(left, right, "<=")
+		default:
+			return nil, fmt.Errorf("unsupported infix operator: %s", e.Operator)
+		}
+	case *parser.CastExpression:
+		// Handle type casting using the CAST function from registry
+		if registry == nil {
+			return nil, errors.New("function registry not available for CAST")
+		}
+
+		fn := registry.GetScalarFunction("CAST")
+		if fn == nil {
+			return nil, fmt.Errorf("CAST function not found in registry")
+		}
+
+		// Evaluate the expression to cast
+		val, err := evaluateExpressionFast(ctx, e.Expr, registry, ps, row)
+		if err != nil {
+			return nil, err
+		}
+
+		// Call CAST function with value and type
+		result, err := fn.Evaluate(val, e.TypeName)
+		if err != nil {
+			return nil, fmt.Errorf("error calling CAST function: %w", err)
+		}
+
+		return result, nil
+	case *parser.CaseExpression:
+		// Handle CASE expressions
+		return evaluateCase(ctx, e, registry, ps, row)
+	default:
+		return nil, fmt.Errorf("unsupported expression type: %T", expr)
+	}
+}
+
+// evaluateArithmetic performs arithmetic operations on two values
+func evaluateArithmetic(left, right interface{}, op string) (interface{}, error) {
+	// Handle NULL values
+	if left == nil || right == nil {
+		return nil, nil
+	}
+
+	// Convert to numbers for arithmetic
+	leftNum, leftIsNum := convertToNumber(left)
+	rightNum, rightIsNum := convertToNumber(right)
+
+	if !leftIsNum || !rightIsNum {
+		return nil, fmt.Errorf("arithmetic operation %s requires numeric values", op)
+	}
+
+	switch op {
+	case "+":
+		return leftNum + rightNum, nil
+	case "-":
+		return leftNum - rightNum, nil
+	case "*":
+		return leftNum * rightNum, nil
+	case "/":
+		if rightNum == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		return leftNum / rightNum, nil
+	default:
+		return nil, fmt.Errorf("unsupported arithmetic operator: %s", op)
+	}
+}
+
+// convertToNumber converts a value to float64 for arithmetic operations
+func convertToNumber(val interface{}) (float64, bool) {
+	switch v := val.(type) {
+	case int64:
+		return float64(v), true
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	default:
+		return 0, false
+	}
+}
+
+// evaluateCase handles CASE expressions
+func evaluateCase(ctx context.Context, caseExpr *parser.CaseExpression, registry contract.FunctionRegistry, ps *parameter, row map[string]interface{}) (interface{}, error) {
+	// Evaluate the case value if present (simple CASE)
+	var caseVal interface{}
+	var err error
+	if caseExpr.Value != nil {
+		caseVal, err = evaluateExpressionFast(ctx, caseExpr.Value, registry, ps, row)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Evaluate each WHEN clause
+	for _, when := range caseExpr.WhenClauses {
+		var condResult bool
+
+		if caseExpr.Value != nil {
+			// Simple CASE: Compare case value with WHEN expression
+			whenVal, err := evaluateExpressionFast(ctx, when.Condition, registry, ps, row)
+			if err != nil {
+				return nil, err
+			}
+			condResult = compareValues(caseVal, whenVal)
+		} else {
+			// Searched CASE: Evaluate WHEN condition as boolean
+			condVal, err := evaluateExpressionFast(ctx, when.Condition, registry, ps, row)
+			if err != nil {
+				return nil, err
+			}
+			condResult = isTruthy(condVal)
+		}
+
+		if condResult {
+			// Return the THEN value
+			return evaluateExpressionFast(ctx, when.ThenResult, registry, ps, row)
+		}
+	}
+
+	// No WHEN clause matched, return ELSE value if present
+	if caseExpr.ElseValue != nil {
+		return evaluateExpressionFast(ctx, caseExpr.ElseValue, registry, ps, row)
+	}
+
+	// No ELSE clause, return NULL
+	return nil, nil
+}
+
+// compareValues compares two values for equality
+func compareValues(left, right interface{}) bool {
+	if left == nil && right == nil {
+		return true
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	return fmt.Sprintf("%v", left) == fmt.Sprintf("%v", right)
+}
+
+// compareNumbers compares two values numerically
+func compareNumbers(left, right interface{}, op string) (interface{}, error) {
+	// Handle NULL values
+	if left == nil || right == nil {
+		return false, nil
+	}
+
+	// Convert to numbers for comparison
+	leftNum, leftIsNum := convertToNumber(left)
+	rightNum, rightIsNum := convertToNumber(right)
+
+	if !leftIsNum || !rightIsNum {
+		return false, fmt.Errorf("comparison operation %s requires numeric values", op)
+	}
+
+	switch op {
+	case ">":
+		return leftNum > rightNum, nil
+	case ">=":
+		return leftNum >= rightNum, nil
+	case "<":
+		return leftNum < rightNum, nil
+	case "<=":
+		return leftNum <= rightNum, nil
+	default:
+		return false, fmt.Errorf("unsupported comparison operator: %s", op)
+	}
+}
+
+// isTruthy determines if a value is considered true
+func isTruthy(val interface{}) bool {
+	if val == nil {
+		return false
+	}
+	switch v := val.(type) {
+	case bool:
+		return v
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	case string:
+		return v != "" && v != "0" && strings.ToLower(v) != "false"
+	default:
+		return true
+	}
+}
 
 // executeInsertWithContext executes an INSERT statement
 // Returns the number of rows affected and the last insert ID (for auto-increment columns)
@@ -169,26 +479,12 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 				}()
 
 				for i, expr := range rowExprs {
-					switch e := expr.(type) {
-					case *parser.Parameter:
-						if ps != nil {
-							// Get the parameter value
-							nm := ps.GetValue(e)
-							columnValues[i] = nm.Value
-						}
-					case *parser.IntegerLiteral:
-						columnValues[i] = e.Value
-					case *parser.FloatLiteral:
-						columnValues[i] = e.Value
-					case *parser.StringLiteral:
-						columnValues[i] = e.Value
-					case *parser.BooleanLiteral:
-						columnValues[i] = e.Value
-					case *parser.NullLiteral:
-						columnValues[i] = nil
-					default:
-						return int64(rowIndex), 0, fmt.Errorf("unsupported value type in row %d: %T", rowIndex+1, expr)
+					// Use fast evaluator for all expressions including function calls
+					val, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, nil)
+					if err != nil {
+						return int64(rowIndex), 0, fmt.Errorf("error evaluating expression in row %d: %w", rowIndex+1, err)
 					}
+					columnValues[i] = val
 				}
 
 				// Create a row with the values in the correct order
@@ -257,26 +553,12 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 		}()
 
 		for i, expr := range rowExprs {
-			switch e := expr.(type) {
-			case *parser.Parameter:
-				if ps != nil {
-					// Get the parameter value
-					nm := ps.GetValue(e)
-					columnValues[i] = nm.Value
-				}
-			case *parser.IntegerLiteral:
-				columnValues[i] = e.Value
-			case *parser.FloatLiteral:
-				columnValues[i] = e.Value
-			case *parser.StringLiteral:
-				columnValues[i] = e.Value
-			case *parser.BooleanLiteral:
-				columnValues[i] = e.Value
-			case *parser.NullLiteral:
-				columnValues[i] = nil
-			default:
-				return totalRowsInserted, 0, fmt.Errorf("unsupported value type: %T", expr)
+			// Use fast evaluator for all expressions including function calls
+			val, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, nil)
+			if err != nil {
+				return totalRowsInserted, 0, fmt.Errorf("error evaluating expression: %w", err)
 			}
+			columnValues[i] = val
 		}
 
 		// Check if the number of columns match the number of values
@@ -378,25 +660,11 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 										}
 
 										if colIndex != -1 {
-											var updateValue interface{}
-
-											// Evaluate the expression for the update
-											switch e := expr.(type) {
-											case *parser.Parameter:
-												if ps != nil {
-													nm := ps.GetValue(e)
-													updateValue = nm.Value
-												}
-											case *parser.IntegerLiteral:
-												updateValue = e.Value
-											case *parser.FloatLiteral:
-												updateValue = e.Value
-											case *parser.StringLiteral:
-												updateValue = e.Value
-											case *parser.BooleanLiteral:
-												updateValue = e.Value
-											case *parser.NullLiteral:
-												updateValue = nil
+											// Use fast evaluator for all expressions including function calls
+											updateValue, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, nil)
+											if err != nil {
+												// If evaluation fails, skip this update
+												continue
 											}
 
 											// Set the new value
@@ -506,6 +774,14 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 
 	// Create a setter function that updates the values
 	setter := func(row storage.Row) (storage.Row, bool) {
+		// Create row context for column references in expressions
+		rowContext := make(map[string]interface{})
+		for i, col := range schema.Columns {
+			if i < len(row) && row[i] != nil {
+				rowContext[col.Name] = row[i].AsInterface()
+			}
+		}
+
 		// Apply updates
 		for colName, expr := range stmt.Updates {
 			// Find the column using O(1) map lookup instead of O(n) scan
@@ -521,27 +797,10 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 			colIndex := colInfo.Index
 			colType := colInfo.Type
 
-			// Extract value from expression
-			var value interface{}
-			switch e := expr.(type) {
-			case *parser.Parameter:
-				if ps != nil {
-					// Get the parameter value
-					nm := ps.GetValue(e)
-					value = nm.Value
-				}
-			case *parser.IntegerLiteral:
-				value = e.Value
-			case *parser.FloatLiteral:
-				value = e.Value
-			case *parser.StringLiteral:
-				value = e.Value
-			case *parser.BooleanLiteral:
-				value = e.Value
-			case *parser.NullLiteral:
-				value = nil
-			default:
-				continue // Skip unsupported types
+			// Use fast evaluator with current row context for column references
+			value, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, rowContext)
+			if err != nil {
+				continue // Skip expressions that fail to evaluate
 			}
 
 			// Convert to column value and update

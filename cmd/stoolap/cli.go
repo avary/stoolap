@@ -507,7 +507,7 @@ func (c *CLI) executeReadQuery(query string) error {
 	}
 
 	// Create and configure table
-	t := c.configureTable(len(columns))
+	t := c.configureTable()
 
 	// Add headers
 	headerRow := make(table.Row, len(columns))
@@ -700,33 +700,6 @@ func (c *CLI) outputWriteResultJSON(rowsAffected int64) error {
 	return nil
 }
 
-// printTableBorder prints a border line for the table
-func (c *CLI) printTableBorder(colWidths []int, position string) {
-	var left, mid, right, horiz string
-
-	switch position {
-	case "top":
-		left, mid, right, horiz = "┌", "┬", "┐", "─"
-	case "mid":
-		left, mid, right, horiz = "├", "┼", "┤", "─"
-	case "bottom":
-		left, mid, right, horiz = "└", "┴", "┘", "─"
-	default:
-		left, mid, right, horiz = "├", "┼", "┤", "─"
-	}
-
-	fmt.Print(left)
-	for i, width := range colWidths {
-		for j := 0; j < width+2; j++ {
-			fmt.Print(horiz)
-		}
-		if i < len(colWidths)-1 {
-			fmt.Print(mid)
-		}
-	}
-	fmt.Println(right)
-}
-
 // printHelp displays help information
 func (c *CLI) printHelp() {
 	fmt.Println("\033[1mStoolap SQL CLI Commands:\033[0m")
@@ -763,157 +736,8 @@ func (c *CLI) printHelp() {
 	fmt.Println("")
 }
 
-// truncateString truncates a string to the specified length and adds an ellipsis if needed
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
-}
-
-// printRowsWithTruncation prints rows with smart truncation for large result sets
-func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, totalRows int) []int {
-	// If no limit or total rows within limit, show all
-	if c.limit <= 0 || totalRows <= c.limit {
-		for _, row := range strValues {
-			fmt.Print("│ ")
-			for i, val := range row {
-				fmt.Printf("%-*s ", colWidths[i], truncateString(val, colWidths[i]))
-				if i < len(row)-1 {
-					fmt.Print("│ ")
-				} else {
-					fmt.Print("│")
-				}
-			}
-			fmt.Println()
-		}
-		return colWidths // Return original column widths
-	}
-
-	// Smart truncation: show top half and bottom half
-	topRows := c.limit / 2
-	bottomRows := c.limit - topRows
-
-	// Show top rows
-	for i := 0; i < topRows && i < totalRows; i++ {
-		row := strValues[i]
-		fmt.Print("│ ")
-		for j, val := range row {
-			fmt.Printf("%-*s ", colWidths[j], truncateString(val, colWidths[j]))
-			if j < len(row)-1 {
-				fmt.Print("│ ")
-			} else {
-				fmt.Print("│")
-			}
-		}
-		fmt.Println()
-	}
-
-	// Variable to track final column widths (may be expanded)
-	finalColWidths := colWidths
-
-	// Show truncation indicator with proper table formatting (like HTML colspan)
-	if totalRows > c.limit {
-		hiddenRows := totalRows - c.limit
-		message := fmt.Sprintf("... (%d more rows) ...", hiddenRows)
-
-		// Calculate exact table content width (excluding borders)
-		contentWidth := 0
-		for i, width := range colWidths {
-			contentWidth += width + 1 // Add 1 for space after each column
-			if i < len(colWidths)-1 {
-				contentWidth += 2 // Add 2 for "│ " separator
-			}
-		}
-
-		messageLen := len(message)
-
-		// If message is wider than current table, expand columns to fit
-		if messageLen > contentWidth {
-			// Calculate how much extra width we need
-			extraWidth := messageLen - contentWidth
-
-			// Distribute the extra width evenly across all columns
-			extraPerColumn := extraWidth / len(colWidths)
-			remainder := extraWidth % len(colWidths)
-
-			// Create expanded column widths
-			expandedColWidths := make([]int, len(colWidths))
-			for i := range colWidths {
-				expandedColWidths[i] = colWidths[i] + extraPerColumn
-				if i < remainder {
-					expandedColWidths[i]++ // Distribute remainder
-				}
-			}
-
-			// Update final column widths to expanded ones
-			finalColWidths = expandedColWidths
-
-			// Recalculate content width with expanded columns
-			contentWidth = 0
-			for i, width := range expandedColWidths {
-				contentWidth += width + 1 // Add 1 for space after each column
-				if i < len(expandedColWidths)-1 {
-					contentWidth += 2 // Add 2 for "│ " separator
-				}
-			}
-
-			// Print truncation rows with expanded column widths
-			fmt.Print("│ ")
-			for i, width := range expandedColWidths {
-				fmt.Printf("%-*s ", width, "")
-				if i < len(expandedColWidths)-1 {
-					fmt.Print("│ ")
-				} else {
-					fmt.Print("│")
-				}
-			}
-			fmt.Println()
-		} else {
-			// Add blank row before truncation message (exactly like data rows)
-			fmt.Printf("│ %*s│\n", contentWidth, "")
-		}
-
-		// Calculate padding to center the message exactly
-		leftPad := (contentWidth - messageLen) / 2
-		rightPad := contentWidth - messageLen - leftPad
-
-		// Centered message with better visibility (exactly like data rows)
-		fmt.Printf("│ %*s\033[1;37m%s\033[0m%*s│\n",
-			leftPad, "", message, rightPad, "")
-
-		// Add blank row after truncation message (use same width as message row)
-		fmt.Printf("│ %*s│\n", contentWidth, "")
-	}
-
-	// Show bottom rows
-	startIdx := totalRows - bottomRows
-	if startIdx < topRows {
-		startIdx = topRows // Avoid overlap
-	}
-
-	for i := startIdx; i < totalRows; i++ {
-		row := strValues[i]
-		fmt.Print("│ ")
-		for j, val := range row {
-			fmt.Printf("%-*s ", colWidths[j], truncateString(val, colWidths[j]))
-			if j < len(row)-1 {
-				fmt.Print("│ ")
-			} else {
-				fmt.Print("│")
-			}
-		}
-		fmt.Println()
-	}
-
-	return finalColWidths // Return final column widths (expanded if needed)
-}
-
 // configureTable creates and configures a table writer with appropriate styling
-func (c *CLI) configureTable(numColumns int) table.Writer {
+func (c *CLI) configureTable() table.Writer {
 	t := table.NewWriter()
 	t.SetOutputMirror(os.Stdout)
 
@@ -928,20 +752,6 @@ func (c *CLI) configureTable(numColumns int) table.Writer {
 
 	// Don't use column AutoMerge as it hides duplicate data in consecutive rows
 	// We only want row AutoMerge for specific truncation rows
-
-	return t
-}
-
-// configureTruncationTable creates a table specifically for truncation display with proper column spanning
-func (c *CLI) configureTruncationTable(numColumns int, message string) table.Writer {
-	t := table.NewWriter()
-	t.SetOutputMirror(os.Stdout)
-	t.SetStyle(table.StyleRounded)
-	t.SetAutoIndex(false)
-	t.Style().Options.SeparateRows = false
-
-	// Create a single column that spans the width of all columns
-	t.AppendRow(table.Row{message})
 
 	return t
 }

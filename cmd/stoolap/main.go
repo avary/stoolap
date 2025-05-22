@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stoolap/stoolap/internal/common"
+
 	// Import driver
 	_ "github.com/stoolap/stoolap/pkg/driver"
 )
@@ -274,10 +275,6 @@ func executeQuery(db *sql.DB, query string, jsonOutput bool) error {
 	return executeQueryWithOptions(db, query, jsonOutput, false, 40)
 }
 
-func executeQueryWithQuiet(db *sql.DB, query string, jsonOutput, quiet bool) error {
-	return executeQueryWithOptions(db, query, jsonOutput, quiet, 40)
-}
-
 func executeQueryWithOptions(db *sql.DB, query string, jsonOutput, quiet bool, rowLimit int) error {
 	ctx := context.Background()
 
@@ -363,9 +360,7 @@ func executeQueryWithOptions(db *sql.DB, query string, jsonOutput, quiet bool, r
 
 				// Copy values to a new slice
 				row := make([]interface{}, len(columns))
-				for i, v := range values {
-					row[i] = v
-				}
+				copy(row, values)
 				allRows = append(allRows, row)
 			}
 
@@ -506,30 +501,6 @@ func convertParamValue(value string) interface{} {
 
 	// Default to string
 	return value
-}
-
-func printValue(value interface{}) {
-	if value == nil {
-		fmt.Print("NULL")
-		return
-	}
-
-	switch v := value.(type) {
-	case []byte:
-		fmt.Print(string(v))
-	case int64:
-		fmt.Print(v)
-	case float64:
-		fmt.Print(v)
-	case string:
-		fmt.Print(v)
-	case time.Time:
-		fmt.Print(v.Format(time.RFC3339))
-	case bool:
-		fmt.Print(v)
-	default:
-		fmt.Print(v)
-	}
 }
 
 func formatValueToString(value interface{}) string {
