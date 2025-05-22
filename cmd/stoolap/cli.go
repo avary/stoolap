@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 // CLI represents an interactive command-line interface for working with the database
@@ -384,12 +385,51 @@ func (c *CLI) executeReadQuery(query string) error {
 	var rows *sql.Rows
 	var err error
 
+	// Simple spinner for long-running queries (only show if >1 second)
+	var progressActive bool
+	var progressDone = make(chan bool, 1)
+
+	if c.isInteractive {
+		// Start spinner after 1 second delay
+		go func() {
+			select {
+			case <-time.After(1 * time.Second):
+				// Query is taking longer than 1 second, show spinner
+				progressActive = true
+				spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+				i := 0
+				startTime := time.Now()
+
+				for progressActive {
+					elapsed := time.Since(startTime)
+					fmt.Printf("\rExecuting query... %s [%.1fs]", spinner[i%len(spinner)], elapsed.Seconds())
+					time.Sleep(100 * time.Millisecond)
+					i++
+				}
+			case <-progressDone:
+				// Query finished before 1 second, don't show spinner
+				return
+			}
+		}()
+	}
+
 	// Execute the query using transaction if active
 	if c.inTransaction {
 		rows, err = c.tx.QueryContext(c.ctx, query)
 	} else {
 		rows, err = c.db.QueryContext(c.ctx, query)
 	}
+
+	// Stop spinner when query completes
+	if c.isInteractive {
+		progressActive = false
+		select {
+		case progressDone <- true:
+		default: // Channel might be full
+		}
+		fmt.Print("\r\033[K") // Clear the spinner line completely
+	}
+
 	if err != nil {
 		return err
 	}
@@ -466,55 +506,73 @@ func (c *CLI) executeReadQuery(query string) error {
 		return c.outputJSON(columns, values, rowCount)
 	}
 
-	// Cap column widths to keep table from getting too wide
-	totalWidth := 1 // Start with 1 for the left border
-	for _, width := range colWidths {
-		// Add 2 for padding and 1 for the separator
-		totalWidth += width + 3
-	}
+	// Create and configure table
+	t := c.configureTable(len(columns))
 
-	if totalWidth > c.maxTableSize {
-		// Need to shrink columns
-		excess := totalWidth - c.maxTableSize
-		for i := range colWidths {
-			// Shrink columns proportionally
-			if colWidths[i] > 10 { // Don't shrink tiny columns
-				reduction := (colWidths[i] * excess) / totalWidth
-				if reduction > 0 {
-					colWidths[i] -= reduction
-					if colWidths[i] < 10 {
-						colWidths[i] = 10 // Set a minimum
-					}
-				}
-			}
-		}
-	}
-
-	// Print the table header with style
-	// Top border
-	c.printTableBorder(colWidths, "top")
-
-	// Column headers
-	fmt.Print("│ ")
+	// Add headers
+	headerRow := make(table.Row, len(columns))
 	for i, col := range columns {
-		padding := colWidths[i]
-		fmt.Printf("\033[1m%-*s\033[0m ", padding, truncateString(col, padding))
-		if i < len(columns)-1 {
-			fmt.Print("│ ")
-		} else {
-			fmt.Print("│")
+		headerRow[i] = col
+	}
+	t.AppendHeader(headerRow)
+
+	// Note: Column spanning isn't directly supported, so we'll simulate it
+
+	// Add data with smart truncation
+	if c.limit > 0 && rowCount > c.limit {
+		// Smart truncation: show top half and bottom half
+		topRows := c.limit / 2
+		bottomRows := c.limit - topRows
+
+		// Add top rows
+		for i := 0; i < topRows && i < rowCount; i++ {
+			t.AppendRow(convertToTableRow(strValues[i]))
+		}
+
+		// Add truncation indication without separators
+		hiddenRows := rowCount - c.limit
+
+		// Create empty row, message row, empty row (like original)
+		emptyRow := make(table.Row, len(columns))
+		for i := 0; i < len(columns); i++ {
+			emptyRow[i] = " " // Same space in all columns for AutoMerge
+		}
+
+		// Add empty row before message with AutoMerge for spanning
+		t.AppendRow(emptyRow, table.RowConfig{AutoMerge: true})
+
+		// Create a message that spans across columns using AutoMerge (true HTML colspan)
+		message := fmt.Sprintf("... (%d more rows) ...", hiddenRows)
+		truncationRow := make(table.Row, len(columns))
+
+		// For AutoMerge to create true colspan, put the SAME content in ALL columns
+		for i := 0; i < len(columns); i++ {
+			truncationRow[i] = message
+		}
+
+		// Add the truncation row with horizontal auto-merge for spanning effect
+		t.AppendRow(truncationRow, table.RowConfig{AutoMerge: true})
+
+		// Add empty row after message with AutoMerge for spanning
+		t.AppendRow(emptyRow, table.RowConfig{AutoMerge: true})
+
+		// Add bottom rows
+		startIdx := rowCount - bottomRows
+		if startIdx < topRows {
+			startIdx = topRows // Avoid overlap
+		}
+		for i := startIdx; i < rowCount; i++ {
+			t.AppendRow(convertToTableRow(strValues[i]))
+		}
+	} else {
+		// Add all rows
+		for _, row := range strValues {
+			t.AppendRow(convertToTableRow(row))
 		}
 	}
-	fmt.Println()
 
-	// Header/data separator with double line
-	c.printTableBorder(colWidths, "mid")
-
-	// Print the data rows with smart truncation
-	c.printRowsWithTruncation(strValues, colWidths, rowCount)
-
-	// Bottom border
-	c.printTableBorder(colWidths, "bottom")
+	// Render the table
+	t.Render()
 
 	// Print summary
 	var rowText string
@@ -538,12 +596,51 @@ func (c *CLI) executeWriteQuery(query string) error {
 	var result sql.Result
 	var err error
 
+	// Simple spinner for long-running write queries (only show if >1 second)
+	var progressActive bool
+	var progressDone = make(chan bool, 1)
+
+	if c.isInteractive {
+		// Start spinner after 1 second delay
+		go func() {
+			select {
+			case <-time.After(1 * time.Second):
+				// Query is taking longer than 1 second, show spinner
+				progressActive = true
+				spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+				i := 0
+				startTime := time.Now()
+
+				for progressActive {
+					elapsed := time.Since(startTime)
+					fmt.Printf("\rExecuting query... %s [%.1fs]", spinner[i%len(spinner)], elapsed.Seconds())
+					time.Sleep(100 * time.Millisecond)
+					i++
+				}
+			case <-progressDone:
+				// Query finished before 1 second, don't show spinner
+				return
+			}
+		}()
+	}
+
 	// Execute the query using transaction if active
 	if c.inTransaction {
 		result, err = c.tx.ExecContext(c.ctx, query)
 	} else {
 		result, err = c.db.ExecContext(c.ctx, query)
 	}
+
+	// Stop spinner when query completes
+	if c.isInteractive {
+		progressActive = false
+		select {
+		case progressDone <- true:
+		default: // Channel might be full
+		}
+		fmt.Print("\r\033[K") // Clear the spinner line completely
+	}
+
 	if err != nil {
 		return err
 	}
@@ -678,7 +775,7 @@ func truncateString(s string, maxLen int) string {
 }
 
 // printRowsWithTruncation prints rows with smart truncation for large result sets
-func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, totalRows int) {
+func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, totalRows int) []int {
 	// If no limit or total rows within limit, show all
 	if c.limit <= 0 || totalRows <= c.limit {
 		for _, row := range strValues {
@@ -693,7 +790,7 @@ func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, tot
 			}
 			fmt.Println()
 		}
-		return
+		return colWidths // Return original column widths
 	}
 
 	// Smart truncation: show top half and bottom half
@@ -715,6 +812,9 @@ func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, tot
 		fmt.Println()
 	}
 
+	// Variable to track final column widths (may be expanded)
+	finalColWidths := colWidths
+
 	// Show truncation indicator with proper table formatting (like HTML colspan)
 	if totalRows > c.limit {
 		hiddenRows := totalRows - c.limit
@@ -729,11 +829,55 @@ func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, tot
 			}
 		}
 
-		// Add blank row before truncation message (exactly like data rows)
-		fmt.Printf("│ %*s│\n", contentWidth, "")
+		messageLen := len(message)
+
+		// If message is wider than current table, expand columns to fit
+		if messageLen > contentWidth {
+			// Calculate how much extra width we need
+			extraWidth := messageLen - contentWidth
+
+			// Distribute the extra width evenly across all columns
+			extraPerColumn := extraWidth / len(colWidths)
+			remainder := extraWidth % len(colWidths)
+
+			// Create expanded column widths
+			expandedColWidths := make([]int, len(colWidths))
+			for i := range colWidths {
+				expandedColWidths[i] = colWidths[i] + extraPerColumn
+				if i < remainder {
+					expandedColWidths[i]++ // Distribute remainder
+				}
+			}
+
+			// Update final column widths to expanded ones
+			finalColWidths = expandedColWidths
+
+			// Recalculate content width with expanded columns
+			contentWidth = 0
+			for i, width := range expandedColWidths {
+				contentWidth += width + 1 // Add 1 for space after each column
+				if i < len(expandedColWidths)-1 {
+					contentWidth += 2 // Add 2 for "│ " separator
+				}
+			}
+
+			// Print truncation rows with expanded column widths
+			fmt.Print("│ ")
+			for i, width := range expandedColWidths {
+				fmt.Printf("%-*s ", width, "")
+				if i < len(expandedColWidths)-1 {
+					fmt.Print("│ ")
+				} else {
+					fmt.Print("│")
+				}
+			}
+			fmt.Println()
+		} else {
+			// Add blank row before truncation message (exactly like data rows)
+			fmt.Printf("│ %*s│\n", contentWidth, "")
+		}
 
 		// Calculate padding to center the message exactly
-		messageLen := len(message)
 		leftPad := (contentWidth - messageLen) / 2
 		rightPad := contentWidth - messageLen - leftPad
 
@@ -741,7 +885,7 @@ func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, tot
 		fmt.Printf("│ %*s\033[1;37m%s\033[0m%*s│\n",
 			leftPad, "", message, rightPad, "")
 
-		// Add blank row after truncation message (exactly like data rows)
+		// Add blank row after truncation message (use same width as message row)
 		fmt.Printf("│ %*s│\n", contentWidth, "")
 	}
 
@@ -764,6 +908,51 @@ func (c *CLI) printRowsWithTruncation(strValues [][]string, colWidths []int, tot
 		}
 		fmt.Println()
 	}
+
+	return finalColWidths // Return final column widths (expanded if needed)
+}
+
+// configureTable creates and configures a table writer with appropriate styling
+func (c *CLI) configureTable(numColumns int) table.Writer {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+
+	// Use rounded style for better visual appearance
+	t.SetStyle(table.StyleRounded)
+
+	// Configure auto-sizing
+	t.SetAutoIndex(false)
+
+	// Disable separate rows to match original table format (only header separator)
+	t.Style().Options.SeparateRows = false
+
+	// Don't use column AutoMerge as it hides duplicate data in consecutive rows
+	// We only want row AutoMerge for specific truncation rows
+
+	return t
+}
+
+// configureTruncationTable creates a table specifically for truncation display with proper column spanning
+func (c *CLI) configureTruncationTable(numColumns int, message string) table.Writer {
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.SetStyle(table.StyleRounded)
+	t.SetAutoIndex(false)
+	t.Style().Options.SeparateRows = false
+
+	// Create a single column that spans the width of all columns
+	t.AppendRow(table.Row{message})
+
+	return t
+}
+
+// convertToTableRow converts a string slice to table.Row
+func convertToTableRow(row []string) table.Row {
+	tableRow := make(table.Row, len(row))
+	for i, val := range row {
+		tableRow[i] = val
+	}
+	return tableRow
 }
 
 // formatValue formats a value for display, based on its type
