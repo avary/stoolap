@@ -26,6 +26,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/stoolap/stoolap/internal/common"
 )
 
 // CLI represents an interactive command-line interface for working with the database
@@ -119,7 +120,8 @@ func (c *CLI) updatePrompt() {
 // Run starts the CLI
 func (c *CLI) Run() error {
 	if c.isInteractive {
-		fmt.Println("Stoolap SQL CLI")
+		fmt.Printf("Stoolap v%s.%s.%s-%s\n",
+			common.VersionMajor, common.VersionMinor, common.VersionPatch, common.VersionSuffix)
 		fmt.Println("Enter SQL commands, 'help' for assistance, or 'exit' to quit.")
 		fmt.Println("Use Up/Down arrows for history, Ctrl+R to search history.")
 		if c.jsonOutput {
