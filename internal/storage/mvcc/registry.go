@@ -34,7 +34,8 @@ type TransactionRegistry struct {
 	activeTransactions    *fastmap.SegmentInt64Map[int64] // txnID -> begin timestamp
 	committedTransactions *fastmap.SegmentInt64Map[int64] // txnID -> commit timestamp
 	isolationLevel        storage.IsolationLevel
-	accepting             atomic.Bool // Flag to control if new transactions are accepted
+	accepting             atomic.Bool  // Flag to control if new transactions are accepted
+	oldestCleanedTxnID    atomic.Int64 // Transactions older than this are always visible
 }
 
 // NewTransactionRegistry creates a new transaction registry
@@ -217,7 +218,16 @@ func (r *TransactionRegistry) IsVisible(versionTxnID int64, viewerTxnID int64) b
 
 // CleanupOldTransactions removes committed transactions older than maxAge
 // This helps prevent memory leaks from accumulating transaction records
+// IMPORTANT: In READ COMMITTED mode, we cannot clean up committed transactions
+// because data visibility depends on the transaction being in committedTransactions.
+// Only SNAPSHOT isolation can safely clean up old transactions.
 func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
+	// In READ COMMITTED mode, we cannot clean up committed transactions
+	// because IsDirectlyVisible checks if the transaction exists in committedTransactions
+	if r.isolationLevel == storage.ReadCommitted {
+		return 0
+	}
+
 	// Calculate the cutoff timestamp for old transactions
 	cutoffTime := time.Now().Add(-maxAge).UnixNano()
 
@@ -252,6 +262,12 @@ func (r *TransactionRegistry) CleanupOldTransactions(maxAge time.Duration) int {
 
 	// Find transactions to remove
 	r.committedTransactions.ForEach(func(txnID, commitTS int64) bool {
+		// NEVER clean up negative transaction IDs
+		// These are special transactions (like recovery) that must remain visible
+		if txnID < 0 {
+			return true
+		}
+
 		// Skip transactions that are still active
 		if r.isolationLevel == storage.SnapshotIsolation {
 			if _, isActive := activeSet[txnID]; isActive {

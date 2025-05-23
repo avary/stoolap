@@ -1028,6 +1028,39 @@ func (vs *VersionStore) UpdateAccessTime(rowID int64) {
 	}
 }
 
+// canSafelyRemove checks if a deleted row can be safely removed from memory
+// without violating transaction isolation guarantees
+func (vs *VersionStore) canSafelyRemove(version *RowVersion) bool {
+	// If no engine or registry, can't check visibility
+	if vs.engine == nil || vs.engine.registry == nil {
+		return false
+	}
+
+	// Get all active transactions
+	activeTransactions := make([]int64, 0)
+	vs.engine.registry.activeTransactions.ForEach(func(txnID int64, beginTS int64) bool {
+		activeTransactions = append(activeTransactions, txnID)
+		return true
+	})
+
+	// Check if any active transaction can see this deleted row
+	for _, txnID := range activeTransactions {
+		// Check if this transaction can see the deleted version
+		if vs.engine.registry.IsVisible(version.TxnID, txnID) {
+			// An active transaction can still see this deleted row
+			return false
+		}
+	}
+
+	// Also check if the deleting transaction is still active
+	if vs.engine.registry.activeTransactions.Has(version.TxnID) {
+		// The transaction that deleted this row is still active
+		return false
+	}
+
+	return true
+}
+
 // CleanupDeletedRows removes deleted rows that are older than the specified retention period
 // This helps prevent memory leaks from accumulated deleted rows
 func (vs *VersionStore) CleanupDeletedRows(retentionPeriod time.Duration) int {
@@ -1042,16 +1075,57 @@ func (vs *VersionStore) CleanupDeletedRows(retentionPeriod time.Duration) int {
 
 	var rowsToDelete []int64
 
-	// First pass: identify deleted rows older than the retention period
+	// First pass: identify deleted rows older than the retention period that are safe to remove
 	vs.versions.ForEach(func(rowID int64, version *RowVersion) bool {
-		if version.IsDeleted && version.CreateTime < cutoffTime {
-			rowsToDelete = append(rowsToDelete, rowID)
+		// CRITICAL: Only process rows that are actually deleted
+		if version != nil && version.IsDeleted && version.CreateTime < cutoffTime {
+			// Check if any active transaction can still see this row
+			if vs.canSafelyRemove(version) {
+				rowsToDelete = append(rowsToDelete, rowID)
+			}
 		}
 		return true // Continue iteration
 	})
 
 	// Second pass: remove the identified rows
 	for _, rowID := range rowsToDelete {
+		// Get the version to extract column values for index removal
+		if versionPtr, exists := vs.versions.Get(rowID); exists {
+			// Remove from all indexes before deleting the version
+			vs.indexMutex.RLock()
+			for _, index := range vs.indexes {
+				// Get the column IDs for this index
+				columnIDs := index.ColumnIDs()
+
+				// Extract column values based on index structure
+				var values []storage.ColumnValue
+				if len(columnIDs) == 1 {
+					// Single-column index
+					columnID := columnIDs[0]
+					if columnID < len(versionPtr.Data) {
+						values = []storage.ColumnValue{versionPtr.Data[columnID]}
+					} else {
+						values = []storage.ColumnValue{nil}
+					}
+				} else if len(columnIDs) > 1 {
+					// Multi-column index
+					values = make([]storage.ColumnValue, len(columnIDs))
+					for i, columnID := range columnIDs {
+						if columnID < len(versionPtr.Data) {
+							values[i] = versionPtr.Data[columnID]
+						} else {
+							values[i] = nil
+						}
+					}
+				}
+
+				// Remove from index
+				index.Remove(values, rowID, 0)
+			}
+			vs.indexMutex.RUnlock()
+		}
+
+		// Now remove from version store
 		vs.versions.Del(rowID)
 		// Also remove from access times tracking
 		vs.accessTimes.Del(rowID)
