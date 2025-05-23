@@ -18,23 +18,22 @@ Tables can be created using the standard `CREATE TABLE` syntax:
 
 ```sql
 CREATE TABLE users (
-    id INT PRIMARY KEY,
-    username VARCHAR(255) NOT NULL,
-    email VARCHAR(255) UNIQUE,
+    id INTEGER PRIMARY KEY,
+    username TEXT NOT NULL,
+    email TEXT,
     created_at TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
+    is_active BOOLEAN
 );
 ```
 
-### Table Options
+### Table Constraints
 
-When creating tables, you can specify various options:
+When creating tables, you can specify the following constraints:
 
 - **PRIMARY KEY** - Define a primary key constraint on one or more columns
-- **UNIQUE** - Enforce uniqueness constraint on a column
 - **NOT NULL** - Enforce that a column cannot contain NULL values
-- **DEFAULT** - Specify a default value for a column
-- **AUTO_INCREMENT** - Generate sequential values automatically
+
+**Note**: For uniqueness constraints, use `CREATE UNIQUE INDEX` after table creation.
 
 ### Altering Tables
 
@@ -56,29 +55,20 @@ ALTER TABLE users RENAME TO system_users;
 Stoolap supports the following data types:
 
 ### Numeric Types
-- **INT / INTEGER** - 32-bit signed integer
-- **BIGINT** - 64-bit signed integer
-- **FLOAT** - 32-bit floating-point number
-- **DOUBLE** - 64-bit floating-point number
-- **DECIMAL** - Fixed-point decimal number
+- **INTEGER** - Signed integer number
+- **FLOAT** - Floating-point number
 
 ### String Types
-- **CHAR(n)** - Fixed-length character string
-- **VARCHAR(n)** - Variable-length character string
-- **TEXT** - Variable-length character string for large text
+- **TEXT** - Variable-length character string
 
 ### Date and Time Types
-- **DATE** - Calendar date (year, month, day)
-- **TIME** - Time of day
 - **TIMESTAMP** - Date and time
-- **DATETIME** - Date and time
 
 ### Boolean Type
 - **BOOLEAN** - True or false value
 
 ### Special Types
 - **JSON** - JSON document
-- **BLOB** - Binary large object
 
 ## Primary Keys
 
@@ -87,15 +77,15 @@ Primary keys uniquely identify rows in a table:
 ```sql
 -- Single-column primary key
 CREATE TABLE products (
-    product_id INT PRIMARY KEY,
-    name VARCHAR(255)
+    product_id INTEGER PRIMARY KEY,
+    name TEXT
 );
 
 -- Composite primary key
 CREATE TABLE order_items (
-    order_id INT,
-    product_id INT,
-    quantity INT,
+    order_id INTEGER,
+    product_id INTEGER,
+    quantity INTEGER,
     PRIMARY KEY (order_id, product_id)
 );
 ```
@@ -142,8 +132,8 @@ Stoolap provides system tables and commands to query schema information:
 -- List all tables
 SHOW TABLES;
 
--- Show table structure
-SHOW COLUMNS FROM users;
+-- Show table creation statement (includes structure)
+SHOW CREATE TABLE users;
 
 -- Show indexes for a table
 SHOW INDEXES FROM users;
