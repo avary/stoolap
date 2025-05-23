@@ -205,7 +205,7 @@ Update all rows:
 
 ```sql
 UPDATE settings 
-SET last_updated = CURRENT_TIMESTAMP;
+SET last_updated = NOW();
 ```
 
 ### DELETE
