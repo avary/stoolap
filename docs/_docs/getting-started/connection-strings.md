@@ -20,19 +20,19 @@ Where:
 - `scheme` specifies the storage engine type
 - `path` provides location information for persistent storage (optional for memory storage)
 
-## Supported Storage Engine Types
+## MVCC Storage Engine
 
-Stoolap supports three storage engine types:
+Stoolap uses a single MVCC (Multi-Version Concurrency Control) storage engine that supports two modes:
 
-### In-Memory Storage (memory://)
+### In-Memory Mode (memory://)
 
 ```
 memory://
 ```
 
-The in-memory storage engine:
-- Stores all data in RAM
-- Provides maximum performance
+MVCC engine with in-memory storage:
+- All data stored in RAM for maximum performance
+- Full MVCC transaction isolation and concurrency control
 - Data is lost when the process terminates
 - No persistence between sessions
 
@@ -41,17 +41,18 @@ Example:
 memory://
 ```
 
-### File-Based Persistent Storage (file://)
+### Persistent Mode (file://)
 
 ```
 file:///path/to/data
 ```
 
-The file-based storage engine:
-- Stores data on disk
-- Provides durability across process restarts
-- Balances performance with persistence
-- Requires a valid file path
+MVCC engine with disk persistence:
+- Same MVCC features as memory mode
+- Data persisted to disk for durability
+- Snapshot-based persistence for analytical workloads
+- WAL (Write-Ahead Logging) for crash recovery
+- Transaction isolation with optimistic concurrency control
 
 Examples:
 ```
@@ -60,22 +61,18 @@ file:///Users/username/stoolap/data
 file:///C:/stoolap/data
 ```
 
-### Database Engine with MVCC (db://)
+### Configuration Options
+
+The persistent mode supports additional configuration through query parameters:
 
 ```
-db:///path/to/data
+file:///path/to/data?sync_mode=full&snapshot_interval=60
 ```
 
-The database engine offers:
-- MVCC (Multi-Version Concurrency Control)
-- Transaction isolation with optimistic concurrency control
-- Snapshot-based persistence
-- WAL (Write-Ahead Logging) for durability
-
-Example:
-```
-db:///tmp/stoolap_data
-```
+Available options:
+- `sync_mode`: WAL synchronization mode (none, normal, full)
+- `snapshot_interval`: Time between snapshots in seconds  
+- `keep_snapshots`: Number of snapshots to keep per table
 
 ## Usage Examples
 
@@ -88,8 +85,8 @@ stoolap -db memory://
 # Start with file-based persistent storage
 stoolap -db file:///data/mydb
 
-# Start with MVCC engine
-stoolap -db db:///data/mydb
+# Start with persistent MVCC engine
+stoolap -db file:///data/mydb
 ```
 
 ### Go Application Examples
@@ -142,7 +139,7 @@ func main() {
 }
 ```
 
-#### MVCC-Based Database
+#### Persistent MVCC Database with Configuration
 
 ```go
 package main
@@ -155,24 +152,25 @@ import (
 )
 
 func main() {
-    // Connect using the db:// scheme for MVCC support
-    db, err := sql.Open("stoolap", "db:///path/to/database")
+    // Connect with persistence and custom configuration
+    connStr := "file:///path/to/database?sync_mode=full&snapshot_interval=30"
+    db, err := sql.Open("stoolap", connStr)
     if err != nil {
         log.Fatal(err)
     }
     defer db.Close()
 
-    // Use the database with transaction support...
+    // Use the database with full MVCC transaction support...
 }
 ```
 
 ## PRAGMA Configuration
 
-While connection strings don't support query parameters, you can configure the database using PRAGMA commands after connection:
+You can also configure the database using PRAGMA commands after connection (alternative to query parameters):
 
 ```go
 // Open database
-db, err := sql.Open("stoolap", "db:///data/mydb")
+db, err := sql.Open("stoolap", "file:///data/mydb")
 if err != nil {
     log.Fatal(err)
 }
@@ -183,7 +181,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-// Configure WAL synchronization mode
+// Configure WAL synchronization mode  
 _, err = db.Exec("PRAGMA sync_mode = 2")
 if err != nil {
     log.Fatal(err)
