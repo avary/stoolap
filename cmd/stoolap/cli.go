@@ -311,9 +311,10 @@ func (c *CLI) executeQuery(query string) error {
 		return c.rollbackTransaction()
 	}
 
-	// Check if it's a query that returns rows (SELECT, SHOW, etc.)
+	// Check if it's a query that returns rows (SELECT, SHOW, PRAGMA reads, etc.)
 	if strings.HasPrefix(upperQuery, "SELECT") ||
-		strings.HasPrefix(upperQuery, "SHOW") {
+		strings.HasPrefix(upperQuery, "SHOW") ||
+		(strings.HasPrefix(upperQuery, "PRAGMA") && !strings.Contains(upperQuery, "=")) {
 		return c.executeReadQuery(query)
 	} else {
 		return c.executeWriteQuery(query)
@@ -714,6 +715,10 @@ func (c *CLI) printHelp() {
 	fmt.Println("    SHOW TABLES            List all tables")
 	fmt.Println("    SHOW CREATE TABLE ...  Show CREATE TABLE statement for a table")
 	fmt.Println("    SHOW INDEXES FROM ...  Show indexes for a table")
+	fmt.Println("")
+	fmt.Println("  \033[1;33mConfiguration Commands:\033[0m")
+	fmt.Println("    PRAGMA name            Get current value of configuration setting")
+	fmt.Println("    PRAGMA name = value    Set configuration setting")
 	fmt.Println("")
 	fmt.Println("  \033[1;33mTransaction Commands:\033[0m")
 	fmt.Println("    BEGIN                  Start a new transaction")
