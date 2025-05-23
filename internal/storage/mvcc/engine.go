@@ -321,6 +321,9 @@ func (e *MVCCEngine) BeginTx(ctx context.Context, level sql.IsolationLevel) (sto
 
 	// Get transaction ID from registry
 	txnID, _ := e.registry.BeginTransaction()
+	if txnID == InvalidTransactionID {
+		return nil, errors.New("transaction registry is not accepting new transactions")
+	}
 
 	// Get a tables map from the pool to reduce allocations
 	tablesMap := tablesMapPool.Get().(map[string]*MVCCTable)

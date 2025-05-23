@@ -29,7 +29,7 @@ import (
 // system differs from what's expected in this test. We need to adapt this test
 // to the actual behavior of the current MVCC implementation.
 func TestBasicMVCCIsolation(t *testing.T) {
-	t.Skip("Skipping test due to mismatch with actual MVCC implementation")
+	// t.Skip("Skipping test due to mismatch with actual MVCC implementation")
 
 	// Create the engine
 	engine := mvcc.NewMVCCEngine(&storage.Config{
@@ -40,6 +40,11 @@ func TestBasicMVCCIsolation(t *testing.T) {
 		t.Fatalf("Failed to open engine: %v", err)
 	}
 	defer engine.Close()
+
+	// Set the isolation level to Snapshot Isolation for this test
+	if err := engine.SetIsolationLevel(storage.SnapshotIsolation); err != nil {
+		t.Fatalf("Failed to set isolation level: %v", err)
+	}
 
 	// Start transaction 1
 	tx1, err := engine.BeginTransaction()
@@ -192,7 +197,7 @@ func TestBasicMVCCIsolation(t *testing.T) {
 // system differs from what's expected in this test. We need to adapt this test
 // to the actual behavior of the current MVCC implementation.
 func TestMVCCDataOverwrite(t *testing.T) {
-	t.Skip("Skipping test due to mismatch with actual MVCC implementation")
+	// t.Skip("Skipping test due to mismatch with actual MVCC implementation")
 
 	// Create the engine
 	engine := mvcc.NewMVCCEngine(&storage.Config{
@@ -203,6 +208,11 @@ func TestMVCCDataOverwrite(t *testing.T) {
 		t.Fatalf("Failed to open engine: %v", err)
 	}
 	defer engine.Close()
+
+	// Set the isolation level to Snapshot Isolation for this test
+	if err := engine.SetIsolationLevel(storage.SnapshotIsolation); err != nil {
+		t.Fatalf("Failed to set isolation level: %v", err)
+	}
 
 	// Start transaction 1
 	tx1, err := engine.BeginTransaction()

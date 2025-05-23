@@ -22,6 +22,11 @@ import (
 	"github.com/stoolap/stoolap/internal/storage"
 )
 
+const (
+	// InvalidTransactionID is returned when the registry is not accepting new transactions
+	InvalidTransactionID = -999999999
+)
+
 // TransactionRegistry manages transaction states and visibility rules
 // Lock-free implementation using our optimized SegmentInt64Map for optimal performance and concurrency
 type TransactionRegistry struct {
@@ -57,8 +62,8 @@ func (r *TransactionRegistry) GetIsolationLevel() storage.IsolationLevel {
 func (r *TransactionRegistry) BeginTransaction() (txnID int64, beginTS int64) {
 	// Check if we're accepting new transactions
 	if !r.accepting.Load() {
-		// Return negative txnID to indicate error condition
-		return -1, 0
+		// Return InvalidTransactionID to indicate error condition
+		return InvalidTransactionID, 0
 	}
 
 	// Generate a new transaction ID atomically
