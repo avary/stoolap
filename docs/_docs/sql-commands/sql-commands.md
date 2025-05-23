@@ -461,68 +461,6 @@ Columnar index drop:
 DROP COLUMNAR INDEX ON products (category);
 ```
 
-### CREATE VIEW
-
-Creates a virtual table based on a SELECT query.
-
-#### Basic Syntax
-
-```sql
-CREATE VIEW [IF NOT EXISTS] view_name AS select_statement;
-```
-
-#### Parameters
-
-- **IF NOT EXISTS**: Optional clause that prevents an error if the view already exists
-- **view_name**: Name of the view to create
-- **select_statement**: A SELECT query that defines the view
-
-#### Examples
-
-Basic view creation:
-
-```sql
-CREATE VIEW active_users AS 
-SELECT * FROM users WHERE active = true;
-```
-
-View with joins:
-
-```sql
-CREATE VIEW product_details AS
-SELECT p.id, p.name, c.name AS category, p.price
-FROM products p
-JOIN categories c ON p.category_id = c.id;
-```
-
-### DROP VIEW
-
-Removes a view.
-
-#### Basic Syntax
-
-```sql
-DROP VIEW [IF EXISTS] view_name;
-```
-
-#### Parameters
-
-- **IF EXISTS**: Optional clause that prevents an error if the view doesn't exist
-- **view_name**: Name of the view to drop
-
-#### Examples
-
-Basic view drop:
-
-```sql
-DROP VIEW active_users;
-```
-
-Using IF EXISTS:
-
-```sql
-DROP VIEW IF EXISTS product_details;
-```
 
 ## Transaction Control
 
@@ -601,12 +539,12 @@ PRAGMA name = value;
 PRAGMA name;
 ```
 
-#### Common PRAGMAs
+#### Supported PRAGMAs
 
 - **sync_mode**: Controls WAL synchronization (0=None, 1=Normal, 2=Full)
 - **snapshot_interval**: Controls how often snapshots are taken (in seconds)
 - **keep_snapshots**: Controls how many snapshots to retain
-- **query_cache_enabled**: Enables or disables the query cache
+- **wal_flush_trigger**: Controls when WAL is flushed to disk (number of operations)
 
 #### Examples
 
@@ -616,6 +554,13 @@ PRAGMA snapshot_interval = 60;
 
 -- Configure WAL sync mode
 PRAGMA sync_mode = 2;
+
+-- Configure WAL flush trigger
+PRAGMA wal_flush_trigger = 1000;
+
+-- Read current values
+PRAGMA snapshot_interval;
+PRAGMA sync_mode;
 ```
 
 ## Notes and Limitations
@@ -624,10 +569,12 @@ PRAGMA sync_mode = 2;
 
 2. **JOIN Support**: LEFT JOIN and INNER JOIN are supported, but RIGHT JOIN and FULL JOIN are not
 
-3. **Advanced Features**: Some SQL features like window functions are implemented but with limitations
+3. **VIEW Support**: CREATE VIEW and DROP VIEW syntax is parsed but not yet implemented in the execution engine
 
-4. **Parameters**: Use `?` placeholder for parameter binding in prepared statements
+4. **Advanced Features**: Some SQL features like window functions are implemented but with limitations
 
-5. **NULL Handling**: Stoolap follows standard SQL NULL semantics; NULL values are not equal to any value, including another NULL, and require IS NULL or IS NOT NULL operators for testing
+5. **Parameters**: Use `?` placeholder for parameter binding in prepared statements
 
-6. **Type Conversion**: Stoolap performs implicit type conversions in some contexts, but explicit CAST is recommended for clarity
+6. **NULL Handling**: Stoolap follows standard SQL NULL semantics; NULL values are not equal to any value, including another NULL, and require IS NULL or IS NOT NULL operators for testing
+
+7. **Type Conversion**: Stoolap performs implicit type conversions in some contexts, but explicit CAST is recommended for clarity
