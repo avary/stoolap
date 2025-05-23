@@ -37,10 +37,11 @@ Depending on the query, expression pushdown can provide:
 Stoolap implements expression pushdown at multiple levels:
 
 1. **Storage Level Pushdown** - Expressions pushed directly to column storage
-2. **Index Level Pushdown** - Expressions leveraging indexes
+2. **Index Level Pushdown** - Expressions leveraging indexes (B-tree, bitmap, columnar)
 3. **Scan Level Pushdown** - Expressions applied during table scanning
 4. **Join Level Pushdown** - Expressions pushed before or into joins
-5. **Subquery Pushdown** - Expressions pushed into subqueries
+
+**Note**: Subquery pushdown is not yet implemented.
 
 ### The Pushdown Process
 
@@ -64,7 +65,7 @@ These expressions can be pushed all the way to the storage layer:
 - **Simple Comparisons** - Equality (=), inequality (!=, <>), greater/less than (>, <, >=, <=)
 - **Range Conditions** - BETWEEN, IN
 - **Null Checks** - IS NULL, IS NOT NULL
-- **String Patterns** - LIKE, SIMILAR TO (with limitations)
+- **String Patterns** - LIKE (with limitations)
 - **Logical Operations** - AND, OR, NOT
 
 ```sql
@@ -80,14 +81,14 @@ SELECT * FROM orders WHERE
 These expressions can be partially pushed down:
 
 - **Simple Functions** - ABS(), LOWER(), UPPER()
-- **Date/Time Functions** - DATE_TRUNC(), EXTRACT()
-- **Type Casts** - CAST(), ::
+- **Date/Time Functions** - DATE_TRUNC(), TIME_TRUNC()
+- **Type Casts** - CAST()
 - **Simple Arithmetic** - +, -, *, /
 
 ```sql
 -- The date_trunc can be pushed down, making this more efficient
 SELECT * FROM orders WHERE 
-    DATE_TRUNC('month', order_date) = DATE_TRUNC('month', CURRENT_DATE);
+    DATE_TRUNC('month', order_date) = DATE_TRUNC('month', NOW());
 ```
 
 ### Non-Pushable Expressions
@@ -260,7 +261,7 @@ To maximize the benefits of expression pushdown:
 1. **Use direct column references** - Avoid functions on indexed columns in WHERE clauses
 2. **Create appropriate indexes** - Indexes enable better pushdown optimizations
 3. **Use simple predicates** - Simple expressions are more likely to be pushed down
-4. **Check query plans** - Use EXPLAIN to verify pushdown is occurring
+4. **Monitor query performance** - Use execution timing to verify optimization effectiveness
 5. **Combine multiple conditions** - AND conditions can be pushed down effectively
 
 ## Advanced Techniques
