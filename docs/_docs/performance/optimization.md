@@ -133,23 +133,13 @@ INSERT INTO products (name, price, category_id) VALUES
 
 ## Performance Monitoring
 
-### Query Analysis
+Currently, Stoolap provides basic performance monitoring through:
 
-Use EXPLAIN to understand query execution:
+- **Query timing** - The CLI displays execution time for each query
+- **Row counts** - Result sets show the number of rows affected/returned
+- **Error reporting** - Clear error messages for failed operations
 
-```sql
-EXPLAIN SELECT * FROM products WHERE category_id = 3;
-```
-
-### Performance Profiling
-
-Enable profiling for detailed performance analysis:
-
-```sql
-SET profiling = ON;
--- Run your query
-SHOW PROFILE;
-```
+**Note**: Advanced profiling features like EXPLAIN and SHOW PROFILE are not yet implemented.
 
 ## Implementation-Specific Optimizations
 
@@ -209,8 +199,8 @@ Stoolap can execute some operations in parallel:
 3. **Write optimized queries** - Select only needed columns and filter early
 4. **Use prepared statements** - Leverage the query cache for repeated queries
 5. **Manage transactions efficiently** - Keep transactions short and focused
-6. **Monitor and analyze** - Use EXPLAIN and profiling to identify bottlenecks
-7. **Update statistics** - Ensure the query optimizer has accurate information
+6. **Monitor performance** - Use query timing and row counts to identify bottlenecks
+7. **Rebuild indexes** - Recreate indexes periodically for optimal performance
 8. **Consider bulk operations** - Use bulk inserts and updates for better throughput
 9. **Leverage vectorized execution** - Structure operations to benefit from batch processing
 10. **Configure for your workload** - Adjust memory settings based on your specific needs
