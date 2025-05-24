@@ -409,14 +409,10 @@ func (wm *WALManager) BatchCommit(entries []WALEntry) error {
 
 	// Serialize all entries into the buffer
 	for _, entry := range entries {
-		// Serialize the entry
-		data, err := wm.serializeEntry(entry)
-		if err != nil {
+		// Encode the entry directly into the batch buffer
+		if err := encodeEntry(batchBuffer, entry); err != nil {
 			return fmt.Errorf("failed to serialize WAL entry: %w", err)
 		}
-
-		// Append to batch buffer
-		batchBuffer.Write(data)
 
 		// Track highest LSN
 		if entry.LSN > highestLSN {
@@ -734,47 +730,89 @@ func (wm *WALManager) AppendEntryLocked(entry WALEntry) (uint64, error) {
 
 // serializeEntry serializes a WAL entry to binary format with improved performance
 func (wm *WALManager) serializeEntry(entry WALEntry) ([]byte, error) {
-	// Pre-calculate rough size to avoid reallocations
-	// Base size for fixed fields + estimate for variable data
-	initialSize := 48 + len(entry.TableName) + len(entry.Data)
+	// Get a buffer from the pool
+	buf := common.GetBufferPool()
+	defer common.PutBufferPool(buf)
 
-	// Create a buffer with pre-allocated capacity
-	buf := make([]byte, 0, initialSize)
-
-	// Write header (LSN + size placeholder)
-	buf = binary.LittleEndian.AppendUint64(buf, entry.LSN)
-	sizePos := len(buf)
-	buf = binary.LittleEndian.AppendUint64(buf, 0) // Placeholder for size
-
-	// Write transaction ID
-	buf = binary.LittleEndian.AppendUint64(buf, uint64(entry.TxnID))
-
-	// Write table name with length prefix
-	tableNameLen := uint16(len(entry.TableName))
-	buf = binary.LittleEndian.AppendUint16(buf, tableNameLen)
-	buf = append(buf, entry.TableName...)
-
-	// Write row ID
-	buf = binary.LittleEndian.AppendUint64(buf, uint64(entry.RowID))
-
-	// Write operation type
-	buf = append(buf, byte(entry.Operation))
-
-	// Write timestamp
-	buf = binary.LittleEndian.AppendUint64(buf, uint64(entry.Timestamp))
-
-	// Write data with length prefix
-	dataLen := uint32(len(entry.Data))
-	buf = binary.LittleEndian.AppendUint32(buf, dataLen)
-	if dataLen > 0 {
-		buf = append(buf, entry.Data...)
+	// Use the optimized encoding function
+	if err := encodeEntry(buf, entry); err != nil {
+		return nil, err
 	}
 
-	// Update size field - total size excluding the LSN and size fields themselves
-	totalSize := uint64(len(buf) - 16)
-	binary.LittleEndian.PutUint64(buf[sizePos:], totalSize)
+	// Return a copy of the bytes to avoid buffer reuse issues
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
+}
 
-	return buf, nil
+// encodeEntry serializes a WAL entry to binary format with improved performance
+func encodeEntry(w *common.ByteBuffer, entry WALEntry) error {
+	var (
+		buf8 [8]byte
+		buf4 [4]byte
+		buf2 [2]byte
+	)
+
+	// 1) LSN
+	binary.LittleEndian.PutUint64(buf8[:], entry.LSN)
+	if _, err := w.Write(buf8[:]); err != nil {
+		return err
+	}
+
+	// 2) totalSize (all remaining bytes after LSN+size)
+	//    fixed fields = 8(txnID)+2(nameLen)+len(name)+8(rowID)+1(op)+8(ts)+4(dataLen)+len(data)
+	totalSize := uint64(8 + 2 + len(entry.TableName) + 8 + 1 + 8 + 4 + len(entry.Data))
+	binary.LittleEndian.PutUint64(buf8[:], totalSize)
+	if _, err := w.Write(buf8[:]); err != nil {
+		return err
+	}
+
+	// 3) TxnID
+	binary.LittleEndian.PutUint64(buf8[:], uint64(entry.TxnID))
+	if _, err := w.Write(buf8[:]); err != nil {
+		return err
+	}
+
+	// 4) TableName length + bytes
+	binary.LittleEndian.PutUint16(buf2[:], uint16(len(entry.TableName)))
+	if _, err := w.Write(buf2[:]); err != nil {
+		return err
+	}
+
+	if _, err := w.WriteString(entry.TableName); err != nil {
+		return err
+	}
+
+	// 5) RowID
+	binary.LittleEndian.PutUint64(buf8[:], uint64(entry.RowID))
+	if _, err := w.Write(buf8[:]); err != nil {
+		return err
+	}
+
+	// 6) Operation
+	if _, err := w.Write([]byte{byte(entry.Operation)}); err != nil {
+		return err
+	}
+
+	// 7) Timestamp
+	binary.LittleEndian.PutUint64(buf8[:], uint64(entry.Timestamp))
+	if _, err := w.Write(buf8[:]); err != nil {
+		return err
+	}
+
+	// 8) Data length + bytes
+	binary.LittleEndian.PutUint32(buf4[:], uint32(len(entry.Data)))
+	if _, err := w.Write(buf4[:]); err != nil {
+		return err
+	}
+
+	if len(entry.Data) > 0 {
+		if _, err := w.Write(entry.Data); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // writeToFile writes data to the WAL file - assumes caller has lock
@@ -1385,13 +1423,13 @@ func (wm *WALManager) TruncateWAL(upToLSN uint64) error {
 			Timestamp: time.Now().UnixNano(),
 		}
 
-		markerData, err := wm.serializeEntry(markerEntry)
-		if err != nil {
+		batchBuffer := common.GetBufferPool()
+		defer common.PutBufferPool(batchBuffer)
+		if err := encodeEntry(batchBuffer, markerEntry); err != nil {
 			return fmt.Errorf("failed to create marker entry: %w", err)
 		}
 
-		_, err = tempWalFile.Write(markerData)
-		if err != nil {
+		if _, err = tempWalFile.Write(batchBuffer.Bytes()); err != nil {
 			return fmt.Errorf("failed to write marker entry: %w", err)
 		}
 	}
