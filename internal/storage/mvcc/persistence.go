@@ -1,17 +1,18 @@
-/* Copyright 2025 Stoolap Contributors
+/*
+Copyright 2025 Stoolap Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
-limitations under the License. */
-
+limitations under the License.
+*/
 package mvcc
 
 import (
@@ -21,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,6 +46,7 @@ type PersistenceManager struct {
 	engine     *MVCCEngine
 	meta       *PersistenceMeta
 	diskStores map[string]*DiskVersionStore // Map of table names to disk version stores
+	mu         sync.RWMutex                 // Protects diskStores map
 
 	snapshotInterval    time.Duration
 	keepCount           int
@@ -291,7 +294,9 @@ func (pm *PersistenceManager) Start() error {
 			return fmt.Errorf("failed to load snapshots for table %s: %w", tableName, err)
 		}
 
+		pm.mu.Lock()
 		pm.diskStores[tableName] = diskStore
+		pm.mu.Unlock()
 	}
 
 	// Start periodic snapshot task
@@ -311,7 +316,15 @@ func (pm *PersistenceManager) runSnapshotTask() {
 		}
 
 		// Take snapshots of all tables
+		pm.mu.RLock()
+		// Make a copy of the map to avoid holding the lock for too long
+		diskStoresCopy := make(map[string]*DiskVersionStore)
 		for tableName, diskStore := range pm.diskStores {
+			diskStoresCopy[tableName] = diskStore
+		}
+		pm.mu.RUnlock()
+
+		for tableName, diskStore := range diskStoresCopy {
 			// Check if the table still exists in the engine
 			pm.engine.mu.RLock()
 			_, tableExists := pm.engine.schemas[tableName]
@@ -323,7 +336,9 @@ func (pm *PersistenceManager) runSnapshotTask() {
 				if err := diskStore.Close(); err != nil {
 					fmt.Printf("Warning: Failed to close stale disk store for table %s: %v\n", tableName, err)
 				}
+				pm.mu.Lock()
 				delete(pm.diskStores, tableName)
+				pm.mu.Unlock()
 
 				// Remove the table's directory with all snapshots
 				tableDir := filepath.Join(pm.path, tableName)
@@ -381,7 +396,14 @@ func (pm *PersistenceManager) Stop() error {
 		defer close(done)
 
 		// Close all disk stores first
+		pm.mu.RLock()
+		diskStoresCopy := make(map[string]*DiskVersionStore)
 		for tableName, store := range pm.diskStores {
+			diskStoresCopy[tableName] = store
+		}
+		pm.mu.RUnlock()
+
+		for tableName, store := range diskStoresCopy {
 			// Create a separate timeout for each disk store
 			storeTimeout := time.After(1 * time.Second)
 			storeDone := make(chan struct{})
@@ -514,7 +536,9 @@ func (pm *PersistenceManager) Stop() error {
 
 	// Clean up any other resources regardless of timeout
 	// Clear the disk stores map to release resources
+	pm.mu.Lock()
 	pm.diskStores = make(map[string]*DiskVersionStore)
+	pm.mu.Unlock()
 
 	return shutdownErr
 }
@@ -668,7 +692,14 @@ func (pm *PersistenceManager) getLatestSnapshotTime() time.Time {
 	}
 
 	// Iterate through all tables to find the latest snapshot timestamp
+	pm.mu.RLock()
+	diskStoresCopy := make(map[string]*DiskVersionStore)
 	for tableName, diskStore := range pm.diskStores {
+		diskStoresCopy[tableName] = diskStore
+	}
+	pm.mu.RUnlock()
+
+	for tableName, diskStore := range diskStoresCopy {
 		// Skip tables without a disk store
 		if diskStore == nil {
 			continue
@@ -796,14 +827,19 @@ func (pm *PersistenceManager) loadSnapshots() (map[string]*storage.Schema, error
 		}
 
 		// Add to disk stores map
+		pm.mu.Lock()
 		pm.diskStores[tableName] = diskStore
+		pm.mu.Unlock()
 		tables[tableName] = schema
 	}
 
 	// Now handle tables that exist in memory but might not have been processed yet
 	for tableName, vs := range pm.engine.versionStores {
 		// Skip any tables that already have a DiskVersionStore or are already in tables map
-		if _, hasStore := pm.diskStores[tableName]; hasStore {
+		pm.mu.RLock()
+		_, hasStore := pm.diskStores[tableName]
+		pm.mu.RUnlock()
+		if hasStore {
 			continue
 		}
 		if _, hasTable := tables[tableName]; hasTable {
@@ -824,7 +860,9 @@ func (pm *PersistenceManager) loadSnapshots() (map[string]*storage.Schema, error
 		}
 
 		// Add to disk stores map
+		pm.mu.Lock()
 		pm.diskStores[tableName] = diskStore
+		pm.mu.Unlock()
 
 		// Get and store the schema
 		schema, err := vs.GetTableSchema()
@@ -913,7 +951,10 @@ func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*s
 			pm.engine.mu.Unlock()
 
 			// Create disk store for the table if it doesn't exist
-			if _, exists := pm.diskStores[entry.TableName]; !exists && pm.enabled {
+			pm.mu.RLock()
+			_, exists = pm.diskStores[entry.TableName]
+			pm.mu.RUnlock()
+			if !exists && pm.enabled {
 				diskStore, err := NewDiskVersionStore(pm.path, entry.TableName, vs)
 				if err != nil {
 					fmt.Printf("Warning: Failed to create disk store for table %s: %v\n", entry.TableName, err)
@@ -923,7 +964,9 @@ func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*s
 						fmt.Printf("Warning: Failed to load snapshots for table %s: %v\n", entry.TableName, err)
 					}
 					// Add the disk store to the persistence manager's map
+					pm.mu.Lock()
 					pm.diskStores[entry.TableName] = diskStore
+					pm.mu.Unlock()
 				}
 			}
 
@@ -989,18 +1032,21 @@ func (pm *PersistenceManager) applyWALEntry(entry WALEntry, tables map[string]*s
 		delete(tables, entry.TableName)
 
 		// Remove disk store if it exists
-		if diskStore, exists := pm.diskStores[entry.TableName]; exists && diskStore != nil {
+		pm.mu.Lock()
+		diskStore, exists := pm.diskStores[entry.TableName]
+		if exists && diskStore != nil {
 			// Close the disk store before removing it from the map
 			if err := diskStore.Close(); err != nil {
 				fmt.Printf("Warning: Failed to close disk store for table %s: %v\n", entry.TableName, err)
 			}
 			delete(pm.diskStores, entry.TableName)
+		}
+		pm.mu.Unlock()
 
-			// Remove the table's directory with all snapshots
-			tableDir := filepath.Join(pm.path, entry.TableName)
-			if err := os.RemoveAll(tableDir); err != nil {
-				fmt.Printf("Warning: Failed to remove snapshot directory for table %s: %v\n", entry.TableName, err)
-			}
+		// Remove the table's directory with all snapshots
+		tableDir := filepath.Join(pm.path, entry.TableName)
+		if err := os.RemoveAll(tableDir); err != nil {
+			fmt.Printf("Warning: Failed to remove snapshot directory for table %s: %v\n", entry.TableName, err)
 		}
 
 		// Drop from engine

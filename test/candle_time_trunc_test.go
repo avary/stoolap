@@ -1,17 +1,18 @@
-/* Copyright 2025 Stoolap Contributors
+/*
+Copyright 2025 Stoolap Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
-limitations under the License. */
-
+limitations under the License.
+*/
 package test
 
 import (
@@ -143,6 +144,68 @@ func abs(n int64) int64 {
 	return n
 }
 
+// loadCandlesFromFile loads candle data from a JSON file
+func loadCandlesFromFile(filename string) ([]Candle, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %w", filename, err)
+	}
+
+	// Try to unmarshal as Candle array first (our test data format)
+	var candles []Candle
+	if err := json.Unmarshal(data, &candles); err == nil {
+		// Successfully parsed as Candle array, return directly
+		return candles, nil
+	}
+
+	// If that fails, try BinanceKline format
+	var binanceData []BinanceKline
+	if err := json.Unmarshal(data, &binanceData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+
+	candlesResult := make([]Candle, 0, len(binanceData))
+	for _, k := range binanceData {
+		if len(k) < 6 {
+			continue
+		}
+
+		var openTime int64
+		// Handle different possible types from JSON parsing
+		switch v := k[0].(type) {
+		case float64:
+			openTime = int64(v)
+		case int64:
+			openTime = v
+		case json.Number:
+			val, _ := v.Int64()
+			openTime = val
+		default:
+			openTime, _ = strconv.ParseInt(fmt.Sprintf("%v", k[0]), 10, 64)
+		}
+
+		openPrice, _ := strconv.ParseFloat(fmt.Sprintf("%v", k[1]), 64)
+		highPrice, _ := strconv.ParseFloat(fmt.Sprintf("%v", k[2]), 64)
+		lowPrice, _ := strconv.ParseFloat(fmt.Sprintf("%v", k[3]), 64)
+		closePrice, _ := strconv.ParseFloat(fmt.Sprintf("%v", k[4]), 64)
+		volume, _ := strconv.ParseFloat(fmt.Sprintf("%v", k[5]), 64)
+
+		// Convert from milliseconds to seconds for Unix timestamp
+		unixTime := openTime / 1000
+
+		candlesResult = append(candlesResult, Candle{
+			Time:   unixTime,
+			Open:   openPrice,
+			High:   highPrice,
+			Low:    lowPrice,
+			Close:  closePrice,
+			Volume: volume,
+		})
+	}
+
+	return candlesResult, nil
+}
+
 // TestCandleTimeAggregation tests TIME_TRUNC functionality with candle data
 // It verifies that TIME_TRUNC can properly group 1-minute candle data into 15-minute intervals
 // and correctly aggregate FIRST(open), MAX(high), MIN(low), LAST(close), and SUM(volume)
@@ -179,16 +242,42 @@ func TestCandleTimeAggregation(t *testing.T) {
 	endTime := time.Date(2023, time.July, 1, 12, 0, 0, 0, time.UTC)
 	startTime := endTime.Add(-12 * time.Hour) // Use a 12-hour window instead of 24
 
-	// Fetch 1-minute candle data from Binance API
-	candles1m, err := fetchBinanceKlines("BTCUSDT", "1m", startTime, endTime, 720) // 720 minutes in 12 hours
-	if err != nil {
-		t.Fatalf("Failed to fetch 1m candle data from Binance: %v", err)
-	}
+	// Try to load test data from files first
+	var candles1m, candles15m []Candle
 
-	// Fetch 15-minute candle data from Binance API
-	candles15m, err := fetchBinanceKlines("BTCUSDT", "15m", startTime, endTime, 48) // 48 fifteen-minute intervals in 12 hours
-	if err != nil {
-		t.Fatalf("Failed to fetch 15m candle data from Binance: %v", err)
+	// Check if running in CI environment (GitHub Actions sets CI=true)
+	if os.Getenv("CI") == "true" || os.Getenv("USE_TEST_DATA") == "true" {
+		// Use local test data files
+		candles1m, err = loadCandlesFromFile("testdata/candle_1m_binance.json")
+		if err != nil {
+			t.Fatalf("Failed to load 1m candle test data: %v", err)
+		}
+
+		candles15m, err = loadCandlesFromFile("testdata/candle_15m_binance.json")
+		if err != nil {
+			t.Fatalf("Failed to load 15m candle test data: %v", err)
+		}
+	} else {
+		// Try to fetch from Binance API (for local development)
+		candles1m, err = fetchBinanceKlines("BTCUSDT", "1m", startTime, endTime, 720) // 720 minutes in 12 hours
+		if err != nil {
+			// If API fails, fall back to test data
+			t.Logf("Failed to fetch from Binance API: %v, falling back to test data", err)
+			candles1m, err = loadCandlesFromFile("testdata/candle_1m_binance.json")
+			if err != nil {
+				t.Fatalf("Failed to load 1m candle test data: %v", err)
+			}
+		}
+
+		candles15m, err = fetchBinanceKlines("BTCUSDT", "15m", startTime, endTime, 48) // 48 fifteen-minute intervals in 12 hours
+		if err != nil {
+			// If API fails, fall back to test data
+			t.Logf("Failed to fetch from Binance API: %v, falling back to test data", err)
+			candles15m, err = loadCandlesFromFile("testdata/candle_15m_binance.json")
+			if err != nil {
+				t.Fatalf("Failed to load 15m candle test data: %v", err)
+			}
+		}
 	}
 
 	t.Logf("Fetched %d 1-minute candles and %d 15-minute candles from Binance API", len(candles1m), len(candles15m))
