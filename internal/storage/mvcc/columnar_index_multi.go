@@ -1465,7 +1465,7 @@ func (idx *MultiColumnarIndex) Build() error {
 			// Extract values for all columns in this index
 			values := make([]storage.ColumnValue, len(idx.columnIDs))
 			for i, colID := range idx.columnIDs {
-				if int(colID) < len(version.Data) {
+				if colID < len(version.Data) {
 					values[i] = version.Data[colID]
 				} else {
 					// Column doesn't exist in this row, treat as NULL

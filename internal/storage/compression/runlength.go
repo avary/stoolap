@@ -267,19 +267,6 @@ func (r *RunLengthEncoder) DecompressValues(data []byte) ([]interface{}, error) 
 		var count uint32
 		if (typeByte & 0x80) == 0 {
 			// 1-byte encoding (0xxxxxxx)
-			// ReadByte returns two values, but we need to check for errors
-			b, err := buf.ReadByte()
-			if err != nil {
-				return nil, err
-			}
-			count = uint32(b)
-
-			// Unread the byte so we can read it properly
-			if err := buf.UnreadByte(); err != nil {
-				return nil, err
-			}
-
-			// Read the byte
 			var countByte byte
 			if err := binary.Read(buf, binary.LittleEndian, &countByte); err != nil {
 				return nil, err

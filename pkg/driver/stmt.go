@@ -384,7 +384,7 @@ func (s *Stmt) CheckNamedValue(nv *driver.NamedValue) error {
 		return nil
 	case int, int8, int16, int32:
 		// Convert integer types to int64
-		nv.Value = int64(reflect.ValueOf(v).Int())
+		nv.Value = reflect.ValueOf(v).Int()
 		return nil
 	case uint, uint8, uint16, uint32, uint64:
 		// Convert unsigned integer types to int64

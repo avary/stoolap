@@ -224,7 +224,7 @@ func (e *SimpleExpression) GetValue() interface{} {
 
 // GetOperator returns the operator for this expression
 func (e *SimpleExpression) GetOperator() storage.Operator {
-	return storage.Operator(e.Operator)
+	return e.Operator
 }
 
 // CanUseIndex returns whether this expression can use an index

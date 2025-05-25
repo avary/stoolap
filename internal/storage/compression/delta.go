@@ -301,7 +301,7 @@ func decodeIntDelta(reader *bytes.Reader) (int64, error) {
 		}
 
 		// Reconstruct value from 2 bytes
-		return int64(int16(((int16(b&0x3F)<<8)|int16(b2))<<2) >> 2), nil
+		return int64(((int16(b&0x3F) << 8) | int16(b2)) << 2 >> 2), nil
 	}
 
 	if b&0xE0 == 0xC0 {
@@ -317,7 +317,7 @@ func decodeIntDelta(reader *bytes.Reader) (int64, error) {
 		}
 
 		// Reconstruct value from 3 bytes
-		return int64(int32(((int32(b&0x1F)<<16)|(int32(b2)<<8)|int32(b3))<<3) >> 3), nil
+		return int64(((int32(b&0x1F) << 16) | (int32(b2) << 8) | int32(b3)) << 3 >> 3), nil
 	}
 
 	if b&0xF0 == 0xE0 {
@@ -338,7 +338,7 @@ func decodeIntDelta(reader *bytes.Reader) (int64, error) {
 		}
 
 		// Reconstruct value from 4 bytes
-		return int64(int32(((int32(b&0x0F)<<24)|(int32(b2)<<16)|(int32(b3)<<8)|int32(b4))<<4) >> 4), nil
+		return int64(((int32(b&0x0F) << 24) | (int32(b2) << 16) | (int32(b3) << 8) | int32(b4)) << 4 >> 4), nil
 	}
 
 	if b == 0xF0 {

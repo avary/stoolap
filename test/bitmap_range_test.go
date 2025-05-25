@@ -28,7 +28,7 @@ func TestBitmapIndexRangeOperations(t *testing.T) {
 	// Add some test data
 	// We'll use integer values from 10 to 100 in steps of 10
 	for i := int64(10); i <= 100; i += 10 {
-		err := bitmapIndex.AddValue(int64(i), i/10) // Use i/10 as position
+		err := bitmapIndex.AddValue(i, i/10) // Use i/10 as position
 		if err != nil {
 			t.Fatalf("Failed to add value %d to index: %v", i, err)
 		}

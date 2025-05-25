@@ -1139,7 +1139,7 @@ func (idx *ColumnarIndex) Build() error {
 		}
 
 		// Get the value at the specified column ID
-		if int(idx.columnID) < len(version.Data) {
+		if idx.columnID < len(version.Data) {
 			value := version.Data[idx.columnID]
 
 			// Add to index

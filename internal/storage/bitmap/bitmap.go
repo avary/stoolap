@@ -246,7 +246,7 @@ func (bm *Bitmap) ToByteSlice() []byte {
 	buf := new(bytes.Buffer)
 
 	// Write size
-	binary.Write(buf, binary.LittleEndian, int64(bm.size))
+	binary.Write(buf, binary.LittleEndian, bm.size)
 
 	// Write data
 	for _, word := range bm.data {

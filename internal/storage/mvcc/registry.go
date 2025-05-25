@@ -34,8 +34,7 @@ type TransactionRegistry struct {
 	activeTransactions    *fastmap.SegmentInt64Map[int64] // txnID -> begin timestamp
 	committedTransactions *fastmap.SegmentInt64Map[int64] // txnID -> commit timestamp
 	isolationLevel        storage.IsolationLevel
-	accepting             atomic.Bool  // Flag to control if new transactions are accepted
-	oldestCleanedTxnID    atomic.Int64 // Transactions older than this are always visible
+	accepting             atomic.Bool // Flag to control if new transactions are accepted
 }
 
 // NewTransactionRegistry creates a new transaction registry

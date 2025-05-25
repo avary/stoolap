@@ -243,7 +243,7 @@ func getSuggestion(err *ParseError) string {
 	if strings.Contains(err.Message, "WHER") {
 		return "Did you mean 'WHERE'?"
 	}
-	if strings.Contains(err.Message, "FROME") {
+	if strings.Contains(err.Message, "FROM") {
 		return "Did you mean 'FROM'?"
 	}
 	if strings.Contains(err.Message, "GROUPBY") {

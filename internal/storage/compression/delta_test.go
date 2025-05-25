@@ -160,7 +160,7 @@ func testDeltaInt64(t *testing.T, count int, maxDelta int64) {
 
 	value := int64(0)
 	for i := 0; i < count; i++ {
-		delta := int64(rand.Int63n(maxDelta + 1))
+		delta := rand.Int63n(maxDelta + 1)
 		value += delta
 		binary.Write(buf, binary.LittleEndian, value)
 	}

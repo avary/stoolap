@@ -8,3 +8,4 @@ cmd/stoolap/stoolap
 cmd/stoolap/stoolap.db
 stoolap.wiki/
 scripts/
+coverage.txt

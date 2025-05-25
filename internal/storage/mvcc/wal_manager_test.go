@@ -152,8 +152,10 @@ func TestSnapshotTimestampParsing(t *testing.T) {
 	t.Logf("Local parsed:  %v", localTime.Format(time.RFC3339))
 	t.Logf("Nanosecond difference: %d", nanosDiff)
 
-	// In a non-UTC timezone, there should be a difference
-	if time.Local.String() != "UTC" {
+	// Check if we're in a non-UTC timezone by looking at the offset
+	_, offset := now.Zone()
+	if offset != 0 {
+		// In a non-UTC timezone, there should be a difference
 		if nanosDiff == 0 {
 			t.Errorf("Expected timezone difference but got none")
 		} else {
@@ -167,7 +169,11 @@ func TestSnapshotTimestampParsing(t *testing.T) {
 				localTime.Hour(), now.Hour())
 		}
 	} else {
-		t.Logf("Running in UTC timezone, test is less meaningful")
+		t.Logf("Running in UTC timezone (offset=0), test is less meaningful but should still pass")
+		// In UTC, the parsed times should be identical
+		if nanosDiff != 0 {
+			t.Errorf("In UTC timezone, expected no difference but got %d nanoseconds", nanosDiff)
+		}
 	}
 
 	// Simulate a WAL entry timestamp
@@ -1268,7 +1274,7 @@ func deserializeSchemaForTest(data []byte) (*storage.Schema, error) {
 		// Read UpdatedAt timestamp
 		updatedAt := binary.LittleEndian.Uint64(data[pos:])
 		schema.UpdatedAt = time.Unix(0, int64(updatedAt))
-		pos += 8
+		// pos += 8 // Not needed as pos is not used after this
 	} else {
 		// Use current time if timestamps aren't available
 		now := time.Now()

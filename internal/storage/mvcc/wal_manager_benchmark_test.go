@@ -86,7 +86,8 @@ func BenchmarkWALMarshalFilePerf(b *testing.B) {
 				defer wg.Done()
 				for _, entry := range legacyWMdata[s:e] {
 					if _, err := wm.AppendEntry(entry); err != nil {
-						b.Fatal(err)
+						// Cannot call b.Fatal from goroutine, use panic instead
+						panic(err)
 					}
 				}
 			}(start, end)
