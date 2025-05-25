@@ -122,6 +122,14 @@ func (r *JoinResult) materializeResults() error {
 			return fmt.Errorf("failed to get row from left result")
 		}
 
+		// Validate that we have enough values in leftRow
+		if len(leftRow) < len(r.leftColumns) {
+			common.PutColumnValueMap(row, len(r.leftColumns))
+			// For debugging: log the column names
+			return fmt.Errorf("row data mismatch for left table: expected %d columns (%v) but got %d values",
+				len(r.leftColumns), r.leftColumns, len(leftRow))
+		}
+
 		for i, col := range r.leftColumns {
 			row[col] = leftRow[i]
 
@@ -149,6 +157,12 @@ func (r *JoinResult) materializeResults() error {
 		if rightRow == nil {
 			common.PutColumnValueMap(row, len(r.leftColumns)) // Return the map to the pool on error
 			return fmt.Errorf("failed to get row from right result")
+		}
+
+		// Validate that we have enough values in rightRow
+		if len(rightRow) < len(r.rightColumns) {
+			common.PutColumnValueMap(row, len(r.rightColumns))
+			return fmt.Errorf("row data mismatch: expected %d columns but got %d values", len(r.rightColumns), len(rightRow))
 		}
 
 		for i, col := range r.rightColumns {

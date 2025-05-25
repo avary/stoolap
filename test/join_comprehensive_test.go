@@ -436,7 +436,7 @@ func testOrderedProductsByCategory(t *testing.T, db *sql.DB) {
 
 	// Count results by category
 	currentCategory := ""
-	categories_chFound := 0
+	uniqueCategories := make(map[string]bool)
 	productsFound := 0
 
 	for rows.Next() {
@@ -448,10 +448,12 @@ func testOrderedProductsByCategory(t *testing.T, db *sql.DB) {
 		product := fmt.Sprintf("%v", values[1])
 		price := values[2]
 
-		// Track category changes
+		// Track unique categories
+		uniqueCategories[category] = true
+
+		// Track category changes for display purposes
 		if category != currentCategory {
 			currentCategory = category
-			categories_chFound++
 			t.Logf("--- Category: %s ---", category)
 		}
 
@@ -461,14 +463,14 @@ func testOrderedProductsByCategory(t *testing.T, db *sql.DB) {
 	rows.Close()
 
 	// We expect 5 categories_ch with products and 8 total products (result structure is different)
-	if categories_chFound != 5 {
-		t.Errorf("Expected 5 categories_ch with products, got %d", categories_chFound)
+	if len(uniqueCategories) != 5 {
+		t.Errorf("Expected 5 categories_ch with products, got %d", len(uniqueCategories))
 	}
 
 	if productsFound != 8 {
 		t.Errorf("Expected 8 products, got %d", productsFound)
 	} else {
 		t.Logf("Ordered JOIN test passed with %d products in %d categories_ch",
-			productsFound, categories_chFound)
+			productsFound, len(uniqueCategories))
 	}
 }

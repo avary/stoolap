@@ -253,41 +253,186 @@ func isAllColumns(columns []parser.Expression) bool {
 	return false
 }
 
+// ProjectedColumnsResult wraps a result to project specific columns
+type ProjectedColumnsResult struct {
+	baseResult       storage.Result
+	columns          []parser.Expression
+	evaluator        *Evaluator
+	projectedColumns []string
+	currentRow       []storage.ColumnValue
+}
+
 // applyColumnProjection applies a column projection to a result
 func applyColumnProjection(result storage.Result, columns []parser.Expression) (storage.Result, error) {
-	// Extract column aliases to map aliases to original column names
-	aliases := make(map[string]string)
+	evaluator := NewEvaluator(context.Background(), nil)
 
-	// Extract column aliases and determine output column names
+	// Build the list of projected column names
+	projectedColumns := make([]string, len(columns))
+
 	for i, col := range columns {
-		// Handle aliased expressions
-		if aliased, ok := col.(*parser.AliasedExpression); ok {
-			alias := aliased.Alias.Value
-
-			// Map the alias to the original column expression
-			switch expr := aliased.Expression.(type) {
-			case *parser.Identifier:
-				// Simple column reference
-				aliases[alias] = expr.Value
-			case *parser.QualifiedIdentifier:
-				// Qualified column reference (table.column)
-				aliases[alias] = expr.String()
-			default:
-				// For more complex expressions, we'll use a placeholder
-				// This will require special handling during result processing
-				aliases[alias] = fmt.Sprintf("column%d", i+1)
-			}
+		switch expr := col.(type) {
+		case *parser.Identifier:
+			projectedColumns[i] = expr.Value
+		case *parser.QualifiedIdentifier:
+			// Use just the column name without the table qualifier for the result
+			projectedColumns[i] = expr.Name.Value
+		case *parser.AliasedExpression:
+			projectedColumns[i] = expr.Alias.Value
+		default:
+			// For other expressions, generate a column name
+			projectedColumns[i] = fmt.Sprintf("column%d", i+1)
 		}
 	}
 
-	// Apply the column projection
-	if len(aliases) > 0 {
-		// If we have aliases, apply them to the result
-		result = result.WithAliases(aliases)
+	return &ProjectedColumnsResult{
+		baseResult:       result,
+		columns:          columns,
+		evaluator:        evaluator,
+		projectedColumns: projectedColumns,
+		currentRow:       make([]storage.ColumnValue, len(columns)),
+	}, nil
+}
+
+// Next advances to the next row
+func (r *ProjectedColumnsResult) Next() bool {
+	if !r.baseResult.Next() {
+		return false
 	}
 
-	// For a proper projection, we would need to implement a ProjectedResult type
-	// that wraps the original result and only exposes the projected columns
-	// As a simplification, we'll just return the result with aliases for now
-	return result, nil
+	// Get the base row and columns
+	baseRow := r.baseResult.Row()
+	baseColumns := r.baseResult.Columns()
+
+	// Create a row map for the evaluator
+	rowMap := make(map[string]storage.ColumnValue)
+	for i, col := range baseColumns {
+		if i < len(baseRow) {
+			rowMap[col] = baseRow[i]
+		}
+	}
+
+	// Evaluate each projected column
+	for i, col := range r.columns {
+		var value storage.ColumnValue
+
+		switch expr := col.(type) {
+		case *parser.Identifier:
+			// Simple column reference - check both with and without table prefix
+			if val, ok := rowMap[expr.Value]; ok {
+				value = val
+			} else {
+				// Try to find the column by checking all columns
+				found := false
+				for colName, colVal := range rowMap {
+					// Check if column name matches after removing table prefix
+					parts := strings.Split(colName, ".")
+					if len(parts) > 1 && parts[len(parts)-1] == expr.Value {
+						value = colVal
+						found = true
+						break
+					}
+				}
+				if !found {
+					// Use a NULL TEXT value since we're projecting column names
+					value = storage.NewNullValue(storage.TEXT)
+				}
+			}
+
+		case *parser.QualifiedIdentifier:
+			// Table-qualified column reference
+			fullName := fmt.Sprintf("%s.%s", expr.Qualifier.Value, expr.Name.Value)
+			if val, ok := rowMap[fullName]; ok {
+				value = val
+			} else {
+				value = storage.NewNullValue(storage.TEXT)
+			}
+
+		case *parser.AliasedExpression:
+			// Handle aliased expressions recursively
+			// Set the row map on the evaluator before evaluating
+			r.evaluator.WithRow(rowMap)
+			baseValue, err := r.evaluator.Evaluate(expr.Expression)
+			if err != nil {
+				value = storage.NewNullValue(storage.TEXT)
+			} else {
+				// Check if the evaluated value is a NULL ColumnValue
+				if cv, ok := baseValue.(storage.ColumnValue); ok && cv != nil && cv.IsNull() {
+					value = cv // Use the NULL value directly
+				} else {
+					value = storage.ValueToColumnValue(baseValue, storage.TEXT)
+				}
+			}
+
+		default:
+			// For other expressions, use the evaluator
+			// Set the row map on the evaluator before evaluating
+			r.evaluator.WithRow(rowMap)
+			evaluatedValue, err := r.evaluator.Evaluate(expr)
+			if err != nil {
+				value = storage.NewNullValue(storage.TEXT)
+			} else {
+				// Check if the evaluated value is a NULL ColumnValue
+				if cv, ok := evaluatedValue.(storage.ColumnValue); ok && cv != nil && cv.IsNull() {
+					value = cv // Use the NULL value directly
+				} else {
+					value = storage.ValueToColumnValue(evaluatedValue, storage.TEXT)
+				}
+			}
+		}
+
+		r.currentRow[i] = value
+	}
+
+	return true
+}
+
+// Row returns the current row
+func (r *ProjectedColumnsResult) Row() storage.Row {
+	return r.currentRow
+}
+
+// Columns returns the column names
+func (r *ProjectedColumnsResult) Columns() []string {
+	return r.projectedColumns
+}
+
+// Close closes the result
+func (r *ProjectedColumnsResult) Close() error {
+	return r.baseResult.Close()
+}
+
+// Context returns the context
+func (r *ProjectedColumnsResult) Context() context.Context {
+	return r.baseResult.Context()
+}
+
+// Scan scans the current row into dest
+func (r *ProjectedColumnsResult) Scan(dest ...interface{}) error {
+	if len(dest) != len(r.currentRow) {
+		return fmt.Errorf("scan: expected %d destination arguments, got %d", len(r.currentRow), len(dest))
+	}
+
+	for i, val := range r.currentRow {
+		if err := storage.ScanColumnValueToDestination(val, dest[i]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// RowsAffected returns 0 for SELECT queries
+func (r *ProjectedColumnsResult) RowsAffected() int64 {
+	return r.baseResult.RowsAffected()
+}
+
+// LastInsertID returns 0 for SELECT queries
+func (r *ProjectedColumnsResult) LastInsertID() int64 {
+	return r.baseResult.LastInsertID()
+}
+
+// WithAliases applies aliases to the result
+func (r *ProjectedColumnsResult) WithAliases(aliases map[string]string) storage.Result {
+	r.baseResult = r.baseResult.WithAliases(aliases)
+	return r
 }
