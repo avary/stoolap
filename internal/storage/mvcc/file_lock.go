@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // FileLock represents an exclusive lock on a database directory
@@ -46,14 +45,10 @@ func AcquireFileLock(dbPath string) (*FileLock, error) {
 		return nil, fmt.Errorf("failed to open lock file: %w", err)
 	}
 
-	// Try to acquire an exclusive lock
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if err != nil {
+	// Try to acquire an exclusive lock (platform-specific implementation)
+	if err = acquireLock(file); err != nil {
 		file.Close()
-		if err == syscall.EWOULDBLOCK {
-			return nil, fmt.Errorf("database is locked by another process")
-		}
-		return nil, fmt.Errorf("failed to acquire lock: %w", err)
+		return nil, err
 	}
 
 	// Write the current process ID to the lock file for debugging

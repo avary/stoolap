@@ -202,11 +202,19 @@ func (dvs *DiskVersionStore) CreateSnapshot() error {
 	}
 
 	// Now check if we have previous disk snapshots to merge
-	if len(dvs.readers) > 0 {
+	dvs.mu.RLock()
+	hasReaders := len(dvs.readers) > 0
+	var lastReader *DiskReader
+	if hasReaders {
+		lastReader = dvs.readers[len(dvs.readers)-1]
+	}
+	dvs.mu.RUnlock()
+
+	if hasReaders && lastReader != nil {
 		batch = batch[:0] // Reset batch
 
 		// Get the last reader
-		r := dvs.readers[len(dvs.readers)-1]
+		r := lastReader
 
 		// Iterate through all entries in the index
 		r.index.ForEach(func(rowID int64, offset int64) bool {

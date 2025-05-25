@@ -1,3 +1,6 @@
+//go:build windows
+// +build windows
+
 /*
 Copyright 2025 Stoolap Contributors
 
@@ -13,18 +16,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package common
+package mvcc
 
-const (
-	// VersionMajor is the major version of the driver
-	VersionMajor = "0"
-	// VersionMinor is the minor version of the driver
-	VersionMinor = "0"
-	// VersionPatch is the patch version of the driver
-	VersionPatch = "6"
-	// VersionSuffix is the suffix of the driver version
-	VersionSuffix = "ec799ba2" // git commit hash
-
-	// VersionString is the version string of the driver
-	VersionString = "Stoolap v" + VersionMajor + "." + VersionMinor + "." + VersionPatch + "-" + VersionSuffix
+import (
+	"os"
 )
+
+// OptimizedSync uses file.Sync() on Windows
+func OptimizedSync(file *os.File) error {
+	return file.Sync()
+}

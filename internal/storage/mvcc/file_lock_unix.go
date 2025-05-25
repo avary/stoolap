@@ -1,3 +1,6 @@
+//go:build !windows
+// +build !windows
+
 /*
 Copyright 2025 Stoolap Contributors
 
@@ -16,11 +19,19 @@ limitations under the License.
 package mvcc
 
 import (
+	"fmt"
 	"os"
 	"syscall"
 )
 
-// OptimizedSync uses standart sync on other platforms
-func OptimizedSync(file *os.File) error {
-	return syscall.Fsync(int(file.Fd()))
+// acquireLock tries to acquire an exclusive lock on the file (Unix implementation)
+func acquireLock(file *os.File) error {
+	err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		if err == syscall.EWOULDBLOCK {
+			return fmt.Errorf("database is locked by another process")
+		}
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	return nil
 }

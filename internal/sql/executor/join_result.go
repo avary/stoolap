@@ -183,16 +183,25 @@ func (r *JoinResult) materializeResults() error {
 
 // performJoin creates the joined result set based on the join type
 func (r *JoinResult) performJoin() error {
+	// Check if already closed
+	if r.closed.Load() {
+		return fmt.Errorf("result set is closed")
+	}
+
 	// First materialize all results
 	if err := r.materializeResults(); err != nil {
 		return err
 	}
 
-	// Close the original result sets
-	defer func() {
+	// Close and nil the original result sets to avoid double close
+	if r.leftResult != nil {
 		r.leftResult.Close()
+		r.leftResult = nil
+	}
+	if r.rightResult != nil {
 		r.rightResult.Close()
-	}()
+		r.rightResult = nil
+	}
 
 	// Perform the actual join based on join type
 	switch r.joinType {
