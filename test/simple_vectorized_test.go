@@ -25,7 +25,7 @@ import (
 // TestSimpleVectorizedExecution tests basic vectorized arithmetic operations
 func TestSimpleVectorizedExecution(t *testing.T) {
 	// Create a temporary database in memory
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

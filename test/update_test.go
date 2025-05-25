@@ -25,7 +25,7 @@ import (
 // TestSimpleUpdate tests a simple UPDATE operation with a direct ID comparison
 func TestSimpleUpdate(t *testing.T) {
 	// Create a temporary database in memory
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -78,7 +78,7 @@ func TestSimpleUpdate(t *testing.T) {
 // to examine which WHERE conditions work properly with UPDATE operations
 func TestUpdateWithComplexWhere(t *testing.T) {
 	// Create a temporary database in memory
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

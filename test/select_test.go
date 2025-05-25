@@ -26,7 +26,7 @@ import (
 // that are similar to the ones used in delete_test.go
 func TestSelectWithComplexWhere(t *testing.T) {
 	// Create a temporary database in memory
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)

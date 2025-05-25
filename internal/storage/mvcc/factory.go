@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,22 +31,43 @@ import (
 type MVCCFactory struct{}
 
 // Create implements the EngineFactory interface
-func (f *MVCCFactory) Create(urlStr string) (storage.Engine, error) {
+func (f *MVCCFactory) Create(dsn string) (storage.Engine, error) {
 	// Handle different URL schemes for clarity
 	var path string
 	var persistenceEnabled bool
-	var queryParams url.Values
 
-	// Parse the URL for proper handling of paths and query parameters
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL format: %w", err)
+	// Parse DSN similar to SQLite driver handling style
+	pos := strings.IndexRune(dsn, '?')
+	queryParams := make(map[string]string)
+
+	if pos >= 1 {
+		// Parse query parameters using url.ParseQuery for proper handling
+		params, err := url.ParseQuery(dsn[pos+1:])
+		if err != nil {
+			return nil, fmt.Errorf("invalid query parameters: %w", err)
+		}
+
+		// Convert url.Values to simple map[string]string
+		for key, values := range params {
+			if len(values) > 0 {
+				queryParams[key] = values[0]
+			}
+		}
+
+		// Remove query parameters from DSN
+		dsn = dsn[:pos]
 	}
 
-	// Extract query parameters
-	queryParams = parsedURL.Query()
+	// Parse scheme
+	var scheme string
+	if idx := strings.Index(dsn, "://"); idx != -1 {
+		scheme = dsn[:idx]
+		path = dsn[idx+3:]
+	} else {
+		return nil, errors.New("invalid format: expected scheme://path")
+	}
 
-	switch parsedURL.Scheme {
+	switch scheme {
 	case "memory":
 		// In-memory mode - no persistence
 		persistenceEnabled = false
@@ -55,41 +77,30 @@ func (f *MVCCFactory) Create(urlStr string) (storage.Engine, error) {
 		// File mode - always persistent
 		persistenceEnabled = true
 
-		// Handle three specific scenarios:
-		// 1. file:///var/folders/... - Absolute path (empty host, path starts with /)
-		// 2. file://stoolap.db - Relative path in current folder (host is the filename)
-		// 3. file://data/stoolap.db - Relative path with subfolder (host is the folder)
-
-		// Case 1: Absolute path (file:///)
-		if parsedURL.Host == "" && strings.HasPrefix(parsedURL.Path, "/") {
-			// Absolute path - remove the leading slash
-			path = "/" + parsedURL.Path[1:]
-
-			// Special case for Windows paths like /C:/data/db.file
-			if len(path) > 2 && path[1] == ':' && (path[2] == '/' || path[2] == '\\') {
-				// Windows path with drive letter - keep it as is
-			}
-		} else if parsedURL.Host != "" {
-			// If host is present, it's a relative path
-			if parsedURL.Path == "" || parsedURL.Path == "/" {
-				// Just the host (case 2)
-				path = parsedURL.Host
-			} else {
-				// Host and path (case 3)
-				// Remove the leading slash from path if present
-				pathPart := parsedURL.Path
-				pathPart = strings.TrimPrefix(pathPart, "/")
-				path = filepath.Join(parsedURL.Host, pathPart)
-			}
-		} else {
-			// Invalid format
-			return nil, errors.New("file:// scheme requires a non-empty path")
-		}
-
-		// Final check to ensure we have a path
+		// Path is already extracted, just validate it
 		if path == "" {
 			return nil, errors.New("file:// scheme requires a non-empty path")
 		}
+
+		// Handle home directory expansion
+		if strings.HasPrefix(path, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get home directory: %w", err)
+			}
+			path = filepath.Join(home, path[2:])
+		}
+
+		// Convert to absolute path - this handles:
+		// - Relative paths (./db, ../db)
+		// - Absolute paths (/var/db, C:\Users\db, C:/Users/db)
+		// - Platform-specific separators
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("invalid file path: %w", err)
+		}
+
+		path = absPath
 
 	default:
 		return nil, errors.New("unsupported scheme: must use 'memory://' or 'file://'")
@@ -107,52 +118,48 @@ func (f *MVCCFactory) Create(urlStr string) (storage.Engine, error) {
 	config.Persistence.Enabled = persistenceEnabled
 
 	// Parse sync mode
-	if queryParams != nil {
-		if syncMode := queryParams.Get("sync_mode"); syncMode != "" {
-			switch syncMode {
-			case "none":
-				config.Persistence.SyncMode = 0
-			case "normal":
-				config.Persistence.SyncMode = 1
-			case "full":
-				config.Persistence.SyncMode = 2
-			default:
-				// Try to parse as int
-				if mode, err := strconv.Atoi(syncMode); err == nil && mode >= 0 && mode <= 2 {
-					config.Persistence.SyncMode = mode
-				}
+	if syncMode, ok := queryParams["sync_mode"]; ok && syncMode != "" {
+		switch syncMode {
+		case "none":
+			config.Persistence.SyncMode = 0
+		case "normal":
+			config.Persistence.SyncMode = 1
+		case "full":
+			config.Persistence.SyncMode = 2
+		default:
+			// Try to parse as int
+			if mode, err := strconv.Atoi(syncMode); err == nil && mode >= 0 && mode <= 2 {
+				config.Persistence.SyncMode = mode
 			}
 		}
 	}
 
-	// Parse other configuration parameters if we have query parameters
-	if queryParams != nil {
-		// Parse snapshot interval
-		if interval := queryParams.Get("snapshot_interval"); interval != "" {
-			if val, err := strconv.Atoi(interval); err == nil && val > 0 {
-				config.Persistence.SnapshotInterval = val
-			}
+	// Parse other configuration parameters
+	// Parse snapshot interval
+	if interval, ok := queryParams["snapshot_interval"]; ok && interval != "" {
+		if val, err := strconv.Atoi(interval); err == nil && val > 0 {
+			config.Persistence.SnapshotInterval = val
 		}
+	}
 
-		// Parse keep snapshots
-		if keep := queryParams.Get("keep_snapshots"); keep != "" {
-			if val, err := strconv.Atoi(keep); err == nil && val > 0 {
-				config.Persistence.KeepSnapshots = val
-			}
+	// Parse keep snapshots
+	if keep, ok := queryParams["keep_snapshots"]; ok && keep != "" {
+		if val, err := strconv.Atoi(keep); err == nil && val > 0 {
+			config.Persistence.KeepSnapshots = val
 		}
+	}
 
-		// Parse WAL flush trigger
-		if trigger := queryParams.Get("wal_flush_trigger"); trigger != "" {
-			if val, err := strconv.Atoi(trigger); err == nil && val > 0 {
-				config.Persistence.WALFlushTrigger = val
-			}
+	// Parse WAL flush trigger
+	if trigger, ok := queryParams["wal_flush_trigger"]; ok && trigger != "" {
+		if val, err := strconv.Atoi(trigger); err == nil && val > 0 {
+			config.Persistence.WALFlushTrigger = val
 		}
+	}
 
-		// Parse WAL buffer size
-		if bufSize := queryParams.Get("wal_buffer_size"); bufSize != "" {
-			if val, err := strconv.Atoi(bufSize); err == nil && val > 0 {
-				config.Persistence.WALBufferSize = val
-			}
+	// Parse WAL buffer size
+	if bufSize, ok := queryParams["wal_buffer_size"]; ok && bufSize != "" {
+		if val, err := strconv.Atoi(bufSize); err == nil && val > 0 {
+			config.Persistence.WALBufferSize = val
 		}
 	}
 

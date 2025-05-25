@@ -26,7 +26,7 @@ import (
 // TestDirectDelete tests a simple DELETE operation with a direct equality condition
 func TestDirectDelete(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -77,7 +77,7 @@ func TestDirectDelete(t *testing.T) {
 // TestIntegerComparison tests DELETE with different integer comparison operators
 func TestIntegerComparison(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -149,7 +149,7 @@ func TestIntegerComparison(t *testing.T) {
 // TestBooleanCondition tests DELETE with boolean conditions
 func TestBooleanCondition(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -203,7 +203,7 @@ func TestBooleanCondition(t *testing.T) {
 // TestStringComparison tests DELETE with string comparison
 func TestStringComparison(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -267,7 +267,7 @@ func TestStringComparison(t *testing.T) {
 // TestDeleteWithAnd tests DELETE with AND condition
 func TestDeleteWithAnd(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -340,7 +340,7 @@ func TestDeleteWithAnd(t *testing.T) {
 // TestDeleteAllRows tests deleting all rows in a table without a WHERE clause
 func TestDeleteAllRows(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -400,7 +400,7 @@ func TestDeleteAllRows(t *testing.T) {
 // TestDeleteWithOr tests DELETE with OR condition
 func TestDeleteWithOr(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -466,7 +466,7 @@ func TestDeleteWithOr(t *testing.T) {
 // TestDeleteWithBetween tests DELETE with BETWEEN condition
 func TestDeleteWithBetween(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -510,7 +510,7 @@ func TestDeleteWithBetween(t *testing.T) {
 // TestDeleteWithIn tests DELETE with IN condition
 func TestDeleteWithIn(t *testing.T) {
 	// Create a temporary database in memory to avoid disk issues
-	dbPath := "memory:/"
+	dbPath := "memory://"
 	db, err := sql.Open("stoolap", dbPath)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
@@ -614,7 +614,7 @@ func TestDeleteWithIn(t *testing.T) {
 // TestDeleteWithNotIn tests DELETE with a NOT IN condition
 func TestDeleteWithNotIn(t *testing.T) {
 	// Create a database
-	db, err := sql.Open("stoolap", "memory:/")
+	db, err := sql.Open("stoolap", "memory://")
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
