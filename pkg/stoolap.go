@@ -20,8 +20,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"fmt"
-	"net/url"
+	"strings"
 	"sync"
 
 	sqlexecutor "github.com/stoolap/stoolap/internal/sql"
@@ -41,7 +40,9 @@ var (
 
 // DB represents a stoolap database
 type DB struct {
-	engine storage.Engine
+	engine   storage.Engine
+	executor Executor
+	mu       sync.RWMutex // Protects executor access
 }
 
 // Storage engine constants
@@ -77,20 +78,26 @@ func Open(dsn string) (*DB, error) {
 
 	// Not found in registry, create a new engine
 
-	// Parse URL to validate and extract scheme
-	parsedURL, err := url.Parse(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("invalid connection string format: %w", err)
+	// Simple scheme validation without full URL parsing
+	var scheme string
+	if idx := strings.Index(dsn, "://"); idx != -1 {
+		scheme = dsn[:idx]
+	} else {
+		return nil, errors.New("invalid connection string format: expected scheme://path")
 	}
 
 	// Validate scheme
-	switch parsedURL.Scheme {
+	switch scheme {
 	case MemoryScheme:
 		// Memory scheme is valid
 	case FileScheme:
-		// File scheme is valid - ensure path exists
-		// We need to check for both host and path - either one or both must have content
-		if (parsedURL.Path == "" || parsedURL.Path == "/") && parsedURL.Host == "" {
+		// File scheme is valid - factory will handle path validation
+		path := dsn[len("file://"):]
+		// Remove query parameters for basic validation
+		if idx := strings.Index(path, "?"); idx != -1 {
+			path = path[:idx]
+		}
+		if path == "" {
 			return nil, errors.New("file:// scheme requires a non-empty path")
 		}
 	default:
@@ -113,9 +120,10 @@ func Open(dsn string) (*DB, error) {
 		return nil, err
 	}
 
-	// Create new DB instance
+	// Create new DB instance with a single executor
 	db = &DB{
-		engine: engine,
+		engine:   engine,
+		executor: sqlexecutor.NewExecutor(engine),
 	}
 
 	// Add to registry
@@ -156,9 +164,11 @@ type Executor interface {
 	IsVectorizedModeEnabled() bool
 }
 
-// Executor returns a new SQL executor for the database
+// Executor returns the SQL executor for the database
 func (db *DB) Executor() Executor {
-	return sqlexecutor.NewExecutor(db.engine)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.executor
 }
 
 // Exec executes a query without returning any rows
@@ -169,11 +179,8 @@ func (db *DB) Exec(ctx context.Context, query string) (sql.Result, error) {
 		return nil, err
 	}
 
-	// Create an executor
-	executor := sqlexecutor.NewExecutor(db.engine)
-
 	// Execute the query
-	result, err := executor.Execute(ctx, tx, query)
+	result, err := db.executor.Execute(ctx, tx, query)
 	if err != nil {
 		// Explicitly rollback the transaction on error
 		tx.Rollback()
@@ -214,7 +221,311 @@ func (r *execResult) RowsAffected() (int64, error) {
 	return r.rowsAffected, nil
 }
 
-// Query executes a query and returns rows
-func (db *DB) Query(ctx context.Context, query string) (*sql.Rows, error) {
-	return nil, errors.New("direct Query not supported, use database/sql with stoolap driver")
+// Now let's add interfaces for results
+
+// Rows is an iterator over query results
+type Rows interface {
+	// Next advances to the next row
+	Next() bool
+	// Scan copies columns into provided destinations
+	Scan(dest ...interface{}) error
+	// Close closes the rows
+	Close() error
+	// Columns returns column names
+	Columns() []string
+}
+
+// Row represents a single row result
+type Row interface {
+	// Scan copies columns into provided destinations
+	Scan(dest ...interface{}) error
+}
+
+// Stmt represents a prepared statement
+type Stmt interface {
+	// ExecContext executes the statement
+	ExecContext(ctx context.Context, args ...interface{}) (sql.Result, error)
+	// QueryContext executes a query
+	QueryContext(ctx context.Context, args ...interface{}) (Rows, error)
+	// Close closes the statement
+	Close() error
+}
+
+// Tx represents a database transaction
+type Tx interface {
+	// Commit commits the transaction
+	Commit() error
+	// Rollback aborts the transaction
+	Rollback() error
+	// ExecContext executes a query in the transaction
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	// QueryContext executes a query in the transaction
+	QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error)
+	// Prepare creates a prepared statement for the transaction
+	Prepare(query string) (Stmt, error)
+}
+
+// Implementation types
+
+type rows struct {
+	result storage.Result
+	tx     storage.Transaction
+	ctx    context.Context
+	closed bool
+}
+
+func (r *rows) Next() bool {
+	if r.closed {
+		return false
+	}
+	return r.result.Next()
+}
+
+func (r *rows) Scan(dest ...interface{}) error {
+	if r.closed {
+		return errors.New("rows are closed")
+	}
+	return r.result.Scan(dest...)
+}
+
+func (r *rows) Close() error {
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	if err := r.result.Close(); err != nil {
+		return err
+	}
+	return r.tx.Commit()
+}
+
+func (r *rows) Columns() []string {
+	return r.result.Columns()
+}
+
+type row struct {
+	rows Rows
+	err  error
+}
+
+func (r *row) Scan(dest ...interface{}) error {
+	if r.err != nil {
+		return r.err
+	}
+	defer r.rows.Close()
+
+	if !r.rows.Next() {
+		return sql.ErrNoRows
+	}
+
+	return r.rows.Scan(dest...)
+}
+
+type transaction struct {
+	tx  storage.Transaction
+	db  *DB
+	ctx context.Context
+}
+
+func (t *transaction) Commit() error {
+	return t.tx.Commit()
+}
+
+func (t *transaction) Rollback() error {
+	return t.tx.Rollback()
+}
+
+func (t *transaction) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	namedValues := make([]driver.NamedValue, len(args))
+	for i, arg := range args {
+		namedValues[i] = driver.NamedValue{
+			Ordinal: i + 1,
+			Value:   arg,
+		}
+	}
+
+	result, err := t.db.executor.ExecuteWithParams(ctx, t.tx, query, namedValues)
+	if err != nil {
+		return nil, err
+	}
+
+	return &execResult{
+		rowsAffected: result.RowsAffected(),
+		lastInsertID: result.LastInsertID(),
+	}, nil
+}
+
+func (t *transaction) QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error) {
+	namedValues := make([]driver.NamedValue, len(args))
+	for i, arg := range args {
+		namedValues[i] = driver.NamedValue{
+			Ordinal: i + 1,
+			Value:   arg,
+		}
+	}
+
+	result, err := t.db.executor.ExecuteWithParams(ctx, t.tx, query, namedValues)
+	if err != nil {
+		return nil, err
+	}
+
+	return &rows{
+		result: result,
+		tx:     t.tx,
+		ctx:    ctx,
+	}, nil
+}
+
+func (t *transaction) Prepare(query string) (Stmt, error) {
+	return &stmt{
+		db:    t.db,
+		query: query,
+		ctx:   t.ctx,
+		tx:    t,
+	}, nil
+}
+
+type stmt struct {
+	db    *DB
+	query string
+	ctx   context.Context
+	tx    Tx
+}
+
+func (s *stmt) ExecContext(ctx context.Context, args ...interface{}) (sql.Result, error) {
+	if s.tx != nil {
+		return s.tx.ExecContext(ctx, s.query, args...)
+	}
+	return s.db.ExecContext(ctx, s.query, args...)
+}
+
+func (s *stmt) QueryContext(ctx context.Context, args ...interface{}) (Rows, error) {
+	if s.tx != nil {
+		return s.tx.QueryContext(ctx, s.query, args...)
+	}
+	return s.db.QueryContext(ctx, s.query, args...)
+}
+
+func (s *stmt) Close() error {
+	return nil // No resources to release for now
+}
+
+// Query executes a query that returns rows
+func (db *DB) Query(ctx context.Context, query string, args ...interface{}) (Rows, error) {
+	return db.QueryContext(ctx, query, args...)
+}
+
+// QueryContext executes a query that returns rows with context
+func (db *DB) QueryContext(ctx context.Context, query string, args ...interface{}) (Rows, error) {
+	// Convert args to driver.NamedValue
+	namedValues := make([]driver.NamedValue, len(args))
+	for i, arg := range args {
+		namedValues[i] = driver.NamedValue{
+			Ordinal: i + 1,
+			Value:   arg,
+		}
+	}
+
+	// Begin a read transaction
+	tx, err := db.engine.BeginTx(ctx, sql.LevelReadCommitted)
+	if err != nil {
+		return nil, err
+	}
+
+	// Execute the query
+	result, err := db.executor.ExecuteWithParams(ctx, tx, query, namedValues)
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// Wrap the result in a Rows interface
+	return &rows{
+		result: result,
+		tx:     tx,
+		ctx:    ctx,
+	}, nil
+}
+
+// QueryRow executes a query that is expected to return at most one row
+func (db *DB) QueryRow(ctx context.Context, query string, args ...interface{}) Row {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return &row{err: err}
+	}
+	return &row{rows: rows}
+}
+
+// ExecContext executes a query with context and parameters
+func (db *DB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	// Convert args to driver.NamedValue
+	namedValues := make([]driver.NamedValue, len(args))
+	for i, arg := range args {
+		namedValues[i] = driver.NamedValue{
+			Ordinal: i + 1,
+			Value:   arg,
+		}
+	}
+
+	// Execute the query with the provided context
+	tx, err := db.engine.BeginTx(ctx, sql.LevelReadCommitted)
+	if err != nil {
+		return nil, err
+	}
+
+	// Execute the query
+	result, err := db.executor.ExecuteWithParams(ctx, tx, query, namedValues)
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	// Convert to sql.Result
+	return &execResult{
+		rowsAffected: result.RowsAffected(),
+		lastInsertID: result.LastInsertID(),
+	}, nil
+}
+
+// Begin starts a new transaction
+func (db *DB) Begin() (Tx, error) {
+	return db.BeginTx(context.Background(), nil)
+}
+
+// BeginTx starts a new transaction with options
+func (db *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (Tx, error) {
+	isolationLevel := sql.LevelReadCommitted
+	if opts != nil {
+		isolationLevel = opts.Isolation
+	}
+
+	tx, err := db.engine.BeginTx(ctx, isolationLevel)
+	if err != nil {
+		return nil, err
+	}
+
+	return &transaction{
+		tx:  tx,
+		db:  db,
+		ctx: ctx,
+	}, nil
+}
+
+// Prepare creates a prepared statement
+func (db *DB) Prepare(query string) (Stmt, error) {
+	return db.PrepareContext(context.Background(), query)
+}
+
+// PrepareContext creates a prepared statement with context
+func (db *DB) PrepareContext(ctx context.Context, query string) (Stmt, error) {
+	return &stmt{
+		db:    db,
+		query: query,
+		ctx:   ctx,
+	}, nil
 }
