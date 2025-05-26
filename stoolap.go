@@ -23,7 +23,7 @@ import (
 	"strings"
 	"sync"
 
-	executor "github.com/stoolap/stoolap/internal/sql/executor"
+	"github.com/stoolap/stoolap/internal/sql/executor"
 	"github.com/stoolap/stoolap/internal/storage"
 
 	// Import the storage engine

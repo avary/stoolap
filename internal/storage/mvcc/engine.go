@@ -394,6 +394,8 @@ func (e *MVCCEngine) TableExists(name string) (bool, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	// Normalize to lowercase for case-insensitive lookup
+	name = strings.ToLower(name)
 	_, exists := e.schemas[name]
 	return exists, nil
 }
@@ -435,6 +437,8 @@ func (e *MVCCEngine) CreateTable(schema storage.Schema) (storage.Schema, error) 
 	defer e.mu.Unlock()
 
 	name := schema.TableName
+	originalName := name // Keep original name for version store
+	name = strings.ToLower(name) // Normalize for case-insensitive storage
 
 	if _, exists := e.schemas[name]; exists {
 		return storage.Schema{}, storage.ErrTableAlreadyExists
@@ -446,10 +450,10 @@ func (e *MVCCEngine) CreateTable(schema storage.Schema) (storage.Schema, error) 
 		return storage.Schema{}, fmt.Errorf("invalid schema: %w", err)
 	}
 
-	// Create version store for this table
-	e.versionStores[name] = NewVersionStore(name, e)
+	// Create version store for this table (use original name for the store)
+	e.versionStores[name] = NewVersionStore(originalName, e)
 
-	// Store schema temporarily
+	// Store schema with lowercase key but preserve original name in schema
 	e.schemas[name] = schema
 
 	// Create disk store if persistence is enabled
@@ -496,7 +500,8 @@ func (e *MVCCEngine) GetTableSchema(tableName string) (storage.Schema, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	// Check if the table exists
+	// Normalize to lowercase for case-insensitive lookup
+	tableName = strings.ToLower(tableName)
 	schema, exists := e.schemas[tableName]
 	if !exists {
 		return storage.Schema{}, storage.ErrTableNotFound
@@ -510,6 +515,10 @@ func (e *MVCCEngine) GetVersionStore(tableName string) (*VersionStore, error) {
 	if !e.open.Load() {
 		return nil, errors.New("engine is not open")
 	}
+
+	// Normalize to lowercase for case-insensitive lookup
+	originalName := tableName
+	tableName = strings.ToLower(tableName)
 
 	// First try with a read lock to check if the version store exists
 	e.mu.RLock()
@@ -545,8 +554,8 @@ func (e *MVCCEngine) GetVersionStore(tableName string) (*VersionStore, error) {
 		return nil, storage.ErrTableNotFound
 	}
 
-	// Create and store the version store
-	vs = NewVersionStore(tableName, e)
+	// Create and store the version store (use original name for the store itself)
+	vs = NewVersionStore(originalName, e)
 	e.versionStores[tableName] = vs
 
 	return vs, nil
@@ -829,6 +838,11 @@ func (e *MVCCEngine) DropTable(name string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Keep original name for logging
+	originalName := name
+	// Normalize to lowercase for case-insensitive lookup
+	name = strings.ToLower(name)
+
 	if _, exists := e.schemas[name]; !exists {
 		return storage.ErrTableNotFound
 	}
@@ -845,7 +859,7 @@ func (e *MVCCEngine) DropTable(name string) error {
 		if diskStore, exists := e.persistence.diskStores[name]; exists && diskStore != nil {
 			// Close the disk store before removing it from the map
 			if err := diskStore.Close(); err != nil {
-				log.Printf("Warning: Failed to close disk store for table %s: %v\n", name, err)
+				log.Printf("Warning: Failed to close disk store for table %s: %v\n", originalName, err)
 			}
 			delete(e.persistence.diskStores, name)
 

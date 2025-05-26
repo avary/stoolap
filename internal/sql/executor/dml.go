@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package sql
+package executor
 
 import (
 	"context"
@@ -533,10 +533,11 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 	// Fallback to single-row insertion for non-batch cases
 	var totalRowsInserted int64
+	var totalRowsUpdated int64
 
 	for rowIndex, rowExprs := range stmt.Values {
 		if len(rowExprs) == 0 {
-			return totalRowsInserted, 0, fmt.Errorf("empty values in row %d", rowIndex+1)
+			return totalRowsInserted + totalRowsUpdated, 0, fmt.Errorf("empty values in row %d", rowIndex+1)
 		}
 
 		cp := interfaceSlicePool.Get().(*[]interface{})
@@ -557,14 +558,14 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 			// Use fast evaluator for all expressions including function calls
 			val, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, nil)
 			if err != nil {
-				return totalRowsInserted, 0, fmt.Errorf("error evaluating expression: %w", err)
+				return totalRowsInserted + totalRowsUpdated, 0, fmt.Errorf("error evaluating expression: %w", err)
 			}
 			columnValues[i] = val
 		}
 
 		// Check if the number of columns match the number of values
 		if len(columnNames) != len(columnValues) {
-			return totalRowsInserted, 0, fmt.Errorf("column count (%d) does not match value count (%d)",
+			return totalRowsInserted + totalRowsUpdated, 0, fmt.Errorf("column count (%d) does not match value count (%d)",
 				len(columnNames), len(columnValues))
 		}
 
@@ -587,7 +588,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 				// Try lowercase version for case-insensitive match
 				colIndex, exists = columnMap[strings.ToLower(colName)]
 				if !exists {
-					return totalRowsInserted, 0, fmt.Errorf("column not found: %s", colName)
+					return totalRowsInserted + totalRowsUpdated, 0, fmt.Errorf("column not found: %s", colName)
 				}
 			}
 			// Convert raw value to proper column value
@@ -646,6 +647,15 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 									newRow := make(storage.Row, len(oldRow))
 									copy(newRow, oldRow)
 
+									// Create a map of current row values for expression evaluation
+									rowMap := make(map[string]interface{})
+									for j, col := range schema.Columns {
+										if j < len(oldRow) {
+											// Convert ColumnValue to interface{}
+											rowMap[col.Name] = oldRow[j].AsInterface()
+										}
+									}
+
 									// Apply the updates
 									for i, updateColumn := range stmt.UpdateColumns {
 										colName := updateColumn.Value
@@ -662,7 +672,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 
 										if colIndex != -1 {
 											// Use fast evaluator for all expressions including function calls
-											updateValue, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, nil)
+											updateValue, err := evaluateExpressionFast(ctx, expr, e.functionRegistry, ps, rowMap)
 											if err != nil {
 												// If evaluation fails, skip this update
 												continue
@@ -680,7 +690,8 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 								// Update the row using the Update API
 								_, updateErr := table.Update(searchExpr, updaterFn)
 								if updateErr == nil {
-									totalRowsInserted++
+									// MySQL reports 2 for ON DUPLICATE KEY UPDATE
+									totalRowsUpdated += 2
 									continue
 								}
 							}
@@ -688,11 +699,11 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 					}
 
 					// If we couldn't handle the duplicate key properly, return the original error
-					return totalRowsInserted, 0, err
+					return totalRowsInserted + totalRowsUpdated, 0, err
 				}
 			}
 			// For any other error, return it without ON DUPLICATE KEY handling
-			return totalRowsInserted, 0, err
+			return totalRowsInserted + totalRowsUpdated, 0, err
 		}
 
 		// Normal insert success
@@ -707,7 +718,7 @@ func (e *Executor) executeInsertWithContext(ctx context.Context, tx storage.Tran
 		}
 	}
 
-	return totalRowsInserted, lastInsertID, nil
+	return totalRowsInserted + totalRowsUpdated, lastInsertID, nil
 }
 
 // executeUpdate executes an UPDATE statement

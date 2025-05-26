@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"github.com/stoolap/stoolap"
-	executor "github.com/stoolap/stoolap/internal/sql/executor"
+	"github.com/stoolap/stoolap/internal/sql/executor"
 	"github.com/stoolap/stoolap/internal/storage"
 
 	// Import database storage engine

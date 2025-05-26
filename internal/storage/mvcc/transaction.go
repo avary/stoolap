@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -720,6 +721,9 @@ func (t *MVCCTransaction) GetTable(name string) (storage.Table, error) {
 		return nil, ErrTransactionClosed
 	}
 
+	// Normalize table name for case-insensitive lookup
+	name = strings.ToLower(name)
+
 	// Fast path for repeated access to the same table (common in batch operations)
 	if name == t.lastTableName && t.lastTable != nil {
 		return t.lastTable, nil
@@ -752,7 +756,7 @@ func (t *MVCCTransaction) GetTable(name string) (storage.Table, error) {
 		return table, nil
 	}
 
-	// Check if table exists in engine
+	// Check if table exists in engine (GetTableSchema already handles case-insensitive lookup)
 	var schema storage.Schema
 	var err error
 	schema, err = t.engine.GetTableSchema(name)

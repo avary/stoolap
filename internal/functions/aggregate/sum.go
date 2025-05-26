@@ -168,8 +168,13 @@ func (f *SumFunction) Accumulate(value interface{}, distinct bool) {
 
 // Result returns the final result of the SUM calculation
 func (f *SumFunction) Result() interface{} {
+	// If no values were accumulated, return NULL
+	if !f.initialized {
+		return nil
+	}
+	
 	// Return int64 for integer inputs, float64 for floating point inputs
-	if f.initialized && f.allIntegers {
+	if f.allIntegers {
 		return f.intSum
 	}
 
