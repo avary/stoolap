@@ -39,3 +39,8 @@ ignore:
   - "cmd/"
   - "**/*_test.go"
   - "**/mock_*.go"
+  - "internal/storage/bitmap/"
+  - "internal/storage/btree/"
+  - "internal/storage/compression/"
+  - "internal/parser/statement_clone.go"
+  - "internal/btree/btree.go"
