@@ -56,10 +56,10 @@ jobs:
         mkdir -p coverage
         
         # Run unit tests with cross-package coverage
-        go test -v -race -coverprofile=coverage/unit.txt -covermode=atomic -coverpkg=./internal/...,./pkg/... ./internal/... ./pkg/...
+        go test -v -race -coverprofile=coverage/unit.txt -covermode=atomic -coverpkg=./...,./internal/...,./pkg/... ./internal/... ./pkg/...
         
         # Run integration tests with coverage
-        go test -v -tags=integration -coverprofile=coverage/integration.txt -covermode=atomic -coverpkg=./internal/...,./pkg/... ./test/... || true
+        go test -v -tags=integration -coverprofile=coverage/integration.txt -covermode=atomic -coverpkg=./...,./internal/...,./pkg/... ./test/... || true
         
         # Merge coverage files
         echo "mode: atomic" > coverage.txt
