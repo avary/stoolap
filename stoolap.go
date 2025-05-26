@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package pkg
+package stoolap
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 	"strings"
 	"sync"
 
-	sqlexecutor "github.com/stoolap/stoolap/internal/sql/executor"
+	executor "github.com/stoolap/stoolap/internal/sql/executor"
 	"github.com/stoolap/stoolap/internal/storage"
 
 	// Import the storage engine
@@ -123,7 +123,7 @@ func Open(dsn string) (*DB, error) {
 	// Create new DB instance with a single executor
 	db = &DB{
 		engine:   engine,
-		executor: sqlexecutor.NewExecutor(engine),
+		executor: executor.NewExecutor(engine),
 	}
 
 	// Add to registry

@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
-	sqlexecutor "github.com/stoolap/stoolap/internal/sql/executor"
+	"github.com/stoolap/stoolap"
+	executor "github.com/stoolap/stoolap/internal/sql/executor"
 	"github.com/stoolap/stoolap/internal/storage"
-	"github.com/stoolap/stoolap/pkg"
 
 	// Import database storage engine
 	_ "github.com/stoolap/stoolap/internal/storage/mvcc"
@@ -57,7 +57,7 @@ type Driver struct {
 
 // connEntry holds a connection and its reference count
 type connEntry struct {
-	db       *pkg.DB
+	db       *stoolap.DB
 	refCount int
 	lastUsed time.Time
 	createMu sync.Mutex // Mutex to synchronize concurrent creation attempts
@@ -117,7 +117,7 @@ func (d *Driver) Open(name string) (driver.Conn, error) {
 	// If database is not initialized, initialize it
 	if entry.db == nil {
 		var err error
-		entry.db, err = pkg.Open(name)
+		entry.db, err = stoolap.Open(name)
 		if err != nil {
 			return nil, err
 		}
@@ -139,19 +139,19 @@ func (d *Driver) Open(name string) (driver.Conn, error) {
 
 	// Create a new executor instance for this connection
 	// Each connection needs its own executor to maintain independent isolation levels
-	conn.executor = sqlexecutor.NewExecutor(entry.db.Engine())
+	conn.executor = executor.NewExecutor(entry.db.Engine())
 
 	return conn, nil
 }
 
 // Conn represents a connection to a stoolap database with optimized concurrency
 type Conn struct {
-	db       *pkg.DB
+	db       *stoolap.DB
 	driver   *Driver
 	dsn      string
 	tx       driver.Tx
 	closed   bool             // Track if the connection has been closed
-	executor pkg.Executor     // Cached executor instance to reduce memory usage
+	executor stoolap.Executor // Cached executor instance to reduce memory usage
 	mu       *sync.Mutex      // Connection-specific mutex for thread safety
 	stmtsMu  *sync.RWMutex    // Mutex for statements map
 	stmts    map[string]*Stmt // Cache of prepared statements

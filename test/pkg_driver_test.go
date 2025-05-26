@@ -26,11 +26,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stoolap/stoolap/pkg"
+	"github.com/stoolap/stoolap"
 )
 
 func TestDriverBasicOperations(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestDriverBasicOperations(t *testing.T) {
 }
 
 func TestDriverQueryRow(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDriverQueryRow(t *testing.T) {
 }
 
 func TestDriverTransactions(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestDriverTransactions(t *testing.T) {
 }
 
 func TestDriverPreparedStatements(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestDriverPreparedStatements(t *testing.T) {
 }
 
 func TestDriverConcurrency(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -385,12 +385,12 @@ func TestDriverConcurrency(t *testing.T) {
 
 func TestDriverEngineRegistry(t *testing.T) {
 	// Test that the same DSN returns the same DB instance
-	db1, err := pkg.Open("memory://test1")
+	db1, err := stoolap.Open("memory://test1")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
 
-	db2, err := pkg.Open("memory://test1")
+	db2, err := stoolap.Open("memory://test1")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestDriverEngineRegistry(t *testing.T) {
 	}
 
 	// Test that different DSNs return different instances
-	db3, err := pkg.Open("memory://test2")
+	db3, err := stoolap.Open("memory://test2")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestDriverEngineRegistry(t *testing.T) {
 	db3.Close()
 
 	// After closing, opening again should create a new instance
-	db4, err := pkg.Open("memory://test1")
+	db4, err := stoolap.Open("memory://test1")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestDriverEngineRegistry(t *testing.T) {
 }
 
 func TestDriverExecutorReuse(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestDriverExecutorReuse(t *testing.T) {
 }
 
 func TestDriverParameterBinding(t *testing.T) {
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -522,18 +522,18 @@ func TestDriverParameterBinding(t *testing.T) {
 
 func TestDriverErrorHandling(t *testing.T) {
 	// Test invalid DSN
-	_, err := pkg.Open("invalid://")
+	_, err := stoolap.Open("invalid://")
 	if err == nil {
 		t.Error("Expected error for invalid DSN scheme")
 	}
 
-	_, err = pkg.Open("invalid-format")
+	_, err = stoolap.Open("invalid-format")
 	if err == nil {
 		t.Error("Expected error for invalid DSN format")
 	}
 
 	// Test SQL errors
-	db, err := pkg.Open("memory://")
+	db, err := stoolap.Open("memory://")
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
