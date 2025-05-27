@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stoolap/stoolap/internal/common"
 	"github.com/stoolap/stoolap/internal/functions/contract"
 	"github.com/stoolap/stoolap/internal/functions/registry"
 	"github.com/stoolap/stoolap/internal/parser"
@@ -491,6 +492,17 @@ func (e *Executor) executePragma(stmt *parser.PragmaStatement) (storage.Result, 
 
 	// Handle different PRAGMA settings
 	switch pragmaName {
+	case "VERSION":
+		if stmt.Value == nil {
+			// This is a read operation, return current value
+			result = &ExecResult{
+				columns:    []string{"version"},
+				rows:       [][]interface{}{{common.VersionString}},
+				isMemory:   true,
+				ctx:        context.Background(),
+				currentRow: 0,
+			}
+		}
 	case "SNAPSHOT_INTERVAL":
 		// Handle snapshot_interval setting
 		if stmt.Value == nil {
