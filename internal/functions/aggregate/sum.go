@@ -172,7 +172,7 @@ func (f *SumFunction) Result() interface{} {
 	if !f.initialized {
 		return nil
 	}
-	
+
 	// Return int64 for integer inputs, float64 for floating point inputs
 	if f.allIntegers {
 		return f.intSum

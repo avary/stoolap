@@ -390,8 +390,8 @@ func (s *stmt) Close() error {
 }
 
 // Query executes a query that returns rows
-func (db *DB) Query(ctx context.Context, query string, args ...driver.NamedValue) (Rows, error) {
-	return db.QueryContext(ctx, query, args...)
+func (db *DB) Query(ctx context.Context, query string) (Rows, error) {
+	return db.QueryContext(ctx, query)
 }
 
 // QueryContext executes a query that returns rows with context

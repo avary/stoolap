@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 /*
@@ -44,7 +45,7 @@ func main() {
 	}{
 		// Integer literals
 		{`&IntegerLiteral{Value: `, `makeIntegerLiteral(`},
-		// Float literals  
+		// Float literals
 		{`&FloatLiteral{Value: `, `makeFloatLiteral(`},
 		// String literals
 		{`&StringLiteral{Value: `, `makeStringLiteral(`},

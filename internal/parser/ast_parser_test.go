@@ -33,23 +33,23 @@ func TestParserGeneratedAST(t *testing.T) {
 		{"Boolean true", "SELECT TRUE", "SELECT TRUE"},
 		{"Boolean false", "SELECT FALSE", "SELECT FALSE"},
 		{"NULL literal", "SELECT NULL", "SELECT NULL"},
-		
+
 		// Expressions
 		{"Addition", "SELECT 1 + 2", "SELECT (1 + 2)"},
 		{"Subtraction", "SELECT 5 - 3", "SELECT (5 - 3)"},
 		{"Multiplication", "SELECT 4 * 5", "SELECT (4 * 5)"},
 		{"Division", "SELECT 10 / 2", "SELECT (10 / 2)"},
 		{"String concatenation", "SELECT 'hello' || ' world'", "SELECT ('hello' || ' world')"},
-		
+
 		// Functions
 		{"Function call", "SELECT UPPER('hello')", "SELECT UPPER('hello')"},
 		{"Function with multiple args", "SELECT ROUND(3.14159, 2)", "SELECT ROUND(3.14159, 2)"},
 		{"COUNT(*)", "SELECT COUNT(*)", "SELECT COUNT(*)"},
-		
+
 		// Aliases
 		{"Column alias", "SELECT id AS user_id FROM users", "SELECT id AS user_id FROM users"},
 		{"Expression alias", "SELECT price * 2 AS double_price FROM products", "SELECT (price * 2) AS double_price FROM products"},
-		
+
 		// Complex queries
 		{"WHERE clause", "SELECT * FROM users WHERE age > 18", "SELECT * FROM users WHERE (age > 18)"},
 		{"GROUP BY", "SELECT category, COUNT(*) FROM products GROUP BY category", "SELECT category, COUNT(*) FROM products GROUP BY category"},
@@ -63,17 +63,17 @@ func TestParserGeneratedAST(t *testing.T) {
 			lexer := NewLexer(tt.input)
 			p := NewParser(lexer)
 			program := p.ParseProgram()
-			
+
 			// Check for parser errors
 			if len(p.Errors()) > 0 {
 				t.Fatalf("Parser errors: %v", p.Errors())
 			}
-			
+
 			// Get the string representation
 			if len(program.Statements) != 1 {
 				t.Fatalf("Expected 1 statement, got %d", len(program.Statements))
 			}
-			
+
 			result := program.Statements[0].String()
 			if result != tt.expected {
 				t.Errorf("String() = %q, want %q", result, tt.expected)
@@ -88,36 +88,36 @@ func TestASTNodeProperties(t *testing.T) {
 		lexer := NewLexer("SELECT 42")
 		p := NewParser(lexer)
 		program := p.ParseProgram()
-		
+
 		selectStmt := program.Statements[0].(*SelectStatement)
 		intLit := selectStmt.Columns[0].(*IntegerLiteral)
-		
+
 		if intLit.Value != 42 {
 			t.Errorf("IntegerLiteral.Value = %d, want 42", intLit.Value)
 		}
 	})
-	
+
 	t.Run("Identifier value", func(t *testing.T) {
 		lexer := NewLexer("SELECT user_id FROM users")
 		p := NewParser(lexer)
 		program := p.ParseProgram()
-		
+
 		selectStmt := program.Statements[0].(*SelectStatement)
 		ident := selectStmt.Columns[0].(*Identifier)
-		
+
 		if ident.Value != "user_id" {
 			t.Errorf("Identifier.Value = %q, want %q", ident.Value, "user_id")
 		}
 	})
-	
+
 	t.Run("InfixExpression operator", func(t *testing.T) {
 		lexer := NewLexer("SELECT a + b FROM t")
 		p := NewParser(lexer)
 		program := p.ParseProgram()
-		
+
 		selectStmt := program.Statements[0].(*SelectStatement)
 		infixExpr := selectStmt.Columns[0].(*InfixExpression)
-		
+
 		if infixExpr.Operator != "+" {
 			t.Errorf("InfixExpression.Operator = %q, want %q", infixExpr.Operator, "+")
 		}

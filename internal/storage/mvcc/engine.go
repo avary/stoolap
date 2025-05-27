@@ -437,7 +437,7 @@ func (e *MVCCEngine) CreateTable(schema storage.Schema) (storage.Schema, error) 
 	defer e.mu.Unlock()
 
 	name := schema.TableName
-	originalName := name // Keep original name for version store
+	originalName := name         // Keep original name for version store
 	name = strings.ToLower(name) // Normalize for case-insensitive storage
 
 	if _, exists := e.schemas[name]; exists {

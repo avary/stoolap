@@ -1104,12 +1104,12 @@ func (r *AggregateResult) initialize() error {
 	if len(groups) == 0 && len(r.functions) > 0 && len(r.groupByColumns) == 0 {
 		// Create a single row with aggregate results for empty set
 		resultRow := make(map[string]storage.ColumnValue, len(r.columns))
-		
+
 		// Process each aggregate function
 		for _, fn := range r.functions {
 			colName := fn.GetColumnName()
 			funcName := strings.ToUpper(fn.Name)
-			
+
 			if funcName == "COUNT" {
 				// COUNT returns 0 for empty sets
 				resultRow[colName] = storage.NewIntegerValue(0)
@@ -1118,7 +1118,7 @@ func (r *AggregateResult) initialize() error {
 				resultRow[colName] = nil
 			}
 		}
-		
+
 		r.aggregatedRows = append(r.aggregatedRows, resultRow)
 	}
 

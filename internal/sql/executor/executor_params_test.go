@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/stoolap/stoolap/internal/storage"
-	
+
 	// Import the mvcc storage engine
 	_ "github.com/stoolap/stoolap/internal/storage/mvcc"
 )
