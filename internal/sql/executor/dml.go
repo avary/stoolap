@@ -831,6 +831,9 @@ func (e *Executor) executeUpdateWithContext(ctx context.Context, tx storage.Tran
 	if stmt.Where != nil {
 		// Convert the SQL WHERE expression to a storage-level expression
 		updateExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
+		if updateExpr == nil {
+			return 0, fmt.Errorf("unsupported WHERE clause in UPDATE statement: %T", stmt.Where)
+		}
 		updateExpr.PrepareForSchema(schema)
 	} else {
 		// If no WHERE clause, update all rows - use a simple expression that always returns true
@@ -886,6 +889,9 @@ func (e *Executor) executeDeleteWithContext(ctx context.Context, tx storage.Tran
 	if stmt.Where != nil {
 		// Convert the SQL WHERE expression to a storage-level expression
 		deleteExpr = createWhereExpression(ctx, stmt.Where, e.functionRegistry)
+		if deleteExpr == nil {
+			return 0, fmt.Errorf("unsupported WHERE clause in DELETE statement: %T", stmt.Where)
+		}
 		deleteExpr.PrepareForSchema(schema)
 	} else {
 		// If no WHERE clause, delete all rows - use a simple expression that always returns true

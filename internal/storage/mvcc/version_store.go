@@ -150,15 +150,8 @@ func (vs *VersionStore) AddVersion(rowID int64, version RowVersion) {
 		}
 		vs.versions.Set(rowID, newVersion)
 
-		// Write sequence will be set during transaction commit
-
 		// Update columnar indexes with the new version
 		vs.UpdateColumnarIndexes(rowID, version)
-
-		// WAL recording is now handled in transaction.Commit() after the transaction
-		// is marked as committed. This ensures all DML operations are recorded
-		// atomically as part of the commit process.
-
 	} else {
 		// Store old deleted status for index updates
 		oldIsDeleted := rv.IsDeleted
@@ -179,8 +172,6 @@ func (vs *VersionStore) AddVersion(rowID int64, version RowVersion) {
 		// Atomically replace the old version with the new one
 		vs.versions.Set(rowID, newVersion)
 
-		// Write sequence will be set during transaction commit
-
 		// Update columnar indexes
 		// First check if there are any indexes to update
 		vs.indexMutex.RLock()
@@ -199,10 +190,6 @@ func (vs *VersionStore) AddVersion(rowID int64, version RowVersion) {
 				vs.UpdateColumnarIndexes(rowID, version)
 			}
 		}
-
-		// WAL recording is now handled in transaction.Commit() after the transaction
-		// is marked as committed. This ensures all DML operations are recorded
-		// atomically as part of the commit process.
 	}
 }
 
