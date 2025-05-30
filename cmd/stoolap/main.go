@@ -81,8 +81,6 @@ func runRootCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	if !quiet {
-		fmt.Printf("Stoolap v%s.%s.%s-%s\n",
-			common.VersionMajor, common.VersionMinor, common.VersionPatch, common.VersionSuffix)
 		fmt.Printf("Connected to database: %s\n", dbPath)
 	}
 
