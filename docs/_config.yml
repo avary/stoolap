@@ -23,6 +23,9 @@ collections:
   docs:
     output: true
     permalink: /:collection/:path/
+  posts:
+    output: true
+    permalink: /blog/:year/:month/:day/:title/
 
 # Default layouts
 defaults:

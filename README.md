@@ -11,7 +11,8 @@
 
 # Stoolap
 
-Stoolap is a high-performance, columnar SQL database written in pure Go with zero dependencies. It combines OLTP (transaction) and OLAP (analytical) capabilities in a single engine, making it suitable for hybrid transactional/analytical processing (HTAP) workloads.
+**NewSQL That Starts Simple!** 
+Stoolap is a high-performance, columnar SQL database written in pure Go with zero dependencies. It combines OLTP (transaction) and OLAP (analytical) capabilities in a single engine, making it suitable for hybrid transactional/analytical processing (HTAP) workloads with MVCC support.
 
 ## Key Features
 
@@ -25,6 +26,7 @@ Stoolap is a high-performance, columnar SQL database written in pure Go with zer
 - **SQL Support**: Rich SQL functionality including JOINs, aggregations, and more
 - **JSON Support**: Native JSON data type with optimized storage
 - **Go SQL Driver**: Standard database/sql compatible driver
+- **PostgreSQL Compatibility**: Wire protocol server for PostgreSQL client compatibility
 
 ## Installation
 
@@ -38,6 +40,7 @@ Or clone the repository and build from source:
 git clone https://github.com/stoolap/stoolap.git
 cd stoolap
 go build -o stoolap ./cmd/stoolap
+go build -o stoolap-pgserver ./cmd/stoolap-pgserver
 ```
 
 ## Usage
@@ -119,6 +122,42 @@ func main() {
 	}
 }
 ```
+
+### PostgreSQL Wire Protocol Server
+
+Stoolap includes a PostgreSQL wire protocol server that allows any PostgreSQL client or driver to connect:
+
+```bash
+# Start server with in-memory database (default port 5432)
+./stoolap-pgserver
+
+# Start server with persistent database
+./stoolap-pgserver -d file:///path/to/database.db
+
+# Start server on custom port
+./stoolap-pgserver -b :5433
+```
+
+Connect using any PostgreSQL client:
+
+```bash
+# Using psql
+psql -h localhost -p 5432 -d stoolap
+
+# Using Python (psycopg2)
+import psycopg2
+conn = psycopg2.connect(host="localhost", port=5432, database="stoolap")
+
+# Using Node.js (pg)
+const { Client } = require('pg')
+const client = new Client({ host: 'localhost', port: 5432, database: 'stoolap' })
+```
+
+The PostgreSQL server supports:
+- Full transaction support (BEGIN/COMMIT/ROLLBACK)
+- READ COMMITTED and SNAPSHOT isolation levels
+- Standard PostgreSQL clients and ORMs
+- Prepared statements (basic support)
 
 ### Connection Strings
 
