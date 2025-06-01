@@ -19,11 +19,11 @@ const (
 	// VersionMajor is the major version of the driver
 	VersionMajor = "0"
 	// VersionMinor is the minor version of the driver
-	VersionMinor = "0"
+	VersionMinor = "1"
 	// VersionPatch is the patch version of the driver
-	VersionPatch = "8"
+	VersionPatch = "0"
 	// VersionSuffix is the suffix of the driver version
-	VersionSuffix = "ef513221" // git commit hash
+	VersionSuffix = "116a5147" // git commit hash
 
 	// VersionString is the version string of the driver
 	VersionString = "Stoolap v" + VersionMajor + "." + VersionMinor + "." + VersionPatch + "-" + VersionSuffix
